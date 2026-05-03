@@ -1,0 +1,931 @@
+@font-face {
+	font-family: "munchkinregular";
+	font-style: normal;
+	font-weight: normal;
+	src: url('../fonts/munchkin-webfont.woff2') format('woff2'),
+			 url('../fonts/munchkin-webfont.woff') format('woff');
+}
+
+html{
+	box-sizing: border-box;
+}
+*, *::before, *::after{
+	box-sizing: inherit;
+}
+body{
+	font-family: 'Munchkin';
+	font-size: 80px;
+	line-height: 1.2;
+	color: aliceblue;
+}
+
+/*header style start*/
+.wrapper{
+	max-width: 1400px;
+	margin: 0 auto;
+}
+
+.header{
+	position: fixed;
+	width: 100%;
+}
+
+
+
+.header__menu{
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+}
+
+.header__nav{
+	max-width: 880px;
+	text-align: center;
+	display: flex;
+	flex-wrap: wrap;
+  flex-direction: column;
+  align-content:center;
+}
+.header_wrapper{
+	text-align: center; /* Выравнивание по центру */ 
+}
+.header__item{
+	justify-items:auto;
+}
+
+li{
+	
+	list-style-type: none;
+}
+ul {
+	padding-left: 0; /* Сдвигаем список влево */
+ }
+a{
+	text-decoration-line: none;
+}
+
+ .header__link{
+	color: aliceblue;
+	text-decoration-line:none;
+}
+.header__link:hover{
+	opacity: .75;
+}
+
+.gallery-hide_item{
+  display: none;
+}
+.show-text{
+	color: aliceblue;
+	text-decoration: none;
+	
+}
+.show-text:hover{
+	opacity: .75;
+}
+
+
+/*header style end*/
+/*settings style start*/
+.settings__list{
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+  height: 145px;
+	border-bottom-width: 4px; /* Толщина линии внизу */
+  border-bottom-style: solid; /* Стиль линии внизу */
+  border-bottom-color: white; /* Цвет линии внизу */
+	cursor: pointer;
+}
+/*settings style end*/
+/*menu style start*/
+
+.menu{
+	height: 100vh;
+	background: url(../img/bg-menu.jpg) no-repeat center;
+	background-size: cover;
+	padding-top: 310px;
+}
+
+
+.settings{
+	position: fixed;
+	top: 20px;
+	right: 20px;
+	margin-left: 10px;
+}
+
+.back_buttom{
+	position: fixed;
+	top: 20px;
+	left: 20px;
+	margin-right: 10px;
+}
+/* menu style end*/
+
+/* start_game style start*/
+.start{
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-end;
+	justify-content: space-between;
+}
+.start_game__list {
+  display: flex;
+  justify-content: space-between;
+}
+
+.start_game__nav{
+	max-width: 580px;
+	max-height: 612px;
+	text-align: center;
+	display: flex;
+	flex-wrap: wrap;
+  flex-direction: column;
+  align-content:center;
+	justify-content: space-between;
+	
+}
+.start_game__pic{
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-end;
+	justify-content: space-between;
+}
+/* start_game style end*/
+
+
+
+
+
+
+
+/*start pack style*/
+
+.pack-link{
+	width:205px;
+	 height:290px;
+	 transition: transform 0.2s;
+}
+
+.pack__list {
+  display: flex;
+	flex-wrap: wrap;
+  justify-content: space-between;
+}
+.wrapper__pack{
+	max-width: 1200px;
+	margin: 0 auto;
+}
+.pack__item{
+	justify-items:auto;
+}
+
+.header__link:hover {
+  transform: scale(1.1);
+}
+
+.pack__link{
+	color: aliceblue;
+	text-decoration-line:none;
+}
+
+
+
+.wrapper_pack{
+	max-width: 1200px;
+	margin: 0 auto;
+}
+.pack__nav{
+	max-width: 580px;
+	max-height: 612px;
+	text-align: center;
+	display: flex;
+	flex-wrap: wrap;
+  flex-direction: column;
+  align-content:center;
+	justify-content: space-between;
+}
+.pack-link:hover {
+  transform: scale(1.1);
+}
+.pack_deck{
+	width: 400px;
+	height: 380px;
+	cursor: pointer;
+	transition: transform 0.2s;
+}
+
+
+.pack_deck:hover {
+  transform: scale(1.1);
+}
+
+/*end pack style*/
+
+
+
+/*start deck review style*/
+.area{
+	height: 100vh;
+	background: url(../img/bg-menu.jpg) no-repeat center;
+	background-size: cover;
+	padding-top: 0px;
+}
+
+.wrapper__cards{
+	position: relative;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.doors-button, .treasure-button{
+	
+	background-color: transparent;
+  border: none;
+
+}
+
+.doors-button{
+	display: flex;
+	position: absolute;
+	left: 20px;
+	top: -300px;
+	transition: top .5s;
+}
+
+.treasure-button{
+	display: flex;
+  position: absolute;
+  right: 20px;
+  top: -450px;
+	transition: top .5s;
+}
+
+.doors-button_show{
+	top: -450px;
+}
+
+.treasure-button_show{
+  top: -300px;
+}
+
+#doors-button:hover, #treasure-button:hover{
+	transform: scale(1.1);
+}
+.wrapper__scroll_menu{
+	position: relative;
+  width: 100%;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 20px;
+}
+.scroll_menu-doors{
+	display: flex;
+	width: 1410px;
+	height: 600px;
+	overflow-y: scroll;
+	padding-top: 10px;
+	padding-left: 10px;
+	position: fixed;
+	bottom: 0;
+	transition: top .5s;
+}
+.scroll_menu-treasure{
+	display: none;
+	width: 1410px;
+	height: 600px;
+	overflow-y: scroll;
+	padding-top: 10px;
+	padding-left: 10px;
+	position: fixed;
+	bottom: 0;
+	transition: top .5s;
+}
+
+
+.scroll_menu-treasure_show{
+	display: flex;
+	width: 1410px;
+	height: 600px;
+	overflow-y: scroll;
+	padding-top: 10px;
+	padding-left: 10px;
+	position: fixed;
+	bottom: 0;
+}
+.scroll_menu-doors_show{
+	display: none;
+	width: 1410px;
+	height: 600px;
+	overflow-y: scroll;
+	padding-top: 10px;
+	padding-left: 10px;
+	position: fixed;
+	bottom: -1000px;
+}
+
+/*end deck review style*/
+
+
+
+/*start gallery style*/
+
+.gallery-pack{
+  display: flex;
+  margin: 20px;
+}
+
+
+.gallery-item, .gallery2-item{
+  width: 119px;
+  height: 188px;
+  margin-right: 36px;
+	margin-bottom: 36px;
+  cursor: pointer;
+  transition: transform 0.2s;
+}
+
+.gallery-pack_item{
+  width: 300px;
+  height: 400px;
+  margin-right: 20px;
+  cursor: pointer;
+  transition: transform 0.2s;
+}
+
+/*увеличение размера кнопки при наведении*/
+
+.gallery-pack-item:hover {
+  transform: scale(1.1);
+}
+.gallery-item:hover, .gallery2-item:hover, .gallery-pack_item:hover {
+  transform: scale(1.1);
+}
+
+
+.modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, .3);
+  z-index: 99998;
+  display: none; /*скрываем модальное окно */
+  justify-content: center;
+  align-items: center;
+}
+
+.modal-content {
+  max-width: 90%;
+  max-height: 90%;
+  overflow: auto;
+  text-align: center;
+}
+
+
+/* добавляем стили для кнопок */
+#prev-button, #next-button {
+  border: none;
+  background: none;
+  cursor: pointer;
+  position: absolute; /* позиционируем кнопки */
+  top: 50%; /* выравниваем по вертикали */
+  transform: translateY(-50%); /* сдвигаем на половину высоты */
+	display: none;
+}
+
+#prev-button {
+  left: 20px; /* располагаем кнопку "назад" слева */
+}
+
+#next-button {
+  right: 20px; /* располагаем кнопку "вперед" справа */
+}
+/*end gallery style*/
+
+
+/*start game_board style*/
+.container {
+  display: flex;
+  position: relative;
+  width: 100%;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.cards {
+  border: 1px solid black;
+  height: 150px;
+  width: 400px;
+	display: flex;
+	justify-content: center;
+}
+
+
+
+
+
+.card {
+	width: 70px;
+	height: 20px;
+	display: flex;
+  justify-content: center;
+  
+}
+
+.myhand{
+  /*border: 1px solid black; */
+	display: flex;
+  width: 300px;
+  height: 150px;
+  position: fixed;
+  bottom: 10px;
+  left: 50% ;
+  transform: translateX(-50%);
+  justify-content: center;
+  z-index: 2;
+	
+}
+.opponenthand{
+  /*border: 1px solid black; */
+	display: flex;
+  width: 300px;
+  height: 150px;
+  position: fixed;
+  top: 10px;
+  left: 50% ;
+  transform: translateX(-50%);
+  justify-content: center;
+  z-index: 2;
+	
+}
+
+.opponent2hand{
+  /*border: 1px solid black; */
+	display: flex;
+  width: 300px;
+  height: 150px;
+  position: fixed;
+  top: 100px;
+  right: 30px ;
+  /*transform: translateX(-75%);*/
+	transform:  rotate(45deg);
+  justify-content: center;
+  z-index: 2;
+}
+.opponent3hand{
+  /*border: 1px solid black; */
+	display: flex;
+  width: 300px;
+  height: 150px;
+  position: fixed;
+  top: 100px;
+  left: 30px ;
+  /*transform: translateX(-75%);*/
+	transform:  rotate(-45deg);
+  justify-content: center;
+  z-index: 2;
+}
+
+.zone2 {
+  /*border: 1px solid black; */
+	display: flex;
+  width: 300px;
+  height: 150px;
+  position: fixed;
+  bottom: 170px;
+  left: 50% ;
+  transform: translateX(-50%);
+  justify-content: center;
+  z-index: 2;
+}
+
+.zone_opponent {
+  /*border: 1px solid black; */
+	display: flex;
+  width: 300px;
+  height: 150px;
+  position: fixed;
+  top: 170px;
+  left: 50% ;
+  transform: translateX(-50%);
+  justify-content: center;
+  z-index: 2;
+}
+.zone_opponent2 {
+  /*border: 1px solid black; */
+	display: flex;
+  width: 300px;
+  height: 150px;
+  position: fixed;
+  top: 220px;
+  right: 150px ;
+	transform:  rotate(45deg);
+  justify-content: center;
+  z-index: 2;
+}
+.zone_opponent3 {
+  /*border: 1px solid black; */
+	display: flex;
+  width: 300px;
+  height: 150px;
+  position: fixed;
+  top: 220px;
+  left: 150px ;
+	transform:  rotate(-45deg);
+  justify-content: center;
+  z-index: 2;
+}
+
+.zone_opponent_side {
+	display: flex;
+  flex-direction: row; 
+  width: 300px;
+  height: 150px;
+  position: fixed;
+  top: 100px;
+  justify-content: center; 
+  z-index: 1;
+  right: 50%;
+  /*border: 1px solid black; */
+  transform: translateX(-110px) rotate(-90deg);
+}
+
+.zone_opponent2_side {
+	display: flex;
+  flex-direction: row; 
+  width: 300px;
+  height: 150px;
+  position: fixed;
+  top: 100px;
+	right: 375px;
+  justify-content: end; 
+  z-index: 1;
+  /*border: 1px solid black; */
+  transform: rotate(-45deg);
+}
+
+.zone_opponent3_side {
+	display: flex;
+  flex-direction: row; 
+  width: 300px;
+  height: 150px;
+  position: fixed;
+  top: 445px;
+	left: 30px;
+  justify-content: start; 
+  z-index: 1;
+  /*border: 1px solid black; */
+  transform: rotate(45deg);
+}
+
+.zone3 {
+	/* border: 1px solid black; */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  left: 50%;
+  margin-left: 15px;
+  height: 170px; /* задаем фиксированную высоту */
+  width: 100px;
+  justify-content: flex-start; /* размещение карточек внизу */
+}
+
+.zone4 {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  width: 100px;
+  right: 50%;
+	margin-right: 15px;
+	/* border: 1px solid black; */
+  height: 170px; /* задаем фиксированную высоту */
+  justify-content: flex-start; /* размещение карточек внизу */
+}
+
+
+
+.zone5 {
+	display: flex;
+  flex-direction: row; 
+  width: 300px;
+  height: 150px;
+  position: fixed;
+  bottom: 100px;
+  justify-content: center; 
+  z-index: 1;
+  left: 50%;
+  /*border: 1px solid black; */
+  transform: translateX(110px) rotate(-90deg);
+}
+
+
+.zone3, .zone4 {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+
+}
+
+
+.zone3::before {
+  content: "Сила:";
+  font-weight: bold;
+  font-size: 20px;
+  position: absolute;
+  top: -25px;
+  left: 11px;
+}
+
+.zone4::before {
+  content: "Сила:";
+  font-weight: bold;
+  font-size: 20px;
+  position: absolute;
+  top: -25px;
+  left: 10px;
+}
+.zone3::after {
+  content: "бонусы  игрока";
+  position: absolute;
+  top: 60px;
+  right: -85px;
+  transform: rotate(90deg);
+  font-size: 22px; 
+}
+
+.zone4::after {
+  content: "бонусы монстра";
+  position: absolute;
+  top: 65px;
+  left: -92px; /* увеличиваем отступ слева */
+  transform: rotate(-90deg);
+  font-size: 22px; /* добавляем размер шрифта */
+}
+
+.card-item{
+	
+  width: 100px;
+  height: 150px;
+  cursor: pointer;
+  transition: transform 0.2s;
+	position: relative;
+	z-index: 1;
+}
+
+.card-item:hover {
+  transform: scale(1.05);
+	position: relative;
+	z-index: 99999999;
+}
+
+
+
+.image-top-left, .image-bottom-left {
+  position: absolute;
+  left: 20px;
+}
+
+.image-top-left {
+  top: 20px;
+}
+
+.image-bottom-left {
+  bottom: 20px;
+}
+
+.image-top-right, .image-bottom-right {
+  position: absolute;
+  right: 20px;
+}
+
+.image-top-right {
+  top: 20px;
+}
+
+.image-bottom-right {
+  bottom: 20px;
+}
+
+.settings_in_game_board {
+  position: fixed;
+  top: 50%;
+  right: 20px;
+  transform: translateY(-50%);
+  margin-left: 10px;
+	display: none;
+}
+
+.chat_in_game_board {
+	display: none;
+  position: fixed;
+  top: 50%;
+  right: 150px;
+  transform: translateY(-50%);
+  margin-left: 10px;
+}
+.history_in_game_board {
+	display: none;
+  position: fixed;
+  top: 50%;
+  left: 150px;
+  transform: translateY(-50%);
+  margin-right: 10px;
+}
+
+.top-left {
+	position: absolute;
+ top: calc(25vh - 10px);
+ left: 10px;
+}
+.PowerPlayer4{
+	font-weight: bold;
+	position: absolute;
+	right: 30px;
+	top:75px;
+	font-size: 20px;
+ }
+.top-right {
+	position: absolute;
+ top: calc(25vh - 10px);
+ right: 10px;
+}
+.PowerPlayer3{
+	font-weight: bold;
+	position: absolute;
+	left: 30px;
+	top:75px;
+	font-size: 20px;
+ }
+
+.bottom-left {
+	position: absolute;
+ bottom: calc(25vh - 10px);
+ left: 10px;
+}
+.PowerPlayer5{
+	font-weight: bold;
+	position: absolute;
+	right: 30px;
+	font-size: 20px;
+ }
+
+.bottom-right {
+ position: absolute;
+	bottom: calc(25vh - 10px);
+ right: 10px;
+}
+.PowerPlayer6{
+	font-weight: bold;
+	position: absolute;
+	left: 30px;
+	font-size: 20px;
+ }
+
+.bottom-center {
+	height: 45px;
+	position: absolute;
+	bottom: 10px;
+	left: calc(50% - 300px);
+	transform: translateX(-50%);
+	display: flex; /* Включаем flexbox */
+  align-items: center; /* Выравниваем элементы по центру по вертикали */
+ }
+
+ .MyPower{
+	font-weight: bold;
+	position: absolute;
+	top: 22.5px;
+	right: 50px;
+	font-size: 20px;
+ }
+
+ .top-center {
+	position: absolute;
+  top: 60px;
+	right: calc(50% - 330px);
+  transform: translateX(-50%);
+	display: flex; /* Включаем flexbox */
+  align-items: center; /* Выравниваем элементы по центру по вертикали */
+ }
+ .PowerPlayer2{
+	font-weight: bold;
+	position: absolute;
+	top: 22.5px;
+	left: 50px;
+	font-size: 20px;
+ }
+
+
+ .image-bottom-center {
+	position: absolute;
+	bottom: 10px;
+	left: calc(50% - 230px);
+	transform: translateX(-50%);
+ }
+ .top-center-image {
+	position: absolute;
+  top: 10px;
+	right: calc(50% - 300px);
+  transform: translateX(-50%);
+ }
+
+
+
+ .zone_doors, .zone_treasure {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+
+	height: 150px;
+	display:flex;
+	flex-wrap: nowrap;
+	justify-content: center;
+}
+
+.zone_doors .card,
+.zone_treasure .card {
+  position: absolute;
+
+}
+
+.zone_treasure {
+	width: 130px;
+  left: 50%;
+  margin-left: 175px;
+}
+
+.zone_doors {
+	width: 130px;
+  right: 50%;
+	margin-right: 175px;
+}
+
+.zone_doors_drop , .zone_treasure_drop {
+  position: fixed;
+  top: calc(50% );
+	height: 150px;
+  transform: translateY(-50%);
+	/* border: 1px solid black; */
+	display:flex;
+	flex-wrap: nowrap;
+	justify-content: center;
+}
+.zone_doors_drop .card,
+.zone_treasure_drop .card {
+  position: absolute;
+}
+
+.zone_treasure_drop {
+	width: 110px;
+  left: 50%;
+  margin-left: 300px;
+}
+
+.zone_doors_drop {
+	width: 110px;
+  right: 50%;
+	margin-right: 300px;
+}
+
+.button_start_game {
+  position: fixed; /* элемент будет позиционироваться фиксированно */
+  left: 50%; /* устанавливаем левую позицию элемента на 50% */
+  top: 30%; /* устанавливаем верхнюю позицию элемента на 50% */
+  transform: translate(-50%, -30%); /* смещаем элемент на половину его ширины и высоты */
+  display: flex; /* устанавливаем внешний вид элемента в виде flex контейнера */
+  justify-content: center; /* выравниваем элемент по горизонтали по центру */
+  align-items: center; /* выравниваем элемент по вертикали по центру */
+	width: auto;
+	height: auto;
+}
+	
+button {
+		padding: 10px 20px;
+		font-size: 64px;
+		background-color: transparent;
+		color: rgb(255, 255, 255);
+		border: none;
+		cursor: pointer;
+		font-family: 'Munchkin';
+    
+	}
+	
+button:hover {
+	background-color: rgba(0, 0, 0, 0.5);
+		border-radius: 20px;
+	}
+.zone_drop{
+	position: fixed;
+	font-size: 30px;
+	text-align: center;
+}
+/*end game_board style*/
