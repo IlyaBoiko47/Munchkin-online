@@ -84,7 +84,7 @@ let escapeActive = false;
 let escapeQueue = [];
 let escapeQueueIndex = -1;
 let escapeMonsterRemover = 0;
-let escapeMonsterBadStaff = 0;
+let escapeMonsterBadStaff = null;
 let escapeMonsterQueue = [];
 let escapeMonsterInitialCount = 0;
 let escapeMonsterTemplateQueue = [];
@@ -99,6 +99,10 @@ let escapeHalflingRetryPending = null;
 let escapeWizardFlightPending = null;
 let sellTreasuresDelegated = false;
 let turnAwaitingManualEnd = false;
+let deathLootActive = false;
+let deathLootState = null;
+let resumeEscapeAfterLoot = false;
+let deathLootAwaitingEscapeFinish = false;
 const halflingDoubleSellUsedBySeat = [false, false, false];
 const warriorFrenzyUsedBySeat = [0, 0, 0];
 const warriorFrenzyBonusBySeat = [0, 0, 0];
@@ -337,6 +341,12 @@ function showBattleResult(text) {
 		battleResultElement.textContent = text;
 		battleResultElement.style.display = 'block';
 	}
+}
+
+function showLootStatus(text) {
+	// Переиспользуем battle-result как строку статуса.
+	// В будущем можно выделить отдельный элемент, но сейчас достаточно так.
+	showBattleResult(text);
 }
 
 function hideBattleResult() {
@@ -593,9 +603,43 @@ export function canPlaceTreasureInPlayerEquipment(draggingCardEl, targetZoneEl) 
 	return isEquipmentSumsValid(body, hand, footwear, hat, big);
 }
 
+function normalizeBadStaff(badStaff) {
+	if (!badStaff || typeof badStaff !== "object") {
+		return null;
+	}
+	const type = String(badStaff.type || "");
+	if (!type) {
+		return null;
+	}
+	if (type === "lose_levels") {
+		const levels = Number(badStaff.levels) || 0;
+		return levels > 0 ? { type: "lose_levels", levels } : null;
+	}
+	if (type === "death") {
+		return { type: "death" };
+	}
+	return { type };
+}
+
+function getBadStaffLevelLoss(badStaff) {
+	const normalized = normalizeBadStaff(badStaff);
+	if (!normalized || normalized.type !== "lose_levels") {
+		return 0;
+	}
+	return Number(normalized.levels) || 0;
+}
+
 function applyBadStaffToSeat(seat, badStaff) {
-	const bs = Number(badStaff);
-	if (!Number.isFinite(bs)) {
+	const normalized = normalizeBadStaff(badStaff);
+	if (!normalized) {
+		return;
+	}
+	if (normalized.type !== "lose_levels") {
+		// Другие типы (например death) будут обработаны отдельной механикой.
+		return;
+	}
+	const levelLoss = getBadStaffLevelLoss(normalized);
+	if (!Number.isFinite(levelLoss) || levelLoss <= 0) {
 		return;
 	}
 	let current = levelBySeat[seat];
@@ -603,8 +647,7 @@ function applyBadStaffToSeat(seat, badStaff) {
 		current = 1;
 	}
 	current = Math.max(1, current);
-	// В данных карт bad_staff отрицательный (например -2) — уровень: current + bs.
-	const next = Math.max(1, current + bs);
+	const next = Math.max(1, current - levelLoss);
 	setLevelBySeat(seat, next);
 	recalculateAllPowerDisplays();
 }
@@ -642,8 +685,8 @@ export function scheduleBadStaffIfNeeded(cardId, zoneEl) {
 	if (!door) {
 		return;
 	}
-	const badStaff = Number(door.bad_staff);
-	if (!Number.isFinite(badStaff) || badStaff === 0) {
+	const badStaff = normalizeBadStaff(door.bad_staff);
+	if (!badStaff) {
 		return;
 	}
 	if (door.race === 'monster') {
@@ -985,8 +1028,8 @@ function getMonsterBattleContext() {
 	let levelSum = 0;
 	let hasMonster = false;
 	let removerSum = 0;
-	let badStaffSum = 0;
-	/** @type {{cardId:string, remover:number, badStaff:number, img:string}[]} */
+	let badStaffSum = null;
+	/** @type {{cardId:string, remover:number, badStaff:object|null, img:string}[]} */
 	const monsters = [];
 
 	zoneCards.forEach(el => {
@@ -995,11 +1038,14 @@ function getMonsterBattleContext() {
 			hasMonster = true;
 			levelSum += Number(door.level) || 0;
 			removerSum += Number(door.remover) || 0;
-			badStaffSum += Number(door.bad_staff) || 0;
+			const monsterBadStaff = normalizeBadStaff(door.bad_staff);
+			if (!badStaffSum && monsterBadStaff) {
+				badStaffSum = monsterBadStaff;
+			}
 			monsters.push({
 				cardId: door.name,
 				remover: Number(door.remover) || 0,
-				badStaff: Number(door.bad_staff) || 0,
+				badStaff: monsterBadStaff,
 				img: door.img || "",
 			});
 		}
@@ -1051,6 +1097,332 @@ function getSeatEquipmentRemover(seat) {
 
 function getSeatLabel(seat) {
 	return `Игрок ${Number(seat) + 1}`;
+}
+
+function ensureDeathLootZoneElement() {
+	let el = document.getElementById("death-loot-zone");
+	if (el) {
+		return el;
+	}
+	el = document.createElement("div");
+	el.id = "death-loot-zone";
+	// Это технический контейнер для "лутовых" карт в DOM.
+	// Он должен быть невидим, а выбор осуществляется через модалку.
+	el.style.display = "none";
+	document.body.appendChild(el);
+	return el;
+}
+
+function clearDeathLootUi() {
+	const el = document.getElementById("death-loot-zone");
+	if (el) {
+		el.remove();
+	}
+	const modal = document.getElementById("death-loot-pick-modal");
+	if (modal) {
+		modal.remove();
+	}
+}
+
+function isEquippedDoorRaceOrKindCard(cardEl, seat) {
+	if (!cardEl?.id) {
+		return false;
+	}
+	const { main } = getMainAndSideZoneElementsForSeat(seat);
+	if (!main || !main.contains(cardEl)) {
+		return false;
+	}
+	const door = window.doors?.find((d) => d.name === cardEl.id);
+	if (!door) {
+		return false;
+	}
+	// Сохраняем экипированную расу/класс игрока.
+	return !!door.race || !!door.kind;
+}
+
+function collectDeathLootCardIds(deadSeat) {
+	const ids = [];
+	const pushUnique = (id) => {
+		if (!id || ids.indexOf(id) !== -1) {
+			return;
+		}
+		ids.push(id);
+	};
+
+	const { main, side } = getMainAndSideZoneElementsForSeat(deadSeat);
+	const handEl = getHandElementForPlayerSeat(deadSeat);
+
+	// Все карты из руки — в лут.
+	handEl?.querySelectorAll?.(".card")?.forEach((cardEl) => {
+		pushUnique(cardEl.id);
+	});
+
+	// Все шмотки/прочее из экипировки — в лут, кроме рас/классов (экипированных).
+	[main, side].forEach((zoneEl) => {
+		zoneEl?.querySelectorAll?.(".card")?.forEach((cardEl) => {
+			if (isEquippedDoorRaceOrKindCard(cardEl, deadSeat)) {
+				return;
+			}
+			pushUnique(cardEl.id);
+		});
+	});
+
+	return ids;
+}
+
+function computeLootersOrder(deadSeat) {
+	const seats = [];
+	for (let s = 0; s < (num || 0); s++) {
+		if (Number(s) === Number(deadSeat)) {
+			continue;
+		}
+		seats.push(s);
+	}
+	// Группируем по уровню, сортируем по уровню убыв.
+	const groups = new Map();
+	seats.forEach((s) => {
+		const lvl = Number(levelBySeat[s]) || 1;
+		if (!groups.has(lvl)) {
+			groups.set(lvl, []);
+		}
+		groups.get(lvl).push(s);
+	});
+	const levels = Array.from(groups.keys()).sort((a, b) => b - a);
+	const out = [];
+	levels.forEach((lvl) => {
+		const arr = groups.get(lvl) || [];
+		// Тай-брейк: случайный порядок в группе одинаковых уровней.
+		for (let i = arr.length - 1; i > 0; i--) {
+			const j = Math.floor(Math.random() * (i + 1));
+			[arr[i], arr[j]] = [arr[j], arr[i]];
+		}
+		arr.forEach((s) => out.push(s));
+	});
+	return out;
+}
+
+function moveCardIdToDiscard(cardId) {
+	if (!cardId) {
+		return;
+	}
+	if (cardId.includes("door")) {
+		moveBadStaffCardToDiscard(cardId);
+		return;
+	}
+	if (cardId.includes("treasure")) {
+		moveTreasureCardToDiscard(cardId);
+	}
+}
+
+function appendCardToSeatHand(cardId, seat) {
+	const card = document.getElementById(cardId);
+	let hand = getHandElementForPlayerSeat(seat);
+	if (!card) {
+		return;
+	}
+
+	// Санити-чек: если перемещаем карту НЕ локальному игроку, то целевая рука не должна быть .myhand.
+	// Иногда из-за swap/классов можно ошибочно получить .myhand для чужого места — тогда карта
+	// "появляется" и у грабящего, и у погибшего (на разных клиентах).
+	if (hand && Number(seat) !== Number(localSeat) && hand.classList.contains("myhand")) {
+		// Для 2p достаточно взять .opponenthand, для 3p используем id по селектору зоны.
+		if (num === 2) {
+			hand = document.querySelector(".opponenthand") || hand;
+		} else if (num === 3) {
+			const bz = getSeatToBattleZoneMap();
+			const mainSel = bz[String(seat)] ?? bz[seat];
+			if (mainSel?.includes("zone_opponent2") && !mainSel.includes("zone_opponent3")) {
+				hand = document.getElementById("opponent2hand") || hand;
+			} else if (mainSel?.includes("zone_opponent3")) {
+				hand = document.getElementById("opponent3hand") || hand;
+			} else if (mainSel?.includes("zone_opponent")) {
+				hand = document.getElementById("opponenthand") || hand;
+			}
+		}
+	}
+
+	// Fallback: иногда getHandElementForPlayerSeat может вернуть null из-за swap/классов.
+	// Тогда пытаемся найти руку по известным id.
+	if (!hand) {
+		if (Number(seat) === Number(localSeat)) {
+			hand = document.querySelector(".myhand");
+		} else if (num === 2) {
+			hand = document.querySelector(".opponenthand") || document.getElementById("opponenthand");
+		} else if (num === 3) {
+			// Пытаемся определить по текущей раскладке зон.
+			const bz = getSeatToBattleZoneMap();
+			const mainSel = bz[String(seat)] ?? bz[seat];
+			if (mainSel?.includes("zone_opponent2") && !mainSel.includes("zone_opponent3")) {
+				hand = document.getElementById("opponent2hand");
+			} else if (mainSel?.includes("zone_opponent3")) {
+				hand = document.getElementById("opponent3hand");
+			} else if (mainSel?.includes("zone_opponent")) {
+				hand = document.getElementById("opponenthand");
+			}
+		}
+	}
+
+	if (!hand) {
+		return;
+	}
+	hand.appendChild(card);
+	// Обновляем отображение как в других перемещениях карт.
+	adjustCardWidth(".myhand");
+	adjustCardWidth(".zone2");
+	adjustCardWidth(".zone5");
+	adjustCardHeight(".zone3");
+	adjustCardHeight(".zone_monster");
+	adjustCardWidth(".opponenthand");
+	adjustCardWidth(".zone_opponent");
+	adjustCardWidth(".zone_opponent_side");
+	adjustCardWidth(".opponent2hand");
+	adjustCardWidth(".zone_opponent2");
+	adjustCardWidth(".zone_opponent2_side");
+	adjustCardWidth(".opponent3hand");
+	adjustCardWidth(".zone_opponent3");
+	adjustCardWidth(".zone_opponent3_side");
+	UpdatebackImgTreasure();
+	UpdatebackImgDoor();
+}
+
+function openDeathLootPickModal(deadSeat, looterSeat, remainingCardIds) {
+	const existing = document.getElementById("death-loot-pick-modal");
+	if (existing) {
+		existing.remove();
+	}
+	const modal = document.createElement("div");
+	modal.id = "death-loot-pick-modal";
+	modal.className = "thief-theft-steal-modal";
+
+	const panel = document.createElement("div");
+	panel.className = "thief-theft-steal-panel";
+
+	const title = document.createElement("div");
+	title.className = "thief-theft-steal-title";
+	title.textContent = `Грабёж: выбери 1 карту у ${getSeatLabel(deadSeat)}`;
+
+	const cardsContainer = document.createElement("div");
+	cardsContainer.className = "thief-theft-steal-cards";
+
+	const pickBtn = document.createElement("button");
+	pickBtn.type = "button";
+	pickBtn.className = "thief-theft-steal-go";
+	pickBtn.textContent = "Взять карту";
+	pickBtn.disabled = true;
+
+	const selected = { cardId: null };
+	cardsContainer.replaceChildren();
+	if (!Array.isArray(remainingCardIds) || remainingCardIds.length === 0) {
+		const empty = document.createElement("div");
+		empty.className = "thief-theft-steal-empty";
+		empty.textContent = "Нет карт для выбора.";
+		cardsContainer.appendChild(empty);
+	} else {
+		const getFrontSrcForCardId = (cardId) => {
+			const door = window.doors?.find((d) => d.name === cardId);
+			if (door?.img) {
+				return door.img;
+			}
+			const treasure = window.treasures?.find((t) => t.name === cardId);
+			if (treasure?.img) {
+				return treasure.img;
+			}
+			// Fallback: если данных нет, используем то, что в DOM.
+			const cardEl = document.getElementById(cardId);
+			const imgEl = cardEl?.querySelector?.(".card-item");
+			return imgEl?.src || "";
+		};
+		remainingCardIds.forEach((cardId) => {
+			const src = getFrontSrcForCardId(cardId);
+			const b = document.createElement("button");
+			b.type = "button";
+			b.className = "thief-theft-steal-card";
+			b.dataset.cardId = cardId;
+			const img = document.createElement("img");
+			img.className = "thief-theft-steal-card-img";
+			img.src = src;
+			img.alt = cardId;
+			b.appendChild(img);
+			b.addEventListener("click", () => {
+				cardsContainer.querySelectorAll(".thief-theft-steal-card").forEach((x) => x.classList.remove("is-selected"));
+				b.classList.add("is-selected");
+				selected.cardId = cardId;
+				pickBtn.disabled = !selected.cardId;
+			});
+			cardsContainer.appendChild(b);
+		});
+	}
+
+	pickBtn.addEventListener("click", () => {
+		if (!selected.cardId) {
+			return;
+		}
+		pickBtn.disabled = true;
+		const myHand = document.querySelector(".myhand");
+		socket.emit("message", {
+			method: "DeathLootPick",
+			deadSeat,
+			looterSeat,
+			cardId: selected.cardId,
+			handZoneId: myHand?.id || null,
+		});
+	});
+	panel.appendChild(title);
+	panel.appendChild(cardsContainer);
+	panel.appendChild(pickBtn);
+	modal.appendChild(panel);
+	document.body.appendChild(modal);
+
+	// Нельзя закрывать кликом в фон — иначе игрок "повиснет" и очередь остановится.
+}
+
+function resetEscapeStateNow() {
+	escapeActive = false;
+	escapeQueue = [];
+	escapeQueueIndex = -1;
+	escapeMonsterRemover = 0;
+	escapeMonsterBadStaff = null;
+	escapeMonsterQueue = [];
+	escapeMonsterInitialCount = 0;
+	escapeMonsterTemplateQueue = [];
+	escapeCurrentMonsterCardId = null;
+	escapeCurrentSeat = null;
+	escapeWaitingForRoll = false;
+	escapeOwnerSeat = null;
+	escapeRollInProgress = false;
+	escapeAttemptNumber = 0;
+	escapeHalflingRetryUsedForCurrentAttempt = false;
+	escapeHalflingRetryPending = null;
+	escapeWizardFlightPending = null;
+	hideWizardFlightModal();
+	hideEscapeMonsterPicker();
+	hideEscapeHalflingRetryModal();
+}
+
+function removeSeatFromEscapeQueue(seat) {
+	if (seat == null) {
+		return;
+	}
+	const s = Number(seat);
+	if (!Array.isArray(escapeQueue) || escapeQueue.length === 0) {
+		escapeQueue = [];
+		escapeQueueIndex = -1;
+		return;
+	}
+	const removedIndex = escapeQueue.findIndex((x) => Number(x) === s);
+	if (removedIndex < 0) {
+		return;
+	}
+	escapeQueue.splice(removedIndex, 1);
+	// Корректируем индекс очереди:
+	// - если убрали элемент ДО текущего индекса — индекс сдвигается влево;
+	// - если убрали ТЕКУЩИЙ элемент — оставляем индекс как есть, чтобы указывать на "следующего" после удаления.
+	if (escapeQueueIndex > removedIndex) {
+		escapeQueueIndex = Math.max(0, escapeQueueIndex - 1);
+	}
+	if (escapeQueue.length <= 0) {
+		escapeQueueIndex = -1;
+	}
 }
 
 function showEscapeTurnText(seat) {
@@ -1205,7 +1577,7 @@ function applyWizardFlightDiscardAndResolve(seat, cardIds) {
 		...pending,
 		totalRoll,
 		escaped,
-		badStaffPenalty: escaped ? 0 : (Number(pending.badStaffPenalty) || 0),
+		badStaffPenalty: escaped ? null : normalizeBadStaff(pending.badStaffPenalty),
 	};
 	updateWizardFlightUi();
 	emitEscapeRollResultAndAdvance(payload);
@@ -1243,21 +1615,8 @@ function applyWizardTaming(seat, handCardIds, monsterCardId) {
 		setTimeout(hideBattleResult, 1800);
 	} else if (monsterCardId) {
 		moveCardToDiscardById(monsterCardId);
-		// Пересчитываем силу строго по оставшимся картам в зоне монстров.
-		const remainingMonsterPower = Array.from(document.querySelectorAll('.zone_monster .card')).reduce((sum, cardEl) => {
-			const door = window.doors?.find((d) => d.name === cardEl.id);
-			if (door) {
-				const p = Number(door.power) || 0;
-				return p > 0 ? sum + p : sum;
-			}
-			const treasure = window.treasures?.find((t) => t.name === cardEl.id);
-			if (treasure) {
-				const p = Number(treasure.power) || 0;
-				return p > 0 ? sum + p : sum;
-			}
-			return sum;
-		}, 0);
-		setPowerText('.MonsterBonus', remainingMonsterPower);
+		// Пересчитываем базовую силу строго по оставшимся картам в зоне монстров (в т.ч. отрицательные модификаторы).
+		setMonsterBasePower(computeMonsterZoneBasePower());
 		showBattleResult("Монстр усмирен.");
 		setTimeout(hideBattleResult, 3000);
 	}
@@ -1271,6 +1630,56 @@ function applyWizardTaming(seat, handCardIds, monsterCardId) {
 
 function emitEscapeRollResultAndAdvance(payload) {
 	socket.emit("message", payload);
+	// Смерть: если смывка не удалась и bad stuff = death, то смывка обрывается,
+	// после смерти начинается грабёж; смывка помощника (если есть) начнётся после грабежа.
+	const bad = normalizeBadStaff(payload?.badStaffPenalty);
+	if (!payload?.escaped && bad && String(bad.type || "") === "death") {
+		// Важно: смывку по текущей реализации считает только владелец очереди (escapeOwnerSeat),
+		// и он же должен запускать смерть/грабёж, даже если умер помощник.
+		const deadSeat = parseInt(payload.seat, 10);
+		const ownerSeat = escapeOwnerSeat;
+		if (!Number.isNaN(deadSeat) && deadSeat >= 0 && ownerSeat != null && Number(localSeat) === Number(ownerSeat)) {
+			// Удаляем умершего из очереди смывки.
+			removeSeatFromEscapeQueue(deadSeat);
+
+			// Если умер владелец очереди, передаём владение следующему (обычно помощнику).
+			let nextOwner = ownerSeat;
+			if (Number(deadSeat) === Number(ownerSeat) && Array.isArray(escapeQueue) && escapeQueue.length > 0) {
+				nextOwner = escapeQueue[0];
+				escapeOwnerSeat = nextOwner;
+				socket.emit("message", {
+					method: "EscapeOwnerTransfer",
+					ownerSeat: nextOwner,
+				});
+				escapeQueueIndex = 0;
+			}
+			const lootCardIds = collectDeathLootCardIds(deadSeat);
+			const lootersOrder = computeLootersOrder(deadSeat);
+			// Если остались участники (помощник), смывку продолжим после грабежа.
+			resumeEscapeAfterLoot =
+				Array.isArray(escapeQueue)
+				&& escapeQueue.length > 0;
+			deathLootAwaitingEscapeFinish = resumeEscapeAfterLoot;
+
+			// Сначала грабёж.
+			socket.emit("message", {
+				method: "DeathStart",
+				deadSeat,
+				ownerSeat: nextOwner,
+				lootCardIds,
+				lootersOrder,
+				text: "Смерть!",
+			});
+
+			// Если больше некому смываться, сразу завершаем очередь смывки.
+			if (!resumeEscapeAfterLoot) {
+				finishEscapeSequenceAndBroadcast();
+			}
+		}
+		// Не продвигаем очередь смывки для умершего.
+		return;
+	}
+
 	setTimeout(() => {
 		runNextEscapeAttemptAndBroadcast();
 	}, 1200);
@@ -2893,11 +3302,11 @@ function setCurrentEscapeMonsterById(cardId) {
 		selected = escapeMonsterQueue[idx];
 		escapeMonsterQueue.splice(idx, 1);
 	} else {
-		selected = { cardId, remover: 0, badStaff: 0, img: "" };
+		selected = { cardId, remover: 0, badStaff: null, img: "" };
 	}
 	escapeCurrentMonsterCardId = selected.cardId;
 	escapeMonsterRemover = Number(selected.remover) || 0;
-	escapeMonsterBadStaff = Number(selected.badStaff) || 0;
+	escapeMonsterBadStaff = normalizeBadStaff(selected.badStaff);
 }
 
 function selectMonsterAndStartEscapeTurn(cardId, seat) {
@@ -3004,7 +3413,15 @@ function resolveEscapeRollAndBroadcast(seat, rawRoll) {
 	const equipRemover = getSeatEquipmentRemover(seat);
 	const totalRoll = rawRoll + equipRemover + escapeMonsterRemover;
 	const escaped = totalRoll >= ESCAPE_TARGET_ROLL;
-	const badStaffPenalty = escaped ? 0 : escapeMonsterBadStaff;
+	let badStaffPenalty = escaped ? null : normalizeBadStaff(escapeMonsterBadStaff);
+	// Fallback: если по какой-то причине badStaff текущего монстра не проставился в escapeMonsterBadStaff,
+	// берём его напрямую по id текущего монстра. Без этого смерть может не сработать.
+	if (!escaped && !badStaffPenalty && escapeCurrentMonsterCardId) {
+		const door = window.doors?.find((d) => d.name === escapeCurrentMonsterCardId);
+		if (door?.bad_staff) {
+			badStaffPenalty = normalizeBadStaff(door.bad_staff);
+		}
+	}
 	escapeWaitingForRoll = false;
 	escapeRollInProgress = false;
 
@@ -3085,7 +3502,7 @@ function resolveCombatAndBroadcast() {
 	}
 
 	const playerPower = getNumericText('.MyBonus');
-	const monsterPower = getNumericText('.MonsterBonus');
+	const monsterPower = getEffectiveMonsterPower();
 	const helperSeat = Number.isInteger(helperSeatSnapshot) ? helperSeatSnapshot : parseInt(helperSeatSnapshot, 10);
 	const activeIsWarrior = isSeatWarriorClassActive(currentTurnSeat);
 	const helperIsWarrior = !Number.isNaN(helperSeat) && helperSeat >= 0 && isSeatWarriorClassActive(helperSeat);
@@ -3308,6 +3725,158 @@ function setPowerText(selector, value) {
 	}
 }
 
+function applyMoveCardLocally(move) {
+	const card = document.getElementById(move?.cardId);
+	const target = move?.targetId ? document.getElementById(move.targetId) : null;
+	const zone = move?.zoneId ? document.getElementById(move.zoneId) : null;
+	if (!card || !zone) {
+		return;
+	}
+	if (target && zone.contains(target)) {
+		zone.insertBefore(card, target.nextSibling);
+	} else {
+		zone.appendChild(card);
+	}
+	adjustCardWidth('.myhand');
+	adjustCardWidth('.zone2');
+	adjustCardWidth('.zone5');
+	adjustCardHeight('.zone3');
+	adjustCardHeight('.zone_monster');
+	adjustCardWidth('.opponenthand');
+	adjustCardWidth('.zone_opponent');
+	adjustCardWidth('.zone_opponent_side');
+	adjustCardWidth('.opponent2hand');
+	adjustCardWidth('.zone_opponent2');
+	adjustCardWidth('.zone_opponent2_side');
+	adjustCardWidth('.opponent3hand');
+	adjustCardWidth('.zone_opponent3');
+	adjustCardWidth('.zone_opponent3_side');
+	UpdatebackImgTreasure();
+	UpdatebackImgDoor();
+	recalculateAllPowerDisplays();
+}
+
+function getMonsterBasePower() {
+	const el = document.querySelector('.MonsterBonus');
+	if (!el) {
+		return 0;
+	}
+	const fromDataset = Number(el.dataset?.basePower);
+	if (Number.isFinite(fromDataset)) {
+		return fromDataset;
+	}
+	// База силы должна быть независима от advantage и от того, что уже показано в DOM.
+	// Берём сумму power карт, лежащих в зоне монстра.
+	const base = computeMonsterZoneBasePower();
+	el.dataset.basePower = String(base);
+	return base;
+}
+
+function setMonsterBasePower(value) {
+	const el = document.querySelector('.MonsterBonus');
+	if (!el) {
+		return;
+	}
+	let v = Number(value) || 0;
+	el.dataset.basePower = String(v);
+	// Отображаем всегда «эффективную» силу (с учётом advantage).
+	updateEffectiveMonsterBonusDisplay();
+}
+
+function computeMonsterZoneBasePower() {
+	const zoneCards = document.querySelectorAll('.zone_monster .card');
+	let sum = 0;
+	zoneCards.forEach((cardEl) => {
+		const door = window.doors?.find((d) => d.name === cardEl.id);
+		if (door) {
+			const p = Number(door.power) || 0;
+			sum += p;
+			return;
+		}
+		const treasure = window.treasures?.find((t) => t.name === cardEl.id);
+		if (treasure) {
+			const p = Number(treasure.power) || 0;
+			sum += p;
+		}
+	});
+	return sum;
+}
+
+function normalizeAdvantageTargets(typeValue) {
+	if (!typeValue) {
+		return [];
+	}
+	if (Array.isArray(typeValue)) {
+		return typeValue.map(String).map((s) => s.trim()).filter(Boolean);
+	}
+	const str = String(typeValue);
+	// На случай если в данных записали через запятую.
+	return str.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+function computeMonsterAdvantageBonus() {
+	const { hasMonster } = getMonsterBattleContext();
+	if (!battleActive || !hasMonster) {
+		return 0;
+	}
+
+	// Важно: класс/раса могут поменяться прямо в бою — пересчитываем каждый раз.
+	updateCharacterStatesFromBoard();
+
+	const participants = [];
+	const active = characterBySeat[currentTurnSeat];
+	if (active) {
+		participants.push({ race: String(active.race || ""), kind: String(active.kind || "") });
+	}
+	if (acceptedHelperSeat !== null && acceptedHelperSeat !== undefined && acceptedHelperSeat >= 0) {
+		const helper = characterBySeat[acceptedHelperSeat];
+		if (helper) {
+			participants.push({ race: String(helper.race || ""), kind: String(helper.kind || "") });
+		}
+	}
+
+	if (participants.length === 0) {
+		return 0;
+	}
+
+	let total = 0;
+	const zoneCards = document.querySelectorAll('.zone_monster .card');
+	zoneCards.forEach((el) => {
+		const door = window.doors?.find((d) => d.name === el.id);
+		if (!door || door.race !== 'monster' || !door.advantage) {
+			return;
+		}
+		const targets = normalizeAdvantageTargets(door.advantage.type);
+		const bonus = Number(door.advantage.power) || 0;
+		if (targets.length === 0 || bonus === 0) {
+			return;
+		}
+		const matched = participants.some((p) => targets.includes(p.race) || targets.includes(p.kind));
+		// Если в бою есть и помощник, а у монстра преимущество над обоими — добавляем один раз.
+		if (matched) {
+			total += bonus;
+		}
+	});
+	return total;
+}
+
+function getEffectiveMonsterPower() {
+	return getMonsterBasePower() + computeMonsterAdvantageBonus();
+}
+
+function updateEffectiveMonsterBonusDisplay() {
+	const el = document.querySelector('.MonsterBonus');
+	if (!el) {
+		return;
+	}
+	// Каждый раз актуализируем базу по фактическим картам монстра,
+	// чтобы base не зависела от предыдущих перерисовок/сообщений.
+	const base = computeMonsterZoneBasePower();
+	el.dataset.basePower = String(base);
+	const effective = getEffectiveMonsterPower();
+	el.textContent = String(effective);
+}
+
 function getSeatCombatPower(seat) {
 	// Берем уже пересчитанную отображаемую силу по месту игрока.
 	// Это гарантирует одинаковое значение у всех клиентов, независимо от локальной перестановки зон.
@@ -3331,14 +3900,16 @@ function updateCharacterStatesFromBoard() {
 		}
 		character.setLevel(levelBySeat[seat] ?? 1);
 
-		const { main: mainEl } = getMainAndSideZoneElementsForSeat(seat);
+		const { main: mainEl, side: sideEl } = getMainAndSideZoneElementsForSeat(seat);
 		const mainCards = mainEl ? Array.from(mainEl.querySelectorAll('.card')) : [];
+		const sideCards = sideEl ? Array.from(sideEl.querySelectorAll('.card')) : [];
 		const equippedTreasures = mainCards
 			.map(cardEl => window.treasures?.find(t => t.name === cardEl.id))
 			.filter(Boolean);
 		character.applyEquipmentCards(equippedTreasures);
 
-		// Раса/класс берутся только из экипированных (main) карт.
+		// Раса/класс берутся только из экипированных карт (main).
+		// Side-зона — это "отложенная" экипировка/мелкая шмотка и не должна давать расу/класс.
 		// Если таких карт нет, значения сбрасываются к дефолту.
 		let nextRace = "Human";
 		let nextKind = "";
@@ -3491,6 +4062,8 @@ export function recalculateAllPowerDisplays() {
 	const powerPlayer6 = getNumericText('.level-bottom-right');
 	setPowerText('.PowerPlayer6', powerPlayer6);
 	recalculateMyBonusDisplay();
+	// Может меняться во время боя из-за смены рас/классов.
+	updateEffectiveMonsterBonusDisplay();
 	updateWarriorFrenzyUi();
 	updateClericExorcismUi();
 	updateWizardTamingUi();
@@ -3588,7 +4161,9 @@ socket.on("message", response => {
 			acceptedHelperSeat = helperSeat;
 			pendingHelpSeats.clear();
 			applyTurnHighlight();
-			recalculateMyBonusDisplay();
+			// Важно: помощь влияет и на MyBonus, и на advantage/weakness монстров (через race/kind помощника),
+			// поэтому пересчитываем всё, чтобы гарантированно обновить PlayerCharacterState всех мест.
+			recalculateAllPowerDisplays();
 			updateHelpUi();
 		}
 	}
@@ -3634,10 +4209,225 @@ socket.on("message", response => {
 			turnAwaitingManualEnd = true;
 			updateTurnActionButtons(false);
 		} else if (!Number.isNaN(resolvedSeat) && localSeat === resolvedSeat) {
-			escapeMonsterBadStaff = Number(response.monsterBadStaff) || 0;
+			escapeMonsterBadStaff = normalizeBadStaff(response.monsterBadStaff);
 			escapeMonsterQueue = Array.isArray(response.monsterQueue) ? response.monsterQueue.slice() : [];
 			startEscapeSequenceAndBroadcast(response.seat, response.helperSeat, response.monsterRemover);
 		}
+		recalculateAllPowerDisplays();
+	}
+	if (response.method === "DeathStart") {
+		const deadSeat = parseInt(response.deadSeat, 10);
+		const ownerSeat = parseInt(response.ownerSeat, 10);
+		const lootersOrder = Array.isArray(response.lootersOrder) ? response.lootersOrder.map((x) => parseInt(x, 10)).filter((x) => !Number.isNaN(x)) : [];
+		const lootCardIds = Array.isArray(response.lootCardIds) ? response.lootCardIds.filter(Boolean) : [];
+		if (Number.isNaN(deadSeat) || deadSeat < 0) {
+			return;
+		}
+
+		// Смерть = бой закончен, смывка не нужна.
+		deathLootActive = true;
+		deathLootState = {
+			deadSeat,
+			ownerSeat: !Number.isNaN(ownerSeat) ? ownerSeat : deadSeat,
+			lootersOrder,
+			remaining: lootCardIds.slice(),
+			index: 0,
+		};
+
+		// Умершему смывка больше не нужна, но если в бою был помощник, ему ещё нужно смыться.
+		// Поэтому не сбрасываем всю смывку — просто исключаем умершего из очереди.
+		removeSeatFromEscapeQueue(deadSeat);
+		battleActive = false;
+		battleTurnSeat = null;
+		pendingHelpSeats.clear();
+		acceptedHelperSeat = null;
+		applyTurnHighlight();
+		updateHelpUi();
+		updateTurnActionButtons(false);
+
+		if (localSeat === deadSeat) {
+			showLootStatus("Ты умер.");
+		} else {
+			showLootStatus(`${getSeatLabel(deadSeat)} погиб. Начинается грабёж.`);
+		}
+
+		// Складываем лут в скрытый контейнер (через moveCard, чтобы синхронизировать всем одинаково).
+		const lootZone = ensureDeathLootZoneElement();
+		lootZone.replaceChildren();
+		if (deathLootState && Number(localSeat) === Number(deathLootState.ownerSeat)) {
+			let prevId = null;
+			lootCardIds.forEach((id) => {
+				const move = {
+					method: "moveCard",
+					cardId: id,
+					targetId: prevId,
+					zoneId: "death-loot-zone",
+				};
+				applyMoveCardLocally(move);
+				socket.emit("message", move);
+				prevId = id;
+			});
+		}
+		adjustCardWidth('.zone_doors_drop');
+		adjustCardWidth('.zone_treasure_drop');
+		recalculateAllPowerDisplays();
+
+		// Если грабить нечего — сразу завершаем грабёж (без открытия модалок).
+		if (deathLootState && Number(localSeat) === Number(deathLootState.ownerSeat) && lootCardIds.length === 0) {
+			socket.emit("message", {
+				method: "DeathLootFinished",
+				deadSeat,
+				remainingCardIds: [],
+			});
+			return;
+		}
+
+		// Ведущий (ownerSeat) запускает первый ход грабежа.
+		if (deathLootState && Number(localSeat) === Number(deathLootState.ownerSeat)) {
+			socket.emit("message", {
+				method: "DeathLootTurn",
+				deadSeat,
+				ownerSeat: deathLootState.ownerSeat,
+				looterSeat: lootersOrder[0] ?? null,
+				remainingCardIds: lootCardIds.slice(),
+			});
+		}
+	}
+	if (response.method === "DeathLootTurn") {
+		const deadSeat = parseInt(response.deadSeat, 10);
+		const ownerSeat = parseInt(response.ownerSeat, 10);
+		const looterSeat = parseInt(response.looterSeat, 10);
+		const remainingCardIds = Array.isArray(response.remainingCardIds) ? response.remainingCardIds.filter(Boolean) : [];
+		if (Number.isNaN(deadSeat) || Number.isNaN(looterSeat)) {
+			return;
+		}
+		if (!deathLootActive || !deathLootState || Number(deathLootState.deadSeat) !== Number(deadSeat)) {
+			deathLootActive = true;
+			deathLootState = {
+				deadSeat,
+				ownerSeat: !Number.isNaN(ownerSeat) ? ownerSeat : (deathLootState?.ownerSeat ?? escapeOwnerSeat ?? deadSeat),
+				lootersOrder: [],
+				remaining: remainingCardIds.slice(),
+				index: 0,
+			};
+		} else {
+			deathLootState.remaining = remainingCardIds.slice();
+			// Никогда не теряем ownerSeat — он нужен, чтобы после грабежа гарантированно продолжить смывку.
+			if (deathLootState.ownerSeat == null && !Number.isNaN(ownerSeat)) {
+				deathLootState.ownerSeat = ownerSeat;
+			}
+		}
+		if (localSeat === deadSeat) {
+			showLootStatus("Ты умер.");
+		} else if (localSeat === looterSeat) {
+			showLootStatus(`Твоя очередь грабить ${getSeatLabel(deadSeat)}`);
+		} else {
+			showLootStatus(`Сейчас грабит ${getSeatLabel(looterSeat)} (${getSeatLabel(deadSeat)})`);
+		}
+		if (localSeat === looterSeat) {
+			// Если карт нет — модалку не показываем.
+			if (!remainingCardIds.length) {
+				return;
+			}
+			openDeathLootPickModal(deadSeat, looterSeat, remainingCardIds);
+		} else {
+			const modal = document.getElementById("death-loot-pick-modal");
+			if (modal) {
+				modal.remove();
+			}
+		}
+	}
+	if (response.method === "DeathLootPicked") {
+		const deadSeat = parseInt(response.deadSeat, 10);
+		const looterSeat = parseInt(response.looterSeat, 10);
+		const cardId = response.cardId;
+		const remainingCardIds = Array.isArray(response.remainingCardIds) ? response.remainingCardIds.filter(Boolean) : [];
+		if (Number.isNaN(deadSeat) || Number.isNaN(looterSeat) || !cardId) {
+			return;
+		}
+		// DOM-перемещение карты выполняется через стандартное сетевое moveCard,
+		// чтобы не было рассинхрона/«копий» между клиентами.
+		if (deathLootState && Number(deathLootState.deadSeat) === Number(deadSeat)) {
+			deathLootState.remaining = remainingCardIds.slice();
+		}
+		const modal = document.getElementById("death-loot-pick-modal");
+		if (modal) {
+			modal.remove();
+		}
+		recalculateAllPowerDisplays();
+	}
+	if (response.method === "DeathLootFinished") {
+		const deadSeat = parseInt(response.deadSeat, 10);
+		const remainingCardIds = Array.isArray(response.remainingCardIds) ? response.remainingCardIds.filter(Boolean) : [];
+		if (Number.isNaN(deadSeat)) {
+			return;
+		}
+		const lootOwnerSeatSnapshot = deathLootState?.ownerSeat;
+		remainingCardIds.forEach((id) => moveCardIdToDiscard(id));
+		deathLootActive = false;
+		deathLootState = null;
+		clearDeathLootUi();
+		showLootStatus(`Грабёж завершён. ${getSeatLabel(deadSeat)} возрождается без карт.`);
+		setTimeout(() => {
+			hideBattleResult();
+		}, 1800);
+		recalculateAllPowerDisplays();
+		// Решение "продолжать смывку или сбрасывать монстров" принимает владелец очереди смывки,
+		// и сообщает всем клиентам, чтобы не было рассинхрона.
+		const canResumeEscape =
+			escapeActive
+			&& Array.isArray(escapeQueue)
+			&& escapeQueue.length > 0
+			// Во время грабежа индекс мог быть сброшен, но это не значит, что смывка не нужна.
+			// Главное — чтобы после нормализации индекс указывал на существующего участника.
+			&& (escapeQueueIndex < 0 || escapeQueueIndex < escapeQueue.length);
+		// Продолжение смывки после грабежа запускает именно ведущий грабежа (ownerSeat из DeathStart),
+		// чтобы не зависеть от возможной рассинхронизации escapeOwnerSeat между клиентами.
+		if (canResumeEscape && lootOwnerSeatSnapshot != null && Number(localSeat) === Number(lootOwnerSeatSnapshot)) {
+			if (!escapeActive) {
+				escapeActive = true;
+			}
+			if (escapeQueueIndex < 0) {
+				escapeQueueIndex = 0;
+			}
+			deathLootAwaitingEscapeFinish = true;
+			socket.emit("message", {
+				method: "DeathLootResumeEscape",
+				ownerSeat: lootOwnerSeatSnapshot,
+			});
+			return;
+		}
+		if (lootOwnerSeatSnapshot != null && Number(localSeat) === Number(lootOwnerSeatSnapshot)) {
+			socket.emit("message", {
+				method: "DeathLootDropMonsters",
+			});
+		}
+	}
+	if (response.method === "DeathLootResumeEscape") {
+		const ownerSeat = parseInt(response.ownerSeat, 10);
+		deathLootAwaitingEscapeFinish = true;
+		if (!Number.isNaN(ownerSeat) && ownerSeat >= 0) {
+			escapeOwnerSeat = ownerSeat;
+		}
+		if (!escapeActive) {
+			escapeActive = true;
+		}
+		if (escapeQueueIndex < 0) {
+			escapeQueueIndex = 0;
+		}
+		turnAwaitingManualEnd = false;
+		updateTurnActionButtons(false);
+		setTimeout(() => {
+			if (!Number.isNaN(ownerSeat) && Number(localSeat) === Number(ownerSeat)) {
+				runNextEscapeAttemptAndBroadcast();
+			}
+		}, 500);
+	}
+	if (response.method === "DeathLootDropMonsters") {
+		deathLootAwaitingEscapeFinish = false;
+		MoveMonstersToDrop();
+		turnAwaitingManualEnd = true;
+		updateTurnActionButtons(false);
 		recalculateAllPowerDisplays();
 	}
 	if (response.method === "EscapeSequenceStart") {
@@ -3651,7 +4441,7 @@ socket.on("message", response => {
 		escapeQueue = Array.isArray(response.queue) ? response.queue.slice() : [];
 		escapeQueueIndex = -1;
 		escapeMonsterRemover = Number(response.monsterRemover) || 0;
-		escapeMonsterBadStaff = Number(response.monsterBadStaff) || 0;
+		escapeMonsterBadStaff = normalizeBadStaff(response.monsterBadStaff);
 		escapeMonsterQueue = Array.isArray(response.monsterQueue) ? response.monsterQueue.slice() : [];
 		escapeMonsterTemplateQueue = Array.isArray(response.monsterTemplateQueue) ? response.monsterTemplateQueue.slice() : escapeMonsterQueue.slice();
 		escapeMonsterInitialCount = Number(response.monsterInitialCount) || escapeMonsterQueue.length;
@@ -3848,10 +4638,10 @@ socket.on("message", response => {
 		const monsterRemover = Number(response.monsterRemover) || 0;
 		const totalRoll = Number(response.totalRoll);
 		const escaped = Boolean(response.escaped);
-		const badStaffPenalty = Number(response.badStaffPenalty) || 0;
+		const badStaffPenalty = normalizeBadStaff(response.badStaffPenalty);
 		if (!Number.isNaN(seat) && Number.isFinite(rawRoll) && Number.isFinite(totalRoll)) {
 			showBattleResult(escaped ? "Смывка удалась!" : "Смывка не удалась");
-			if (!escaped && badStaffPenalty !== 0) {
+			if (!escaped && badStaffPenalty) {
 				applyBadStaffToSeat(seat, badStaffPenalty);
 			}
 		}
@@ -3861,7 +4651,7 @@ socket.on("message", response => {
 		escapeQueue = [];
 		escapeQueueIndex = -1;
 		escapeMonsterRemover = 0;
-		escapeMonsterBadStaff = 0;
+		escapeMonsterBadStaff = null;
 		escapeMonsterQueue = [];
 		escapeMonsterInitialCount = 0;
 		escapeMonsterTemplateQueue = [];
@@ -3877,19 +4667,29 @@ socket.on("message", response => {
 		hideWizardFlightModal();
 		hideEscapeMonsterPicker();
 		hideEscapeHalflingRetryModal();
-		MoveMonstersToDrop();
-		turnAwaitingManualEnd = true;
-		updateTurnActionButtons(false);
-		recalculateAllPowerDisplays();
-		setTimeout(() => {
-			hideBattleResult();
-		}, 1500);
+		// Если смывка была после смерти (ждём конца смывки помощника), то теперь можно сбросить монстров.
+		if (!deathLootActive) {
+			MoveMonstersToDrop();
+			turnAwaitingManualEnd = true;
+			updateTurnActionButtons(false);
+			recalculateAllPowerDisplays();
+			setTimeout(() => {
+				hideBattleResult();
+			}, 1500);
+		}
+		deathLootAwaitingEscapeFinish = false;
+	}
+	if (response.method === "EscapeOwnerTransfer") {
+		const nextOwner = parseInt(response.ownerSeat, 10);
+		if (!Number.isNaN(nextOwner) && nextOwner >= 0) {
+			escapeOwnerSeat = nextOwner;
+		}
 	}
 	if (response.method === "BadStaffLevel") {
 		const seat = parseInt(response.seat, 10);
-		const badStaff = Number(response.bad_staff);
+		const badStaff = normalizeBadStaff(response.bad_staff);
 		const cardId = response.cardId;
-		if (!Number.isNaN(seat) && Number.isFinite(badStaff) && cardId) {
+		if (!Number.isNaN(seat) && badStaff && cardId) {
 			applyBadStaffToSeat(seat, badStaff);
 			moveBadStaffCardToDiscard(cardId);
 		}
@@ -3923,14 +4723,78 @@ socket.on("message", response => {
 	if (response.method === "UpdateMonster") {
 		// console.log('обнова силы');
 		const CurrentPower = response.power;
-		const bottomCenterElement = document.querySelector('.MonsterBonus');
-			// Обновляем текст элемента новым значением
-		bottomCenterElement.textContent = CurrentPower;
+		setMonsterBasePower(CurrentPower);
 	}
 	if (response.method === "UpdateTimer") {
 		// const timerElement = document.getElementById('timer');
 		// timerElement.textContent = ""
 		timer()
+	}
+
+	if (response.method === "DeathLootPick") {
+		// Валидируем и применяем только у ведущего грабежа.
+		if (!deathLootState || Number(localSeat) !== Number(deathLootState.ownerSeat)) {
+			return;
+		}
+		const deadSeat = parseInt(response.deadSeat, 10);
+		const looterSeat = parseInt(response.looterSeat, 10);
+		const cardId = response.cardId;
+		const handZoneId = response.handZoneId;
+		if (Number.isNaN(deadSeat) || Number.isNaN(looterSeat) || !cardId) {
+			return;
+		}
+		if (!deathLootActive || !deathLootState || Number(deathLootState.deadSeat) !== Number(deadSeat)) {
+			return;
+		}
+		const state = deathLootState;
+		const expectedLooter = state.lootersOrder?.[state.index];
+		if (Number(expectedLooter) !== Number(looterSeat)) {
+			return;
+		}
+		if (state.remaining.indexOf(cardId) === -1) {
+			return;
+		}
+
+		// Двигаем карту в руку грабителя через moveCard (ид зоны пришёл от грабителя).
+		if (handZoneId && typeof handZoneId === "string") {
+			const move = {
+				method: "moveCard",
+				cardId,
+				targetId: null,
+				zoneId: handZoneId,
+			};
+			applyMoveCardLocally(move);
+			socket.emit("message", move);
+		}
+
+		// Убираем карту из пула.
+		state.remaining = state.remaining.filter((x) => x !== cardId);
+
+		socket.emit("message", {
+			method: "DeathLootPicked",
+			deadSeat,
+			looterSeat,
+			cardId,
+			remainingCardIds: state.remaining.slice(),
+		});
+
+		// Переходим к следующему грабителю или заканчиваем.
+		state.index += 1;
+		if (state.remaining.length <= 0 || state.index >= (state.lootersOrder?.length || 0)) {
+			socket.emit("message", {
+				method: "DeathLootFinished",
+				deadSeat,
+				remainingCardIds: state.remaining.slice(),
+			});
+			return;
+		}
+		socket.emit("message", {
+			method: "DeathLootTurn",
+			deadSeat,
+			ownerSeat: state.ownerSeat ?? escapeOwnerSeat ?? deadSeat,
+			looterSeat: state.lootersOrder[state.index],
+			remainingCardIds: state.remaining.slice(),
+		});
 	}
   
   if (response.method === "shuffleDeck") {
@@ -4427,19 +5291,20 @@ const treasure72 = new Card_treasure("treasure72", "",  "../img/Treasure1/card01
 const treasure73 = new Card_treasure("treasure73", "",  "../img/Treasure1/card0168.png", "../img/Treasure1/cardBack_Treasure.png", 0, 600, 0, 0, 0, 0);
 
 class Card_door {
-  constructor(name = "", card_name = "", img = "", backimg = "", power = 0, race = "", kind = "", bonus = 0, special = "", level = 0, bad_staff = 0, remover = 0) {
+  constructor(name = "", card_name = "", img = "", backimg = "", power = 0, race = "", kind = "", special = "", level = 0, bad_staff = null, remover = 0, weakness = null, advantage = null) {
     this.name = name;
 	this.card_name = card_name;
 	this.img = img;
-    this.backimg = backimg;
+    this.backimg = backimg;	
 	this.power = power;
     this.race = race;
     this.kind = kind;
-    this.bonus = bonus;
     this.special = special;
     this.level = level;
     this.bad_staff = bad_staff;
 	this.remover = remover;
+	this.weakness = weakness;
+	this.advantage = advantage;
   }
 }
 // Создание экземпляров класса "дверь"
@@ -4457,9 +5322,9 @@ const door11 = new Card_door("door11", "",  "../img/doors1/card0010.png", "../im
 const door12 = new Card_door("door12", "",  "../img/doors1/card0012.png", "../img/doors1/cardBack_Doors.png", 0, "Dwarf");
 const door13 = new Card_door("door13", "",  "../img/doors1/card0013.png", "../img/doors1/cardBack_Doors.png", 0, "Dwarf");
 const door14 = new Card_door("door14", "",  "../img/doors1/card0014.png", "../img/doors1/cardBack_Doors.png", 0, "Dwarf");
-const door15 = new Card_door("door15", "",  "../img/doors1/card0015.png", "../img/doors1/cardBack_Doors.png", 0, "Elf", "", 0, "", 0, 0, 1);
-const door16 = new Card_door("door16", "",  "../img/doors1/card0016.png", "../img/doors1/cardBack_Doors.png", 0, "Elf", "", 0, "", 0, 0, 1);
-const door17 = new Card_door("door17", "",  "../img/doors1/card0017.png", "../img/doors1/cardBack_Doors.png", 0, "Elf", "", 0, "", 0, 0, 1);
+const door15 = new Card_door("door15", "",  "../img/doors1/card0015.png", "../img/doors1/cardBack_Doors.png", 0, "Elf", "", "", 0, 0, 1);
+const door16 = new Card_door("door16", "",  "../img/doors1/card0016.png", "../img/doors1/cardBack_Doors.png", 0, "Elf", "", "", 0, 0, 1);
+const door17 = new Card_door("door17", "",  "../img/doors1/card0017.png", "../img/doors1/cardBack_Doors.png", 0, "Elf", "", "", 0, 0, 1);
 const door18 = new Card_door("door18", "",  "../img/doors1/card0018.png", "../img/doors1/cardBack_Doors.png", 0, "Halfling");
 const door19 = new Card_door("door19", "",  "../img/doors1/card0019.png", "../img/doors1/cardBack_Doors.png", 0, "Halfling");
 const door20 = new Card_door("door20", "",  "../img/doors1/card0020.png", "../img/doors1/cardBack_Doors.png", 0, "Halfling");
@@ -4467,11 +5332,11 @@ const door21 = new Card_door("door21", "",  "../img/doors1/card0021.png", "../im
 const door22 = new Card_door("door22", "",  "../img/doors1/card0022.png", "../img/doors1/cardBack_Doors.png",0);
 const door23 = new Card_door("door23", "",  "../img/doors1/card0023.png", "../img/doors1/cardBack_Doors.png",-5);
 const door24 = new Card_door("door24", "",  "../img/doors1/card0024.png", "../img/doors1/cardBack_Doors.png",0);
-const door25 = new Card_door("door25", "",  "../img/doors1/card0025.png", "../img/doors1/cardBack_Doors.png", 0, "", "", 0, "", 0, -2);
+const door25 = new Card_door("door25", "",  "../img/doors1/card0025.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "", 0, { type: "lose_levels", levels: 2 });
 const door26 = new Card_door("door26", "",  "../img/doors1/card0026.png", "../img/doors1/cardBack_Doors.png",0);
 const door27 = new Card_door("door27", "",  "../img/doors1/card0027.png", "../img/doors1/cardBack_Doors.png",0);
-const door28 = new Card_door("door28", "",  "../img/doors1/card0028.png", "../img/doors1/cardBack_Doors.png", 0, "", "", 0, "", 0, -1);
-const door29 = new Card_door("door29", "",  "../img/doors1/card0029.png", "../img/doors1/cardBack_Doors.png", 0, "", "", 0, "", 0, -1);
+const door28 = new Card_door("door28", "",  "../img/doors1/card0028.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "", 0, { type: "lose_levels", levels: 1 });
+const door29 = new Card_door("door29", "",  "../img/doors1/card0029.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "", 0, { type: "lose_levels", levels: 1 });
 const door30 = new Card_door("door30", "",  "../img/doors1/card0030.png", "../img/doors1/cardBack_Doors.png",0);
 const door31 = new Card_door("door31", "",  "../img/doors1/card0031.png", "../img/doors1/cardBack_Doors.png",0);
 const door32 = new Card_door("door32", "",  "../img/doors1/card0032.png", "../img/doors1/cardBack_Doors.png",0);
@@ -4482,48 +5347,48 @@ const door36 = new Card_door("door36", "",  "../img/doors1/card0036.png", "../im
 const door37 = new Card_door("door37", "",  "../img/doors1/card0037.png", "../img/doors1/cardBack_Doors.png",0);
 const door38 = new Card_door("door38", "",  "../img/doors1/card0038.png", "../img/doors1/cardBack_Doors.png",0);
 const door39 = new Card_door("door39", "",  "../img/doors1/card0039.png", "../img/doors1/cardBack_Doors.png",0);
-const door40 = new Card_door("door40", "",  "../img/doors1/card0040.png", "../img/doors1/cardBack_Doors.png",10);
-const door41 = new Card_door("door41", "",  "../img/doors1/card0041.png", "../img/doors1/cardBack_Doors.png",-5);
-const door42 = new Card_door("door42", "",  "../img/doors1/card0042.png", "../img/doors1/cardBack_Doors.png",5);
-const door43 = new Card_door("door43", "",  "../img/doors1/card0043.png", "../img/doors1/cardBack_Doors.png",10);
-const door44 = new Card_door("door44", "",  "../img/doors1/card0044.png", "../img/doors1/cardBack_Doors.png",5);
-const door45 = new Card_door("door45", "",  "../img/doors1/card0045.png", "../img/doors1/cardBack_Doors.png", 1, "monster", "", 0, "", 1, 0);
-const door46 = new Card_door("door46", "",  "../img/doors1/card0046.png", "../img/doors1/cardBack_Doors.png", 1, "monster", "", 0, "", 1, -1, 1);
-const door47 = new Card_door("door47", "",  "../img/doors1/card0047.png", "../img/doors1/cardBack_Doors.png", 1, "monster", "", 0, "", 1, -1);
-const door48 = new Card_door("door48", "",  "../img/doors1/card0048.png", "../img/doors1/cardBack_Doors.png", 1, "monster", "", 0, "", 1, 0);
-const door49 = new Card_door("door49", "",  "../img/doors1/card0049.png", "../img/doors1/cardBack_Doors.png", 1, "monster", "", 0, "", 1, -1);
-const door50 = new Card_door("door50", "",  "../img/doors1/card0050.png", "../img/doors1/cardBack_Doors.png", 2, "monster", "", 0, "", 1, -2, -1);
-const door51 = new Card_door("door51", "",  "../img/doors1/card0051.png", "../img/doors1/cardBack_Doors.png", 2, "monster", "", 0, "", 1, 0, 1);
-const door52 = new Card_door("door52", "",  "../img/doors1/card0052.png", "../img/doors1/cardBack_Doors.png", 2, "monster", "", 0, "", 1, -1);
-const door53 = new Card_door("door53", "",  "../img/doors1/card0053.png", "../img/doors1/cardBack_Doors.png", 2, "monster", "", 0, "Undead", 1, -2);
-const door54 = new Card_door("door54", "",  "../img/doors1/card0054.png", "../img/doors1/cardBack_Doors.png", 2, "monster", "", 0, "", 1, -2);
-const door55 = new Card_door("door55", "",  "../img/doors1/card0055.png", "../img/doors1/cardBack_Doors.png", 4, "monster", "", 0, "", 1, 0);
-const door56 = new Card_door("door56", "",  "../img/doors1/card0056.png", "../img/doors1/cardBack_Doors.png", 4, "monster", "", 0, "", 1, 0, -2);
-const door57 = new Card_door("door57", "",  "../img/doors1/card0057.png", "../img/doors1/cardBack_Doors.png", 4, "monster", "", 0, "", 1, -2);
-const door58 = new Card_door("door58", "",  "../img/doors1/card0058.png", "../img/doors1/cardBack_Doors.png", 4, "monster", "", 0, "Undead", 1, -2);
-const door59 = new Card_door("door59", "",  "../img/doors1/card0059.png", "../img/doors1/cardBack_Doors.png", 6, "monster", "", 0, "", 1, 0);
-const door60 = new Card_door("door60", "",  "../img/doors1/card0060.png", "../img/doors1/cardBack_Doors.png", 6, "monster", "", 0, "", 1, 0);
-const door61 = new Card_door("door61", "",  "../img/doors1/card0061.png", "../img/doors1/cardBack_Doors.png", 6, "monster", "", 0, "", 1, 0);
-const door62 = new Card_door("door62", "",  "../img/doors1/card0062.png", "../img/doors1/cardBack_Doors.png", 6, "monster", "", 0, "", 1, -2);
-const door63 = new Card_door("door63", "",  "../img/doors1/card0063.png", "../img/doors1/cardBack_Doors.png", 8, "monster", "", 0, "", 1, -3);
-const door64 = new Card_door("door64", "",  "../img/doors1/card0064.png", "../img/doors1/cardBack_Doors.png", 8, "monster", "", 0, "", 1, -1);
-const door65 = new Card_door("door65", "",  "../img/doors1/card0065.png", "../img/doors1/cardBack_Doors.png", 8, "monster", "", 0, "", 1, -3);
-const door66 = new Card_door("door66", "",  "../img/doors1/card0066.png", "../img/doors1/cardBack_Doors.png", 8, "monster", "", 0, "", 1, 0);
-const door67 = new Card_door("door67", "",  "../img/doors1/card0067.png", "../img/doors1/cardBack_Doors.png", 10, "monster", "", 0, "", 1, 0);
-const door68 = new Card_door("door68", "",  "../img/doors1/card0068.png", "../img/doors1/cardBack_Doors.png", 10, "monster", "", 0, "", 1, -3);
-const door69 = new Card_door("door69", "",  "../img/doors1/card0069.png", "../img/doors1/cardBack_Doors.png", 10, "monster", "", 0, "", 1, 0);
-const door70 = new Card_door("door70", "",  "../img/doors1/card0070.png", "../img/doors1/cardBack_Doors.png", 12, "monster", "", 0, "", 1, 0);
-const door71 = new Card_door("door71", "",  "../img/doors1/card0071.png", "../img/doors1/cardBack_Doors.png", 12, "monster", "", 0, "", 1, -2);
-const door72 = new Card_door("door72", "",  "../img/doors1/card0072.png", "../img/doors1/cardBack_Doors.png", 12, "monster", "", 0, "", 1, -3);
-const door73 = new Card_door("door73", "",  "../img/doors1/card0073.png", "../img/doors1/cardBack_Doors.png", 14, "monster", "", 0, "", 1, 0);
-const door74 = new Card_door("door74", "",  "../img/doors1/card0074.png", "../img/doors1/cardBack_Doors.png", 14, "monster", "", 0, "", 1, 0);
-const door75 = new Card_door("door75", "",  "../img/doors1/card0075.png", "../img/doors1/cardBack_Doors.png", 14, "monster", "", 0, "", 1, 0);
-const door76 = new Card_door("door76", "",  "../img/doors1/card0076.png", "../img/doors1/cardBack_Doors.png", 16, "monster", "", 0, "Undead", 2, 0);
-const door77 = new Card_door("door77", "",  "../img/doors1/card0077.png", "../img/doors1/cardBack_Doors.png", 16, "monster", "", 0, "", 2, 0);
-const door78 = new Card_door("door78", "",  "../img/doors1/card0078.png", "../img/doors1/cardBack_Doors.png", 16, "monster", "", 0, "Undead", 2, -9);
-const door79 = new Card_door("door79", "",  "../img/doors1/card0079.png", "../img/doors1/cardBack_Doors.png", 18, "monster", "", 0, "", 2, 0);
-const door80 = new Card_door("door80", "",  "../img/doors1/card0080.png", "../img/doors1/cardBack_Doors.png", 18, "monster", "", 0, "", 2, 0);
-const door81 = new Card_door("door81", "",  "../img/doors1/card0081.png", "../img/doors1/cardBack_Doors.png", 20, "monster", "", 0, "", 2, 0);
+const door40 = new Card_door("door40", "",  "../img/doors1/card0040.png", "../img/doors1/cardBack_Doors.png", 10, "", "", "bonus_power_monster");
+const door41 = new Card_door("door41", "",  "../img/doors1/card0041.png", "../img/doors1/cardBack_Doors.png", -5, "", "", "bonus_power_monster");
+const door42 = new Card_door("door42", "",  "../img/doors1/card0042.png", "../img/doors1/cardBack_Doors.png", 5, "", "", "bonus_power_monster");
+const door43 = new Card_door("door43", "",  "../img/doors1/card0043.png", "../img/doors1/cardBack_Doors.png", 10, "", "", "bonus_power_monster");
+const door44 = new Card_door("door44", "",  "../img/doors1/card0044.png", "../img/doors1/cardBack_Doors.png", 5, "", "", "bonus_power_monster");
+const door45 = new Card_door("door45", "",  "../img/doors1/card0045.png", "../img/doors1/cardBack_Doors.png", 1, "monster", "", "", 1, 0);
+const door46 = new Card_door("door46", "",  "../img/doors1/card0046.png", "../img/doors1/cardBack_Doors.png", 1, "monster", "", "", 1, { type: "lose_levels", levels: 1 }, 1);
+const door47 = new Card_door("door47", "",  "../img/doors1/card0047.png", "../img/doors1/cardBack_Doors.png", 1, "monster", "", "", 1, { type: "lose_levels", levels: 1 }, 0, 0, { type: "Elf", power: 4 });
+const door48 = new Card_door("door48", "",  "../img/doors1/card0048.png", "../img/doors1/cardBack_Doors.png", 1, "monster", "", "", 1, 0);
+const door49 = new Card_door("door49", "",  "../img/doors1/card0049.png", "../img/doors1/cardBack_Doors.png", 1, "monster", "", "", 1, { type: "lose_levels", levels: 1 }, 0, 0, { type: "Cleric", power: 3});
+const door50 = new Card_door("door50", "",  "../img/doors1/card0050.png", "../img/doors1/cardBack_Doors.png", 2, "monster", "", "", 1, { type: "lose_levels", levels: 2 }, -1);
+const door51 = new Card_door("door51", "",  "../img/doors1/card0051.png", "../img/doors1/cardBack_Doors.png", 2, "monster", "", "", 1, 0, 1);
+const door52 = new Card_door("door52", "",  "../img/doors1/card0052.png", "../img/doors1/cardBack_Doors.png", 2, "monster", "", "", 1, { type: "lose_levels", levels: 1 }, 0, { type: "fire", bonus_level: 1});
+const door53 = new Card_door("door53", "",  "../img/doors1/card0053.png", "../img/doors1/cardBack_Doors.png", 2, "monster", "", "Undead", 1, { type: "lose_levels", levels: 2 });
+const door54 = new Card_door("door54", "",  "../img/doors1/card0054.png", "../img/doors1/cardBack_Doors.png", 2, "monster", "", "", 1, { type: "lose_levels", levels: 2 });
+const door55 = new Card_door("door55", "",  "../img/doors1/card0055.png", "../img/doors1/cardBack_Doors.png", 4, "monster", "", "", 1, 0, 0, 0, { type: "Elf", power: 5 });
+const door56 = new Card_door("door56", "",  "../img/doors1/card0056.png", "../img/doors1/cardBack_Doors.png", 4, "monster", "", "", 1, 0, -2);
+const door57 = new Card_door("door57", "",  "../img/doors1/card0057.png", "../img/doors1/cardBack_Doors.png", 4, "monster", "", "", 1, { type: "lose_levels", levels: 2 }, 0, 0, { type: "Wizard", power:5 });
+const door58 = new Card_door("door58", "",  "../img/doors1/card0058.png", "../img/doors1/cardBack_Doors.png", 4, "monster", "", "Undead", 1, { type: "lose_levels", levels: 2 }, 0, 0, { type: "Dwarf", power: 5});
+const door59 = new Card_door("door59", "",  "../img/doors1/card0059.png", "../img/doors1/cardBack_Doors.png", 6, "monster", "", "", 1, 0);
+const door60 = new Card_door("door60", "",  "../img/doors1/card0060.png", "../img/doors1/cardBack_Doors.png", 6, "monster", "", "", 1, 0, 0, 0, { type: "Warrior", power: 6});
+const door61 = new Card_door("door61", "",  "../img/doors1/card0061.png", "../img/doors1/cardBack_Doors.png", 6, "monster", "", "", 1, 0, 0, { type: "level", bonus_level: 1} );
+const door62 = new Card_door("door62", "",  "../img/doors1/card0062.png", "../img/doors1/cardBack_Doors.png", 6, "monster", "", "", 1, { type: "lose_levels", levels: 2 }, 0, 0, { type: "Wizard", power: 6});
+const door63 = new Card_door("door63", "",  "../img/doors1/card0063.png", "../img/doors1/cardBack_Doors.png", 8, "monster", "", "", 1, { type: "lose_levels", levels: 3 });
+const door64 = new Card_door("door64", "",  "../img/doors1/card0064.png", "../img/doors1/cardBack_Doors.png", 8, "monster", "", "", 1, { type: "lose_levels", levels: 1 }, 0, 0, { type: "Elf", power: 6});
+const door65 = new Card_door("door65", "",  "../img/doors1/card0065.png", "../img/doors1/cardBack_Doors.png", 8, "monster", "", "", 1, { type: "lose_levels", levels: 3 });
+const door66 = new Card_door("door66", "",  "../img/doors1/card0066.png", "../img/doors1/cardBack_Doors.png", 8, "monster", "", "", 1, 0);
+const door67 = new Card_door("door67", "",  "../img/doors1/card0067.png", "../img/doors1/cardBack_Doors.png", 10, "monster", "", "", 1, 0, 0, 0, { type: "Dwarf", power: 6});
+const door68 = new Card_door("door68", "",  "../img/doors1/card0068.png", "../img/doors1/cardBack_Doors.png", 10, "monster", "", "", 1, { type: "lose_levels", levels: 3 });
+const door69 = new Card_door("door69", "",  "../img/doors1/card0069.png", "../img/doors1/cardBack_Doors.png", 10, "monster", "", "", 1, 0);
+const door70 = new Card_door("door70", "",  "../img/doors1/card0070.png", "../img/doors1/cardBack_Doors.png", 12, "monster", "", "", 1, 0, 0, 0, { type: "Dwarf, Halfling", power: 3});
+const door71 = new Card_door("door71", "",  "../img/doors1/card0071.png", "../img/doors1/cardBack_Doors.png", 12, "monster", "", "", 1, { type: "lose_levels", levels: 2 }, 0, 0, { type: "Cleric", power: 4});
+const door72 = new Card_door("door72", "",  "../img/doors1/card0072.png", "../img/doors1/cardBack_Doors.png", 12, "monster", "", "", 1, { type: "lose_levels", levels: 3 });
+const door73 = new Card_door("door73", "",  "../img/doors1/card0073.png", "../img/doors1/cardBack_Doors.png", 14, "monster", "", "", 1, { type: "death" }, 0, 0, { type: "Warrior", power: 4});
+const door74 = new Card_door("door74", "",  "../img/doors1/card0074.png", "../img/doors1/cardBack_Doors.png", 14, "monster", "", "", 1, 0);
+const door75 = new Card_door("door75", "",  "../img/doors1/card0075.png", "../img/doors1/cardBack_Doors.png", 14, "monster", "", "", 1, { type: "death" });
+const door76 = new Card_door("door76", "",  "../img/doors1/card0076.png", "../img/doors1/cardBack_Doors.png", 16, "monster", "", "Undead", 2, 0);
+const door77 = new Card_door("door77", "",  "../img/doors1/card0077.png", "../img/doors1/cardBack_Doors.png", 16, "monster", "", "", 2, 0);
+const door78 = new Card_door("door78", "",  "../img/doors1/card0078.png", "../img/doors1/cardBack_Doors.png", 16, "monster", "", "Undead", 2, { type: "lose_levels", levels: 9 });
+const door79 = new Card_door("door79", "",  "../img/doors1/card0079.png", "../img/doors1/cardBack_Doors.png", 18, "monster", "", "", 2, { type: "death" });
+const door80 = new Card_door("door80", "",  "../img/doors1/card0080.png", "../img/doors1/cardBack_Doors.png", 18, "monster", "", "", 2, { type: "death" });
+const door81 = new Card_door("door81", "",  "../img/doors1/card0081.png", "../img/doors1/cardBack_Doors.png", 20, "monster", "", "", 2, { type: "death" });
 const door82 = new Card_door("door82", "",  "../img/doors1/card0082.png", "../img/doors1/cardBack_Doors.png",0);
 const door83 = new Card_door("door83", "",  "../img/doors1/card0083.png", "../img/doors1/cardBack_Doors.png",0);
 const door84 = new Card_door("door84", "",  "../img/doors1/card0084.png", "../img/doors1/cardBack_Doors.png",0);
@@ -4913,6 +5778,8 @@ export function timer() {
     }
 
 	updateTurnActionButtons(flag);
+	// На случай если во время боя сняли/положили расу/класс: advantage должен меняться сразу.
+	updateEffectiveMonsterBonusDisplay();
 	updateWarriorFrenzyUi();
 	updateClericExorcismUi();
 	updateWizardTamingUi();
@@ -4941,7 +5808,10 @@ function MoveMonstersToDrop() {
 	  });
 	}
 	const MonsterBonus = document.querySelector('.MonsterBonus');
-	MonsterBonus.textContent = 0;
+	if (MonsterBonus) {
+		MonsterBonus.dataset.basePower = "0";
+		MonsterBonus.textContent = "0";
+	}
 	const MyBonus = document.querySelector('.MyBonus');
 	MyBonus.textContent = 0;
 	
