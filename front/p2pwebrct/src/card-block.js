@@ -1,5 +1,5 @@
 import { UpdateZones } from './увеличение карточек во время игры.js';
-import { UpdatebackImgTreasure, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, canPlaceTreasureInPlayerEquipment } from './game.js';
+import { UpdatebackImgTreasure, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, scheduleWanderingMonsterIfNeeded, canPlaceTreasureInPlayerEquipment } from './game.js';
 import { UpdatebackImgDoor } from './game.js';
 import socket from './socket/index.js';
 //import {socket} from './game.js';
@@ -12,6 +12,42 @@ let dragFromSnapshot = null;
 // Бежевая подложка → насыщенный красный: сначала sepia (единая тоновая основа), затем сдвиг в красные и сильный saturate
 const INVALID_TREASURE_EQUIPMENT_FILTER =
 	'sepia(1) saturate(10) hue-rotate(300deg) contrast(1.2) brightness(0.85)';
+const INVALID_MONSTER_TO_BATTLE_FILTER = INVALID_TREASURE_EQUIPMENT_FILTER;
+
+function isMonsterDoorCard(cardEl) {
+	const id = cardEl?.id;
+	if (!id) {
+		return false;
+	}
+	const door = window.doors?.find((d) => d.name === id);
+	return Boolean(door && String(door.race || "") === "monster");
+}
+
+function isWanderingMonsterCard(cardEl) {
+	const id = cardEl?.id;
+	if (!id) {
+		return false;
+	}
+	const door = window.doors?.find((d) => d.name === id);
+	return Boolean(door && String(door.special || "") === "Wandering Monster");
+}
+
+function canPlaceCardIntoMonsterBattleZone(cardEl, zoneEl) {
+	if (!cardEl || !zoneEl) {
+		return true;
+	}
+	const isMonsterZone = zoneEl.id === "zone_monster" || zoneEl.classList?.contains("zone_monster");
+	if (!isMonsterZone) {
+		return true;
+	}
+	// Монстров нельзя класть в бой прямо из руки обычным перетаскиванием.
+	// Исключение: сама карта Wandering Monster (её можно класть в эту зону, она запускает эффект).
+	const fromHand = Boolean(dragFromSnapshot?.parent?.classList?.contains("myhand"));
+	if (fromHand && isMonsterDoorCard(cardEl) && !isWanderingMonsterCard(cardEl)) {
+		return false;
+	}
+	return true;
+}
 
 function dragend_handler(e) {
 	const c = e.target && e.target.closest && e.target.closest('.card');
@@ -134,8 +170,12 @@ function dragover_handler(e) {
 	// dropEffect = 'none' в большинстве браузеров отменяет drop — откат в drop_handler не сработает.
 	// Сила «запрета» передаётся красным filter; dropEffect оставляем 'move', чтобы сработал drop.
 	e.dataTransfer.dropEffect = 'move';
-	if (currentDrag && zone && !canPlaceTreasureInPlayerEquipment(currentDrag, zone)) {
-		currentDrag.style.filter = INVALID_TREASURE_EQUIPMENT_FILTER;
+	const invalidTreasureEquip = currentDrag && zone && !canPlaceTreasureInPlayerEquipment(currentDrag, zone);
+	const invalidMonsterToBattle = currentDrag && zone && !canPlaceCardIntoMonsterBattleZone(currentDrag, zone);
+	if (invalidTreasureEquip || invalidMonsterToBattle) {
+		if (currentDrag) {
+			currentDrag.style.filter = invalidMonsterToBattle ? INVALID_MONSTER_TO_BATTLE_FILTER : INVALID_TREASURE_EQUIPMENT_FILTER;
+		}
 	} else if (currentDrag) {
 		currentDrag.style.filter = '';
 	}
@@ -148,7 +188,9 @@ function drop_handler(e) {
   e.preventDefault();
   const target = e.target.closest('.card');
   const zone = e.target.closest('.cards-zone');
-  if (currentDrag && zone && !canPlaceTreasureInPlayerEquipment(currentDrag, zone) && dragFromSnapshot?.parent) {
+  const invalidTreasureEquip = currentDrag && zone && !canPlaceTreasureInPlayerEquipment(currentDrag, zone);
+  const invalidMonsterToBattle = currentDrag && zone && !canPlaceCardIntoMonsterBattleZone(currentDrag, zone);
+  if (currentDrag && zone && (invalidTreasureEquip || invalidMonsterToBattle) && dragFromSnapshot?.parent) {
 	dragFromSnapshot.parent.insertBefore(currentDrag, dragFromSnapshot.next);
 	if (currentDrag) {
 		currentDrag.style.filter = '';
@@ -184,6 +226,7 @@ function drop_handler(e) {
 			scheduleTreasureLevelIfNeeded(currentDrag.id, parentZone);
 			scheduleTreasure65IfNeeded(currentDrag.id, parentZone);
 			scheduleMonsterBonusAttachIfNeeded(currentDrag.id, parentZone);
+			scheduleWanderingMonsterIfNeeded(currentDrag.id, parentZone);
 		}
 	}
 	return;
@@ -303,6 +346,7 @@ function drop_handler(e) {
     scheduleTreasureLevelIfNeeded(currentDrag.id, zone);
     scheduleTreasure65IfNeeded(currentDrag.id, zone);
     scheduleMonsterBonusAttachIfNeeded(currentDrag.id, zone);
+    scheduleWanderingMonsterIfNeeded(currentDrag.id, zone);
   }
 }
 

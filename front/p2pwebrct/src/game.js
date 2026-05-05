@@ -4050,6 +4050,146 @@ export function scheduleMonsterBonusAttachIfNeeded(cardId, zoneEl) {
 	}, 30);
 }
 
+function hideWanderingMonsterPickModal() {
+	const existing = document.getElementById("wandering-monster-pick-modal");
+	if (existing) {
+		existing.remove();
+	}
+}
+
+function getLocalHandMonsterCardsForWanderingMonster() {
+	const cards = [];
+	const handEl = document.querySelector(".myhand");
+	if (!handEl) {
+		return cards;
+	}
+	handEl.querySelectorAll(".card").forEach((cardEl) => {
+		const cardId = cardEl?.id;
+		if (!cardId) {
+			return;
+		}
+		const door = window.doors?.find((d) => d.name === cardId);
+		if (!door || String(door.race || "") !== "monster") {
+			return;
+		}
+		cards.push({
+			cardId,
+			img: door.img || "",
+		});
+	});
+	return cards;
+}
+
+function openWanderingMonsterPickModal(wanderingCardId) {
+	hideWanderingMonsterPickModal();
+	const monstersInHand = getLocalHandMonsterCardsForWanderingMonster();
+	if (monstersInHand.length <= 0) {
+		showBattleResult("В руке нет монстров для Wandering Monster.");
+		setTimeout(hideBattleResult, 1800);
+		return;
+	}
+	const modal = document.createElement("div");
+	modal.id = "wandering-monster-pick-modal";
+	modal.className = "wizard-taming-pick-modal";
+	const panel = document.createElement("div");
+	panel.className = "wizard-taming-pick-panel";
+	const title = document.createElement("div");
+	title.className = "wizard-taming-pick-title";
+	title.textContent = "Wandering Monster: выбери монстра из руки";
+
+	const cardsWrap = document.createElement("div");
+	cardsWrap.className = "wizard-taming-pick-cards";
+	const applyBtn = document.createElement("button");
+	applyBtn.type = "button";
+	applyBtn.className = "wizard-taming-pick-apply-btn";
+	applyBtn.textContent = "Добавить выбранного монстра в бой";
+	applyBtn.disabled = true;
+
+	let selectedMonster = null;
+	monstersInHand.forEach((m) => {
+		const btn = document.createElement("button");
+		btn.type = "button";
+		btn.className = "wizard-taming-pick-card";
+		btn.dataset.cardId = m.cardId;
+		const img = document.createElement("img");
+		img.className = "wizard-taming-pick-card-img";
+		img.src = m.img || "";
+		img.alt = m.cardId;
+		btn.appendChild(img);
+		btn.addEventListener("click", () => {
+			cardsWrap.querySelectorAll(".wizard-taming-pick-card").forEach((x) => x.classList.remove("is-selected"));
+			btn.classList.add("is-selected");
+			selectedMonster = m.cardId;
+			applyBtn.disabled = !selectedMonster;
+		});
+		cardsWrap.appendChild(btn);
+	});
+
+	applyBtn.addEventListener("click", () => {
+		if (!selectedMonster) {
+			return;
+		}
+		// Чтобы не открывать модалку повторно на этой же карте.
+		const wmEl = document.getElementById(wanderingCardId);
+		if (wmEl) {
+			wmEl.dataset.wanderingUsed = "1";
+		}
+		socket.emit("message", {
+			method: "moveCard",
+			cardId: selectedMonster,
+			targetId: null,
+			zoneId: "zone_monster",
+		});
+		modal.remove();
+	});
+
+	panel.appendChild(title);
+	panel.appendChild(cardsWrap);
+	panel.appendChild(applyBtn);
+	modal.appendChild(panel);
+	document.body.appendChild(modal);
+	modal.addEventListener("click", (e) => {
+		if (e.target === modal) {
+			modal.remove();
+		}
+	});
+}
+
+export function scheduleWanderingMonsterIfNeeded(cardId, zoneEl) {
+	if (!cardId || !zoneEl) {
+		return;
+	}
+	const isMonsterZone = zoneEl.id === "zone_monster" || zoneEl.classList?.contains("zone_monster");
+	if (!isMonsterZone) {
+		return;
+	}
+	const door = window.doors?.find((d) => d.name === cardId);
+	if (!door || String(door.special || "") !== "Wandering Monster") {
+		return;
+	}
+	const el = document.getElementById(cardId);
+	if (!el) {
+		return;
+	}
+	if (el.dataset?.wanderingUsed) {
+		return;
+	}
+	setTimeout(() => {
+		const cardEl = document.getElementById(cardId);
+		if (!cardEl) {
+			return;
+		}
+		const inMonsterZoneNow = !!cardEl.closest?.(".zone_monster") || cardEl.parentElement?.id === "zone_monster";
+		if (!inMonsterZoneNow) {
+			return;
+		}
+		if (cardEl.dataset?.wanderingUsed) {
+			return;
+		}
+		openWanderingMonsterPickModal(cardId);
+	}, 30);
+}
+
 function normalizeAdvantageTargets(typeValue) {
 	if (!typeValue) {
 		return [];
@@ -5658,9 +5798,9 @@ const door82 = new Card_door("door82", "",  "../img/doors1/card0082.png", "../im
 const door83 = new Card_door("door83", "",  "../img/doors1/card0083.png", "../img/doors1/cardBack_Doors.png",0);
 const door84 = new Card_door("door84", "",  "../img/doors1/card0084.png", "../img/doors1/cardBack_Doors.png",0);
 const door85 = new Card_door("door85", "",  "../img/doors1/card0085.png", "../img/doors1/cardBack_Doors.png",0);
-const door86 = new Card_door("door86", "",  "../img/doors1/card0086.png", "../img/doors1/cardBack_Doors.png",0);
-const door87 = new Card_door("door87", "",  "../img/doors1/card0087.png", "../img/doors1/cardBack_Doors.png",0);
-const door88 = new Card_door("door88", "",  "../img/doors1/card0088.png", "../img/doors1/cardBack_Doors.png",0);
+const door86 = new Card_door("door86", "Wandering Monster",  "../img/doors1/card0086.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Wandering Monster");
+const door87 = new Card_door("door87", "Wandering Monster",  "../img/doors1/card0087.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Wandering Monster");
+const door88 = new Card_door("door88", "Wandering Monster",  "../img/doors1/card0088.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Wandering Monster");
 const door89 = new Card_door("door89", "",  "../img/doors1/card0089.png", "../img/doors1/cardBack_Doors.png",0);
 const door90 = new Card_door("door90", "",  "../img/doors1/card0090.png", "../img/doors1/cardBack_Doors.png",0);
 const door91 = new Card_door("door91", "",  "../img/doors1/card0091.png", "../img/doors1/cardBack_Doors.png",0);
