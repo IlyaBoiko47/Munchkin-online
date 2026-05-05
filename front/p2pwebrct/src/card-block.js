@@ -1,5 +1,5 @@
 import { UpdateZones } from './увеличение карточек во время игры.js';
-import { UpdatebackImgTreasure, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, canPlaceTreasureInPlayerEquipment } from './game.js';
+import { UpdatebackImgTreasure, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, canPlaceTreasureInPlayerEquipment } from './game.js';
 import { UpdatebackImgDoor } from './game.js';
 import socket from './socket/index.js';
 //import {socket} from './game.js';
@@ -183,6 +183,7 @@ function drop_handler(e) {
 			scheduleBadStaffIfNeeded(currentDrag.id, parentZone);
 			scheduleTreasureLevelIfNeeded(currentDrag.id, parentZone);
 			scheduleTreasure65IfNeeded(currentDrag.id, parentZone);
+			scheduleMonsterBonusAttachIfNeeded(currentDrag.id, parentZone);
 		}
 	}
 	return;
@@ -301,6 +302,7 @@ function drop_handler(e) {
     scheduleBadStaffIfNeeded(currentDrag.id, zone);
     scheduleTreasureLevelIfNeeded(currentDrag.id, zone);
     scheduleTreasure65IfNeeded(currentDrag.id, zone);
+    scheduleMonsterBonusAttachIfNeeded(currentDrag.id, zone);
   }
 }
 

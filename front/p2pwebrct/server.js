@@ -57,6 +57,7 @@ io.on('connection', socket => {
     const includeSenderMethods = new Set([
       "StartGame",
       "CombatResolved",
+      "moveCard",
       "DeathStart",
       "DeathLootTurn",
       "DeathLootPick",
@@ -64,6 +65,7 @@ io.on('connection', socket => {
       "DeathLootFinished",
       "DeathLootResumeEscape",
       "DeathLootDropMonsters",
+      "MonsterBonusAttach",
       "BadStaffLevel",
       "TreasureLevel",
       "Treasure65LevelSwap",

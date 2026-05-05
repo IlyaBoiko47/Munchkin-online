@@ -1541,6 +1541,25 @@ function moveCardToDiscardById(cardId) {
 		return;
 	}
 	if (cardId.includes('door')) {
+		// Если сбрасываем монстра — сбрасываем и все привязанные к нему бонусы.
+		const door = window.doors?.find((d) => d.name === cardId);
+		if (door?.race === "monster") {
+			const monsterZoneEl = document.getElementById("zone_monster") || document.querySelector(".zone_monster");
+			(monsterZoneEl ? monsterZoneEl.querySelectorAll(".card") : []).forEach((el) => {
+				const bonusId = el?.id;
+				if (!bonusId) {
+					return;
+				}
+				const bonusDoor = window.doors?.find((d) => d.name === bonusId);
+				if (!bonusDoor || String(bonusDoor.special || "") !== "bonus_power_monster") {
+					return;
+				}
+				if (String(el.dataset?.attachedMonsterId || "") === String(cardId)) {
+					el.dataset.attachedMonsterId = "";
+					moveBadStaffCardToDiscard(bonusId);
+				}
+			});
+		}
 		moveBadStaffCardToDiscard(cardId);
 		return;
 	}
@@ -2585,6 +2604,38 @@ function openWizardTamingPickMonsterModal(handCardIds, monsters) {
 		img.src = m.img || "";
 		img.alt = m.cardId;
 		btn.appendChild(img);
+
+		const bonusSum = getAttachedMonsterBonusPowerSum(m.cardId);
+		const sumEl = document.createElement("div");
+		sumEl.className = "wizard-taming-pick-sum";
+		sumEl.textContent = bonusSum ? `Бонус: ${bonusSum > 0 ? `+${bonusSum}` : String(bonusSum)}` : "Бонус: 0";
+		sumEl.style.marginTop = "4px";
+		sumEl.style.fontSize = "16px";
+		sumEl.style.color = "#ffd37a";
+		sumEl.style.textAlign = "center";
+		btn.appendChild(sumEl);
+
+		const attachedBonuses = getAttachedMonsterBonusCards(m.cardId);
+		if (attachedBonuses.length > 0) {
+			const bonusesWrap = document.createElement("div");
+			bonusesWrap.className = "wizard-taming-pick-bonuses";
+			bonusesWrap.style.display = "flex";
+			bonusesWrap.style.flexWrap = "wrap";
+			bonusesWrap.style.justifyContent = "center";
+			bonusesWrap.style.gap = "6px";
+			bonusesWrap.style.marginTop = "6px";
+			attachedBonuses.forEach((bc) => {
+				const bi = document.createElement("img");
+				bi.className = "wizard-taming-pick-bonus-img";
+				bi.src = bc.img || "";
+				bi.alt = bc.cardId;
+				bi.style.width = "40px";
+				bi.style.height = "auto";
+				bi.style.borderRadius = "6px";
+				bonusesWrap.appendChild(bi);
+			});
+			btn.appendChild(bonusesWrap);
+		}
 		btn.addEventListener("click", () => {
 			cardsWrap.querySelectorAll(".wizard-taming-pick-card").forEach((x) => x.classList.remove("is-selected"));
 			btn.classList.add("is-selected");
@@ -3789,17 +3840,214 @@ function computeMonsterZoneBasePower() {
 	zoneCards.forEach((cardEl) => {
 		const door = window.doors?.find((d) => d.name === cardEl.id);
 		if (door) {
-			const p = Number(door.power) || 0;
-			sum += p;
+			// В зоне монстра могут лежать:
+			// - монстры (door.race === "monster") → всегда считаем power
+			// - модификаторы силы монстра (special === "bonus_power_monster") → считаем только если привязаны
+			if (door.race === "monster") {
+				sum += Number(door.power) || 0;
+				return;
+			}
+			if (String(door.special || "") === "bonus_power_monster") {
+				const attachedTo = cardEl.dataset?.attachedMonsterId;
+				if (attachedTo) {
+					// Учитываем только если привязка указывает на реально лежащего монстра.
+					const hasTargetMonster = !!document.getElementById(attachedTo)?.closest?.(".zone_monster");
+					if (hasTargetMonster) {
+						sum += Number(door.power) || 0;
+					}
+				}
+				return;
+			}
+			// Остальные двери в зоне монстра не влияют на силу напрямую.
 			return;
 		}
-		const treasure = window.treasures?.find((t) => t.name === cardEl.id);
-		if (treasure) {
-			const p = Number(treasure.power) || 0;
-			sum += p;
-		}
+		// Сокровища в зоне монстра не учитываем (здесь только двери/модификаторы).
 	});
 	return sum;
+}
+
+function setBonusPowerMonsterAttachment(cardId, monsterCardId) {
+	const el = document.getElementById(cardId);
+	if (!el) {
+		return;
+	}
+	el.dataset.attachedMonsterId = monsterCardId || "";
+	recalculateAllPowerDisplays();
+}
+
+function getMonsterCardsInBattleZone() {
+	const monsters = [];
+	document.querySelectorAll('.zone_monster .card').forEach((el) => {
+		const door = window.doors?.find((d) => d.name === el.id);
+		if (door && door.race === "monster") {
+			monsters.push({ cardId: door.name, img: door.img || "" });
+		}
+	});
+	return monsters;
+}
+
+function getAttachedMonsterBonusCards(monsterCardId) {
+	if (!monsterCardId) {
+		return [];
+	}
+	const zone = document.getElementById("zone_monster") || document.querySelector(".zone_monster");
+	if (!zone) {
+		return [];
+	}
+	const out = [];
+	zone.querySelectorAll(".card").forEach((el) => {
+		const cardId = el?.id;
+		if (!cardId) {
+			return;
+		}
+		const door = window.doors?.find((d) => d.name === cardId);
+		if (!door || String(door.special || "") !== "bonus_power_monster") {
+			return;
+		}
+		if (String(el.dataset?.attachedMonsterId || "") !== String(monsterCardId)) {
+			return;
+		}
+		out.push({ cardId, img: door.img || "" });
+	});
+	return out;
+}
+
+function getAttachedMonsterBonusPowerSum(monsterCardId) {
+	return getAttachedMonsterBonusCards(monsterCardId).reduce((acc, c) => {
+		const door = window.doors?.find((d) => d.name === c.cardId);
+		return acc + (Number(door?.power) || 0);
+	}, 0);
+}
+
+function openMonsterBonusAttachModal(bonusCardId) {
+	const monsters = getMonsterCardsInBattleZone();
+	if (monsters.length <= 0) {
+		return;
+	}
+	// Если монстр один — привязываем автоматически.
+	if (monsters.length === 1) {
+		socket.emit("message", {
+			method: "MonsterBonusAttach",
+			bonusCardId,
+			monsterCardId: monsters[0].cardId,
+		});
+		return;
+	}
+
+	const existing = document.getElementById("monster-bonus-attach-modal");
+	if (existing) {
+		existing.remove();
+	}
+	const modal = document.createElement("div");
+	modal.id = "monster-bonus-attach-modal";
+	// По размерам/оформлению делаем как модалку выбора монстра для «Усмирения».
+	modal.className = "wizard-taming-pick-modal monster-bonus-attach-modal";
+	const panel = document.createElement("div");
+	panel.className = "wizard-taming-pick-panel monster-bonus-attach-panel";
+	const title = document.createElement("div");
+	title.className = "monster-bonus-attach-title";
+	title.textContent = "Выбери монстра для бонуса";
+	const cardsContainer = document.createElement("div");
+	cardsContainer.className = "wizard-taming-pick-cards";
+
+	monsters.forEach((m) => {
+		const b = document.createElement("button");
+		b.type = "button";
+		b.className = "wizard-taming-pick-card";
+		b.dataset.cardId = m.cardId;
+		const img = document.createElement("img");
+		img.className = "wizard-taming-pick-card-img";
+		img.src = m.img;
+		img.alt = m.cardId;
+		b.appendChild(img);
+
+		const bonusSum = getAttachedMonsterBonusPowerSum(m.cardId);
+		const sumEl = document.createElement("div");
+		sumEl.className = "monster-bonus-attach-sum";
+		sumEl.textContent = bonusSum ? `Бонус: ${bonusSum > 0 ? `+${bonusSum}` : String(bonusSum)}` : "Бонус: 0";
+		sumEl.style.marginTop = "4px";
+		sumEl.style.fontSize = "16px";
+		sumEl.style.color = "#ffd37a";
+		sumEl.style.textAlign = "center";
+		b.appendChild(sumEl);
+
+		const attachedBonuses = getAttachedMonsterBonusCards(m.cardId);
+		if (attachedBonuses.length > 0) {
+			const bonusesWrap = document.createElement("div");
+			bonusesWrap.className = "monster-bonus-attach-bonuses";
+			bonusesWrap.style.display = "flex";
+			bonusesWrap.style.flexWrap = "wrap";
+			bonusesWrap.style.justifyContent = "center";
+			bonusesWrap.style.gap = "6px";
+			bonusesWrap.style.marginTop = "6px";
+			attachedBonuses.forEach((bc) => {
+				const bi = document.createElement("img");
+				bi.className = "monster-bonus-attach-bonus-img";
+				bi.src = bc.img || "";
+				bi.alt = bc.cardId;
+				bi.style.width = "40px";
+				bi.style.height = "auto";
+				bi.style.borderRadius = "6px";
+				bonusesWrap.appendChild(bi);
+			});
+			b.appendChild(bonusesWrap);
+		}
+
+		b.addEventListener("click", () => {
+			socket.emit("message", {
+				method: "MonsterBonusAttach",
+				bonusCardId,
+				monsterCardId: m.cardId,
+			});
+			modal.remove();
+		});
+		cardsContainer.appendChild(b);
+	});
+
+	panel.appendChild(title);
+	panel.appendChild(cardsContainer);
+	modal.appendChild(panel);
+	document.body.appendChild(modal);
+}
+
+export function scheduleMonsterBonusAttachIfNeeded(cardId, zoneEl) {
+	if (!cardId || !zoneEl) {
+		return;
+	}
+	// Эти карты играются в зону бонусов МОНСТРА.
+	const isMonsterBonusZone = zoneEl.id === "zone_monster" || zoneEl.classList?.contains("zone_monster");
+	if (!isMonsterBonusZone) {
+		return;
+	}
+	const door = window.doors?.find((d) => d.name === cardId);
+	if (!door || String(door.special || "") !== "bonus_power_monster") {
+		return;
+	}
+	// Нужен хотя бы один монстр в зоне монстров.
+	if (getMonsterCardsInBattleZone().length <= 0) {
+		return;
+	}
+	const el = document.getElementById(cardId);
+	if (!el) {
+		return;
+	}
+	// Уже привязано.
+	if (el.dataset?.attachedMonsterId) {
+		return;
+	}
+	// Открываем выбор только локальному игроку (который перетаскивает карту).
+	setTimeout(() => {
+		// Перепроверяем, что карта всё ещё в зоне3.
+		const cardEl = document.getElementById(cardId);
+		if (!cardEl) {
+			return;
+		}
+		const inMonsterZoneNow = !!cardEl.closest?.(".zone_monster") || cardEl.parentElement?.id === "zone_monster";
+		if (!inMonsterZoneNow) {
+			return;
+		}
+		openMonsterBonusAttachModal(cardId);
+	}, 30);
 }
 
 function normalizeAdvantageTargets(typeValue) {
@@ -4110,6 +4358,16 @@ socket.on("message", response => {
     UpdatebackImgTreasure();
     UpdatebackImgDoor();
 		recalculateAllPowerDisplays();
+
+		// Если карта-модификатор монстра вышла из зоны бонусов монстра (или ушла в сброс) — сбрасываем привязку,
+		// чтобы её можно было привязать заново к новому монстру.
+		const movedDoor = window.doors?.find((d) => d.name === response.cardId);
+		if (movedDoor && String(movedDoor.special || "") === "bonus_power_monster") {
+			const movedEl = document.getElementById(response.cardId);
+			if (movedEl && response.zoneId !== "zone_monster") {
+				movedEl.dataset.attachedMonsterId = "";
+			}
+		}
 
 	
   }
@@ -4429,6 +4687,13 @@ socket.on("message", response => {
 		turnAwaitingManualEnd = true;
 		updateTurnActionButtons(false);
 		recalculateAllPowerDisplays();
+	}
+	if (response.method === "MonsterBonusAttach") {
+		const bonusCardId = response.bonusCardId;
+		const monsterCardId = response.monsterCardId;
+		if (bonusCardId && monsterCardId) {
+			setBonusPowerMonsterAttachment(bonusCardId, monsterCardId);
+		}
 	}
 	if (response.method === "EscapeSequenceStart") {
 		const incomingOwnerSeat = parseInt(response.ownerSeat, 10);
@@ -5610,6 +5875,12 @@ export function timer() {
   const offerHelpButton = document.getElementById('offer-help');
 	let turnResolved = false;
 	hideBattleResult();
+
+	// Если по какой-то причине осталась активной смывка с прошлого боя,
+	// сбрасываем её: иначе UI способностей классов скрывается из-за escapeActive.
+	if (escapeActive) {
+		resetEscapeStateNow();
+	}
 
   if (!foldButton || !endTurnButton || !warriorFrenzyButton || !clericExorcismButton || !wizardTamingButton || !thiefTheftButton || !thiefTrimButton) {
     console.error("Error: Could not find action buttons");

@@ -1257,6 +1257,15 @@ a{
 	line-height: 1.1;
 }
 
+.monster-bonus-attach-title {
+	font-size: 28px;
+	color: #fff;
+	text-align: center;
+	line-height: 1.1;
+	letter-spacing: 0.2px;
+	text-transform: uppercase;
+}
+
 .wizard-taming-desc,
 .wizard-taming-counter {
 	font-size: 21px;
