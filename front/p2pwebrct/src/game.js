@@ -16,6 +16,9 @@ const STEAL_LEVEL_CARD_NAME = "Steal a level";
 class PlayerCharacterState {
 	constructor(seat) {
 		this.seat = seat;
+		this.name = `Игрок ${Number(seat) + 1}`;
+		/** @type {"Male" | "Female" | ""} */
+		this.gender = "Male";
 		this.level = 1;
 		this.power = 1;
 		this.race = "Human";
@@ -56,7 +59,7 @@ class PlayerCharacterState {
 			this.footwear += Number(card?.footwear) || 0;
 			this.hat += Number(card?.hat) || 0;
 			this.big += Number(card?.big) || 0;
-			this.equipmentPower += Number(card?.power) || 0;
+			this.equipmentPower += getTreasureEffectivePower(card, this);
 			this.remover += Number(card?.remover) || 0;
 		});
 
@@ -69,6 +72,19 @@ class PlayerCharacterState {
 		};
 		this.power = Math.max(1, this.level + this.equipmentPower);
 	}
+}
+
+function getTreasureEffectivePower(treasure, character) {
+	const base = Number(treasure?.power) || 0;
+	const map = treasure?.powerByRace;
+	if (map && typeof map === "object") {
+		const race = String(character?.race || "");
+		if (race && Object.prototype.hasOwnProperty.call(map, race)) {
+			const v = Number(map[race]);
+			return Number.isFinite(v) ? v : base;
+		}
+	}
+	return base;
 }
 
 const characterBySeat = [
@@ -504,6 +520,38 @@ function isEquipmentSumsValid(body, hand, footwear, hat, big) {
 	return body <= 1 && hand <= 2 && footwear <= 1 && hat <= 1 && big <= 1;
 }
 
+function doesTreasureRestrictionsAllowSeat(treasure, seat) {
+	const rules = treasure?.restrictions;
+	if (!Array.isArray(rules) || rules.length === 0) {
+		return true;
+	}
+	const ch = characterBySeat?.[seat];
+	const race = String(ch?.race || "");
+	const kind = String(ch?.kind || "");
+	const gender = String(ch?.gender || "");
+	const matchesAny = (value, allowedList) => Array.isArray(allowedList) && allowedList.some((x) => String(x) === String(value));
+
+	return rules.every((rule) => {
+		const mode = String(rule?.mode || "");
+		const raceList = rule?.race;
+		const kindList = rule?.kind;
+		const genderList = rule?.gender;
+
+		// Если в правиле нет полей — игнорируем.
+		const hasAnyField = Array.isArray(raceList) || Array.isArray(kindList) || Array.isArray(genderList);
+		if (!hasAnyField) {
+			return true;
+		}
+
+		const okRace = !Array.isArray(raceList) || (mode === "not" ? !matchesAny(race, raceList) : matchesAny(race, raceList));
+		const okKind = !Array.isArray(kindList) || (mode === "not" ? !matchesAny(kind, kindList) : matchesAny(kind, kindList));
+		const okGender = !Array.isArray(genderList) || (mode === "not" ? !matchesAny(gender, genderList) : matchesAny(gender, genderList));
+
+		// AND между полями
+		return okRace && okKind && okGender;
+	});
+}
+
 /**
  * Можно ли оставить карту в зоне экипировки для этого места.
  * Логика:
@@ -531,6 +579,11 @@ export function canPlaceTreasureInPlayerEquipment(draggingCardEl, targetZoneEl) 
 		return true;
 	}
 	const isTargetSideZone = !!side && targetZoneEl === side;
+	// ВАЖНО: ограничения по расе/классу/полу блокируют экипировку в ОСНОВНУЮ зону,
+	// но в боковую зону такие карты класть можно.
+	if (!isTargetSideZone && !doesTreasureRestrictionsAllowSeat(treasure, seat)) {
+		return false;
+	}
 	const draggedBig = Number(treasure.big) || 0;
 
 	// Считаем все big у игрока (основная + боковая), кроме перетаскиваемой карты.
@@ -1096,7 +1149,146 @@ function getSeatEquipmentRemover(seat) {
 }
 
 function getSeatLabel(seat) {
+	const s = parseInt(seat, 10);
+	const metaName = Number.isNaN(s) ? "" : String(characterBySeat?.[s]?.name || "");
+	if (metaName.trim()) {
+		return metaName.trim();
+	}
 	return `Игрок ${Number(seat) + 1}`;
+}
+
+function hidePlayerProfileModal() {
+	const existing = document.getElementById("player-profile-modal");
+	if (existing) {
+		existing.remove();
+	}
+}
+
+function openPlayerProfileModal() {
+	hidePlayerProfileModal();
+	if (localSeat == null || localSeat < 0) {
+		return;
+	}
+	const modal = document.createElement("div");
+	modal.id = "player-profile-modal";
+	modal.className = "wizard-taming-modal";
+	const panel = document.createElement("div");
+	panel.className = "wizard-taming-panel";
+	const title = document.createElement("div");
+	title.className = "wizard-taming-title";
+	title.textContent = "Выбери имя и пол";
+	const desc = document.createElement("div");
+	desc.className = "wizard-taming-desc";
+	desc.textContent = "Имя будет отображаться в сообщениях игры.";
+
+	const storedName = localStorage.getItem("munchkin.playerName") || "";
+	const storedGender = localStorage.getItem("munchkin.playerGender") || "";
+
+	const nameInput = document.createElement("input");
+	nameInput.type = "text";
+	nameInput.placeholder = "Имя игрока";
+	nameInput.value = storedName;
+	nameInput.maxLength = 18;
+	nameInput.style.alignSelf = "center";
+	nameInput.style.width = "min(520px, 88%)";
+	nameInput.style.padding = "10px 12px";
+	nameInput.style.fontSize = "22px";
+	nameInput.style.borderRadius = "10px";
+	nameInput.style.border = "2px solid rgba(255,255,255,0.22)";
+	nameInput.style.background = "rgba(40, 44, 58, 0.95)";
+	nameInput.style.color = "#fff";
+
+	const genderWrap = document.createElement("div");
+	genderWrap.style.display = "flex";
+	genderWrap.style.justifyContent = "center";
+	genderWrap.style.gap = "16px";
+	genderWrap.style.flexWrap = "wrap";
+	genderWrap.style.marginTop = "6px";
+
+	const makeGenderBtn = (value, label) => {
+		const btn = document.createElement("button");
+		btn.type = "button";
+		btn.textContent = label;
+		btn.dataset.gender = value;
+		btn.style.padding = "8px 14px";
+		btn.style.fontSize = "20px";
+		btn.style.borderRadius = "10px";
+		btn.style.border = "2px solid rgba(255, 255, 255, 0.24)";
+		btn.style.background = "rgba(40, 44, 58, 0.95)";
+		btn.style.color = "#fff";
+		btn.style.cursor = "pointer";
+		if (storedGender === value) {
+			btn.classList.add("is-selected");
+			btn.style.borderColor = "#8fd2ff";
+			btn.style.boxShadow = "0 0 0 3px rgba(143, 210, 255, 0.32)";
+		}
+		return btn;
+	};
+
+	const maleBtn = makeGenderBtn("Male", "Мужской");
+	const femaleBtn = makeGenderBtn("Female", "Женский");
+	let selectedGender = storedGender === "Male" || storedGender === "Female" ? storedGender : "";
+
+	const selectGender = (g) => {
+		selectedGender = g;
+		[maleBtn, femaleBtn].forEach((b) => {
+			const isSel = b.dataset.gender === g;
+			b.style.borderColor = isSel ? "#8fd2ff" : "rgba(255, 255, 255, 0.24)";
+			b.style.boxShadow = isSel ? "0 0 0 3px rgba(143, 210, 255, 0.32)" : "";
+		});
+		applyBtn.disabled = !canApply();
+	};
+
+	maleBtn.addEventListener("click", () => selectGender("Male"));
+	femaleBtn.addEventListener("click", () => selectGender("Female"));
+	genderWrap.appendChild(maleBtn);
+	genderWrap.appendChild(femaleBtn);
+
+	const canApply = () => {
+		const n = String(nameInput.value || "").trim();
+		return n.length > 0 && (selectedGender === "Male" || selectedGender === "Female");
+	};
+
+	const applyBtn = document.createElement("button");
+	applyBtn.type = "button";
+	applyBtn.className = "wizard-taming-apply-btn";
+	applyBtn.textContent = "Подтвердить";
+	applyBtn.disabled = !canApply();
+
+	nameInput.addEventListener("input", () => {
+		applyBtn.disabled = !canApply();
+	});
+
+	applyBtn.addEventListener("click", () => {
+		const name = String(nameInput.value || "").trim();
+		if (!name || !(selectedGender === "Male" || selectedGender === "Female")) {
+			return;
+		}
+		localStorage.setItem("munchkin.playerName", name);
+		localStorage.setItem("munchkin.playerGender", selectedGender);
+		characterBySeat[localSeat].name = name;
+		characterBySeat[localSeat].gender = selectedGender;
+		socket.emit("message", {
+			method: "PlayerMeta",
+			seat: localSeat,
+			name,
+			gender: selectedGender,
+		});
+		hidePlayerProfileModal();
+	});
+
+	panel.appendChild(title);
+	panel.appendChild(desc);
+	panel.appendChild(nameInput);
+	panel.appendChild(genderWrap);
+	panel.appendChild(applyBtn);
+	modal.appendChild(panel);
+	document.body.appendChild(modal);
+}
+
+function ensureLocalPlayerProfileChosen() {
+	// Временно отключено: используем дефолтные имя/пол для всех игроков.
+	return;
 }
 
 function ensureDeathLootZoneElement() {
@@ -4291,10 +4483,6 @@ function updateCharacterStatesFromBoard() {
 		const { main: mainEl, side: sideEl } = getMainAndSideZoneElementsForSeat(seat);
 		const mainCards = mainEl ? Array.from(mainEl.querySelectorAll('.card')) : [];
 		const sideCards = sideEl ? Array.from(sideEl.querySelectorAll('.card')) : [];
-		const equippedTreasures = mainCards
-			.map(cardEl => window.treasures?.find(t => t.name === cardEl.id))
-			.filter(Boolean);
-		character.applyEquipmentCards(equippedTreasures);
 
 		// Раса/класс берутся только из экипированных карт (main).
 		// Side-зона — это "отложенная" экипировка/мелкая шмотка и не должна давать расу/класс.
@@ -4317,6 +4505,12 @@ function updateCharacterStatesFromBoard() {
 		});
 		character.race = nextRace;
 		character.kind = nextKind;
+
+		// Теперь, когда race/kind уже актуальны, считаем силу от шмоток (часть может зависеть от расы).
+		const equippedTreasures = mainCards
+			.map(cardEl => window.treasures?.find(t => t.name === cardEl.id))
+			.filter(Boolean);
+		character.applyEquipmentCards(equippedTreasures);
 		character.remover += doorRemoverBonus;
 	}
 }
@@ -4512,6 +4706,20 @@ socket.on("message", response => {
 	
   }
   if (response.method === "UpdatePower") {
+		recalculateAllPowerDisplays();
+	}
+	if (response.method === "PlayerMeta") {
+		const seat = parseInt(response.seat, 10);
+		if (Number.isNaN(seat) || seat < 0) {
+			return;
+		}
+		const name = String(response.name || "").trim();
+		const gender = String(response.gender || "");
+		if (characterBySeat?.[seat]) {
+			characterBySeat[seat].name = name;
+			characterBySeat[seat].gender = gender === "Male" || gender === "Female" ? gender : "";
+		}
+		// Обновляем тексты, где могли использоваться имена.
 		recalculateAllPowerDisplays();
 	}
 	if (response.method === "SetTurn") {
@@ -5218,6 +5426,7 @@ socket.on("message", response => {
 		//console.log("первый")
     fl = response.fl;
 		localSeat = 0;
+		ensureLocalPlayerProfileChosen();
 		updatePlayersUiVisibility(num);
 		recalculateAllPowerDisplays();
 		applyTurnHighlight();
@@ -5245,6 +5454,7 @@ socket.on("message", response => {
 		//console.log("второй или третий ")
     fl = response.fl;
 		localSeat = 1;
+		ensureLocalPlayerProfileChosen();
 		num = 2;
 		window.num = num;
 		const opponenthand = document.getElementById("opponenthand");
@@ -5286,6 +5496,7 @@ socket.on("message", response => {
 		//console.log("второй или третий ")
     fl = response.fl;
 		localSeat = fl === "3player" ? 2 : 1;
+		ensureLocalPlayerProfileChosen();
 		num = 3;
 		window.num = num;
 		const opponent2hand = document.getElementById("opponent2hand");
@@ -5601,7 +5812,7 @@ function randomizeDice(diceContainer, numberOfDice) {
 
 
 class Card_treasure {
-  constructor(name = "", card_name = "", img = "", backimg = "", power = 0, cost = 0, body = 0, hand = 0, footwear = 0, hat = 0, big = 0, level = 0, special = "", remover = 0) {
+  constructor(name = "", card_name = "", img = "", backimg = "", power = 0, cost = 0, body = 0, hand = 0, footwear = 0, hat = 0, big = 0, level = 0, special = "", remover = 0, restrictions = null) {
     this.name = name;
 	this.card_name = card_name;
 	this.img = img;
@@ -5616,41 +5827,45 @@ class Card_treasure {
 	this.level = level;
 	this.special = special;
 	this.remover = remover;
+	this.restrictions = restrictions;
   }
 }
 
 // Создание экземпляров класса "сокровища"
 
-const treasure1 = new Card_treasure("treasure1", "", "../img/Treasure1/card0096.png", "../img/Treasure1/cardBack_Treasure.png", 3, 400, 0, 0, 0, 1);
+const treasure1 = new Card_treasure("treasure1", "", "../img/Treasure1/card0096.png", "../img/Treasure1/cardBack_Treasure.png", 3, 400, 0, 0, 0, 1, 0, 0, "", 0, [{ mode: "only", race: ["Human"] }]);
 const treasure3 = new Card_treasure("treasure3", "",  "../img/Treasure1/card0098.png", "../img/Treasure1/cardBack_Treasure.png", 1, 200, 0, 0, 0, 1);
+// card0098: эльф получает +3, остальные +1
+treasure3.powerByRace = { Elf: 3 };
 const treasure2 = new Card_treasure("treasure2", "",  "../img/Treasure1/card0097.png", "../img/Treasure1/cardBack_Treasure.png", 1, 600, 0, 0, 0, 1);
-const treasure4 = new Card_treasure("treasure4", "",  "../img/Treasure1/card0099.png", "../img/Treasure1/cardBack_Treasure.png", 3, 400, 0, 0, 0, 1);
+const treasure4 = new Card_treasure("treasure4", "",  "../img/Treasure1/card0099.png", "../img/Treasure1/cardBack_Treasure.png", 3, 400, 0, 0, 0, 1, 0, 0, "", 0, [{ mode: "only", kind: ["Wizard"] }]);
 const treasure5 = new Card_treasure("treasure5", "",  "../img/Treasure1/card0100.png", "../img/Treasure1/cardBack_Treasure.png", 2, 400, 1, 0, 0, 0);
 const treasure6 = new Card_treasure("treasure6", "",  "../img/Treasure1/card0101.png", "../img/Treasure1/cardBack_Treasure.png", 1, 200, 1, 0, 0, 0);
-const treasure7 = new Card_treasure("treasure7", "",  "../img/Treasure1/card0102.png", "../img/Treasure1/cardBack_Treasure.png", 3, 600, 1, 0, 0, 0, 1);
-const treasure8 = new Card_treasure("treasure8", "",  "../img/Treasure1/card0103.png", "../img/Treasure1/cardBack_Treasure.png", 3, 400, 1, 0, 0, 0);
+const treasure7 = new Card_treasure("treasure7", "",  "../img/Treasure1/card0102.png", "../img/Treasure1/cardBack_Treasure.png", 3, 600, 1, 0, 0, 0, 1, 0, "", 0, [{ mode: "not", kind: ["Wizard"] }]);
+const treasure8 = new Card_treasure("treasure8", "",  "../img/Treasure1/card0103.png", "../img/Treasure1/cardBack_Treasure.png", 3, 400, 1, 0, 0, 0, 0, 0, "", 0, [{ mode: "only", race: ["Dwarf"] }]);
 const treasure9 = new Card_treasure("treasure9", "",  "../img/Treasure1/card0104.png", "../img/Treasure1/cardBack_Treasure.png", 1, 200, 1, 0, 0, 0);
 const treasure10 = new Card_treasure("treasure10", "",  "../img/Treasure1/card0105.png", "../img/Treasure1/cardBack_Treasure.png", 2, 400, 0, 0, 1, 0);
 const treasure11 = new Card_treasure("treasure11", "",  "../img/Treasure1/card0106.png", "../img/Treasure1/cardBack_Treasure.png", 0, 400, 0, 0, 1, 0, 0, 0, "", 2);
 const treasure12 = new Card_treasure("treasure12", "",  "../img/Treasure1/card0107.png", "../img/Treasure1/cardBack_Treasure.png", 0, 700, 0, 0, 1, 0);
-const treasure13 = new Card_treasure("treasure13", "",  "../img/Treasure1/card0108.png", "../img/Treasure1/cardBack_Treasure.png", 3, 400, 0, 1, 0, 0);
-const treasure14 = new Card_treasure("treasure14", "",  "../img/Treasure1/card0109.png", "../img/Treasure1/cardBack_Treasure.png", 3, 400, 0, 1, 0, 0);
-const treasure15 = new Card_treasure("treasure15", "",  "../img/Treasure1/card0110.png", "../img/Treasure1/cardBack_Treasure.png", 3, 600, 0, 1, 0, 0);
-const treasure16 = new Card_treasure("treasure16", "",  "../img/Treasure1/card0111.png", "../img/Treasure1/cardBack_Treasure.png", 4, 600, 0, 1, 0, 0);
-const treasure17 = new Card_treasure("treasure17", "",  "../img/Treasure1/card0112.png", "../img/Treasure1/cardBack_Treasure.png", 3, 400, 0, 1, 0, 0);
-const treasure18 = new Card_treasure("treasure18", "",  "../img/Treasure1/card0113.png", "../img/Treasure1/cardBack_Treasure.png", 4, 600, 0, 1, 0, 0);
-const treasure19 = new Card_treasure("treasure19", "",  "../img/Treasure1/card0114.png", "../img/Treasure1/cardBack_Treasure.png", 3, 400, 0, 1, 0, 0);
+const treasure13 = new Card_treasure("treasure13", "",  "../img/Treasure1/card0108.png", "../img/Treasure1/cardBack_Treasure.png", 3, 400, 0, 1, 0, 0, 0, 0, "", 0, [{ mode: "only", gender: ["Female"] }]);
+const treasure14 = new Card_treasure("treasure14", "",  "../img/Treasure1/card0109.png", "../img/Treasure1/cardBack_Treasure.png", 3, 400, 0, 1, 0, 0, 0, 0, "", 0, [{ mode: "only", gender: ["Male"] }]);
+const treasure15 = new Card_treasure("treasure15", "",  "../img/Treasure1/card0110.png", "../img/Treasure1/cardBack_Treasure.png", 3, 600, 0, 1, 0, 0, 0, 0, "", 0, [{ mode: "only", race: ["Elf"] }]);
+const treasure16 = new Card_treasure("treasure16", "",  "../img/Treasure1/card0111.png", "../img/Treasure1/cardBack_Treasure.png", 4, 600, 0, 1, 0, 0, 0, 0, "", 0, [{ mode: "only", kind: ["Cleric"] }]);
+const treasure17 = new Card_treasure("treasure17", "",  "../img/Treasure1/card0112.png", "../img/Treasure1/cardBack_Treasure.png", 3, 400, 0, 1, 0, 0, 0, 0, "", 0, [{ mode: "only", kind: ["Thief"] }]);
+const treasure18 = new Card_treasure("treasure18", "",  "../img/Treasure1/card0113.png", "../img/Treasure1/cardBack_Treasure.png", 4, 600, 0, 1, 0, 0, 0, 0, "", 0, [{ mode: "only", race: ["Dwarf"] }]);
+const treasure19 = new Card_treasure("treasure19", "",  "../img/Treasure1/card0114.png", "../img/Treasure1/cardBack_Treasure.png", 3, 400, 0, 1, 0, 0, 0, 0, "", 0, [{ mode: "only", kind: ["Cleric"] }]);
 const treasure20 = new Card_treasure("treasure20", "",  "../img/Treasure1/card0115.png", "../img/Treasure1/cardBack_Treasure.png", 2, 400, 0, 1, 0, 0);
-const treasure21 = new Card_treasure("treasure21", "",  "../img/Treasure1/card0116.png", "../img/Treasure1/cardBack_Treasure.png", 4, 600, 0, 1, 0, 0, 1);
+const treasure21 = new Card_treasure("treasure21", "",  "../img/Treasure1/card0116.png", "../img/Treasure1/cardBack_Treasure.png", 4, 600, 0, 1, 0, 0, 1, 0, "", 0, [{ mode: "only", kind: ["Warrior"] }]);
 const treasure22 = new Card_treasure("treasure22", "",  "../img/Treasure1/card0117.png", "../img/Treasure1/cardBack_Treasure.png", 2, 400, 0, 1, 0, 0);
-const treasure23 = new Card_treasure("treasure23", "",  "../img/Treasure1/card0118.png", "../img/Treasure1/cardBack_Treasure.png", 5, 800, 0, 1, 0, 0);
+const treasure23 = new Card_treasure("treasure23", "",  "../img/Treasure1/card0118.png", "../img/Treasure1/cardBack_Treasure.png", 5, 800, 0, 1, 0, 0, 0, 0, "", 0, [{ mode: "only", kind: ["Wizard"] }]);
 const treasure24 = new Card_treasure("treasure24", "",  "../img/Treasure1/card0119.png", "../img/Treasure1/cardBack_Treasure.png", 0, 300, 0, 1, 0, 0, 1, 0, "", 3);
 const treasure25 = new Card_treasure("treasure25", "",  "../img/Treasure1/card0120.png", "../img/Treasure1/cardBack_Treasure.png", 1, 0, 0, 1, 0, 0);
 const treasure26 = new Card_treasure("treasure26", "",  "../img/Treasure1/card0121.png", "../img/Treasure1/cardBack_Treasure.png", 3, 600, 0, 2, 0, 0, 1);
-const treasure27 = new Card_treasure("treasure27", "",  "../img/Treasure1/card0122.png", "../img/Treasure1/cardBack_Treasure.png", 4, 800, 0, 2, 0, 0);
+const treasure27 = new Card_treasure("treasure27", "",  "../img/Treasure1/card0122.png", "../img/Treasure1/cardBack_Treasure.png", 4, 800, 0, 2, 0, 0, 0, 0, "", 0, [{ mode: "only", race: ["Elf"] }]);
 const treasure28 = new Card_treasure("treasure28", "",  "../img/Treasure1/card0123.png", "../img/Treasure1/cardBack_Treasure.png", 3, 0, 0, 2, 0, 0, 1);
-const treasure29 = new Card_treasure("treasure29", "",  "../img/Treasure1/card0124.png", "../img/Treasure1/cardBack_Treasure.png", 4, 600, 0, 2, 0, 0, 1);
+const treasure29 = new Card_treasure("treasure29", "",  "../img/Treasure1/card0124.png", "../img/Treasure1/cardBack_Treasure.png", 4, 600, 0, 2, 0, 0, 1, 0, "", 0, [{ mode: "only", race: ["Human"] }]);
 const treasure30 = new Card_treasure("treasure30", "",  "../img/Treasure1/card0125.png", "../img/Treasure1/cardBack_Treasure.png", 1, 200, 0, 2, 0, 0);
+
 const treasure31 = new Card_treasure("treasure31", "",  "../img/Treasure1/card0126.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1);
 const treasure32 = new Card_treasure("treasure32", "",  "../img/Treasure1/card0127.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1);
 const treasure33 = new Card_treasure("treasure33", "",  "../img/Treasure1/card0128.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1);
@@ -5687,13 +5902,13 @@ const treasure63 = new Card_treasure("treasure63", "",  "../img/Treasure1/card01
 const treasure64 = new Card_treasure("treasure64", "",  "../img/Treasure1/card0159.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0);
 const treasure65 = new Card_treasure("treasure65", "Steal a level",  "../img/Treasure1/card0160.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0);
 const treasure66 = new Card_treasure("treasure66", "",  "../img/Treasure1/card0161.png", "../img/Treasure1/cardBack_Treasure.png", 1, 200, 0, 0, 0, 0);
-const treasure67 = new Card_treasure("treasure67", "",  "../img/Treasure1/card0162.png", "../img/Treasure1/cardBack_Treasure.png", 2, 600, 0, 0, 0, 0);
-const treasure68 = new Card_treasure("treasure68", "",  "../img/Treasure1/card0163.png", "../img/Treasure1/cardBack_Treasure.png", 3, 400, 0, 0, 0, 0);
-const treasure69 = new Card_treasure("treasure69", "",  "../img/Treasure1/card0164.png", "../img/Treasure1/cardBack_Treasure.png", 3, 400, 0, 0, 0, 0);
+const treasure67 = new Card_treasure("treasure67", "",  "../img/Treasure1/card0162.png", "../img/Treasure1/cardBack_Treasure.png", 2, 600, 0, 0, 0, 0, 0, 0, "", 0, [{ mode: "not", kind: ["Thief"] }]);
+const treasure68 = new Card_treasure("treasure68", "",  "../img/Treasure1/card0163.png", "../img/Treasure1/cardBack_Treasure.png", 3, 400, 0, 0, 0, 0, 0, 0, "", 0, [{ mode: "only", race: ["Halfling"] }]);
+const treasure69 = new Card_treasure("treasure69", "",  "../img/Treasure1/card0164.png", "../img/Treasure1/cardBack_Treasure.png", 3, 400, 0, 0, 0, 0, 0, 0, "", 0, [{ mode: "only", race: ["Halfling"] }]);
 const treasure70 = new Card_treasure("treasure70", "",  "../img/Treasure1/card0165.png", "../img/Treasure1/cardBack_Treasure.png", 3, 0, 0, 0, 0, 0);
-const treasure71 = new Card_treasure("treasure71", "",  "../img/Treasure1/card0166.png", "../img/Treasure1/cardBack_Treasure.png", 3, 600, 0, 0, 0, 0);
-const treasure72 = new Card_treasure("treasure72", "",  "../img/Treasure1/card0167.png", "../img/Treasure1/cardBack_Treasure.png", 4, 600, 0, 0, 0, 0);
-const treasure73 = new Card_treasure("treasure73", "",  "../img/Treasure1/card0168.png", "../img/Treasure1/cardBack_Treasure.png", 0, 600, 0, 0, 0, 0);
+const treasure71 = new Card_treasure("treasure71", "",  "../img/Treasure1/card0166.png", "../img/Treasure1/cardBack_Treasure.png", 3, 600, 0, 0, 0, 0, 0, 0, "", 0, [{ mode: "not", kind: ["Warrior"] }]);
+const treasure72 = new Card_treasure("treasure72", "",  "../img/Treasure1/card0167.png", "../img/Treasure1/cardBack_Treasure.png", 4, 600, 0, 0, 0, 0, 0, 0, "", 0, [{ mode: "only", kind: ["Thief"] }]);
+const treasure73 = new Card_treasure("treasure73", "",  "../img/Treasure1/card0168.png", "../img/Treasure1/cardBack_Treasure.png", 0, 600, 0, 0, 0, 0, 0, 0, "", 0, [{ mode: "not", kind: ["Cleric"] }]);
 
 class Card_door {
   constructor(name = "", card_name = "", img = "", backimg = "", power = 0, race = "", kind = "", special = "", level = 0, bad_staff = null, remover = 0, weakness = null, advantage = null) {

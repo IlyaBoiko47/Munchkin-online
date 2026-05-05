@@ -58,6 +58,7 @@ io.on('connection', socket => {
       "StartGame",
       "CombatResolved",
       "moveCard",
+      "PlayerMeta",
       "DeathStart",
       "DeathLootTurn",
       "DeathLootPick",
