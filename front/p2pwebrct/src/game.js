@@ -855,6 +855,65 @@ function enforceHirelingFollowInvariant() {
 	});
 }
 
+function applyDivineInterventionResolve(cardId) {
+	const card = document.getElementById(cardId);
+	if (card) {
+		// Разрешаем повторное применение после сброса/перемещения.
+		card.dataset.divineScheduled = "";
+	}
+	if (card) {
+		moveBadStaffCardToDiscard(cardId);
+	}
+	// Всем клирикам +1 уровень
+	for (let s = 0; s < 3; s++) {
+		if (isSeatClericClassActive(s)) {
+			const cur = Number(levelBySeat[s] ?? 1) || 1;
+			setLevelBySeat(s, cur + 1);
+		}
+	}
+	recalculateAllPowerDisplays();
+}
+
+function scheduleDivineInterventionIfNeeded(cardId, zoneEl) {
+	if (!cardId || !zoneEl) {
+		return;
+	}
+	if (!isDoorSpecial(cardId, "Divine intervention")) {
+		return;
+	}
+	// Пока карта в колоде дверей — ничего не делаем.
+	if (zoneEl.id === "zone_doors") {
+		return;
+	}
+	const el = document.getElementById(cardId);
+	if (!el) {
+		return;
+	}
+	// Чтобы не планировать много раз на одном клиенте
+	if (el.dataset?.divineScheduled) {
+		return;
+	}
+	el.dataset.divineScheduled = "1";
+
+	// Разрешаем "один источник истины" для сокет-события: seat 0
+	// (иначе все клиенты сделают +1 уровня и получатся дубли).
+	if (Number(localSeat) !== 0) {
+		return;
+	}
+	setTimeout(() => {
+		const curEl = document.getElementById(cardId);
+		if (!curEl) {
+			return;
+		}
+		// Если карту успели вернуть в колоду — не срабатываем.
+		if (curEl.parentElement?.id === "zone_doors") {
+			curEl.dataset.divineScheduled = "";
+			return;
+		}
+		socket.emit("message", { method: "DivineInterventionResolve", cardId });
+	}, 1000);
+}
+
 function moveTreasureCardToDiscard(cardId) {
 	const card = document.getElementById(cardId);
 	const dropZone = document.getElementById('zone_treasure_drop');
@@ -5240,7 +5299,7 @@ export function recalculateAllPowerDisplays() {
 }
 
 let gameStarted = false;
-let mercTestDealt = false;
+// mercTestDealt removed (no test deal)
 socket.on("message", response => {
 	
 	num = response.num;
@@ -5280,7 +5339,9 @@ socket.on("message", response => {
 	adjustCardWidth('.zone_opponent3_side');
     UpdatebackImgTreasure();
     UpdatebackImgDoor();
-		recalculateAllPowerDisplays();
+		// Важно: не пересчитываем здесь, потому что ниже есть "инварианты" (Cheat/Наёмничек),
+		// которые должны сначала обработать привязки/отвязки, иначе при снятии шмотки с наёмничка
+		// она может "прыгнуть" обратно.
 
 		// Если кто-то переместил цель в main (из руки/side), и у Cheat есть "ожидающая" привязка — выполняем её сейчас.
 		if (card && String(card.id || "").includes("treasure") && isMainEquipmentZoneElement(zone)) {
@@ -5329,10 +5390,28 @@ socket.on("message", response => {
 		if (card && isMainEquipmentZoneElement(prevParent) && !isMainEquipmentZoneElement(zone)) {
 			const hId = String(card.dataset?.hirelingCardId || "");
 			if (hId) {
+				// Помечаем карту как "только что снятую" — чтобы не открыть модалку "отдать ли шмотку"
+				// в результате промежуточных перемещений/инвариантов.
+				card.dataset.hirelingJustDetached = "1";
+				setTimeout(() => {
+					const el = document.getElementById(card.id);
+					if (el) {
+						el.dataset.hirelingJustDetached = "";
+					}
+				}, 800);
+
 				card.dataset.hirelingCardId = "";
 				const hEl = document.getElementById(hId);
 				if (hEl && String(hEl.dataset?.hirelingAttachedTreasureId || "") === String(card.id || "")) {
 					hEl.dataset.hirelingAttachedTreasureId = "";
+					// Короткий "cooldown" на предложение, чтобы снятие не запускало окно.
+					hEl.dataset.hirelingSuppressOffer = "1";
+					setTimeout(() => {
+						const hh = document.getElementById(hId);
+						if (hh) {
+							hh.dataset.hirelingSuppressOffer = "";
+						}
+					}, 800);
 				}
 				socket.emit("message", { method: "MercenaryDetach", seat: getGlobalSeatForPlayZone(prevParent), hirelingCardId: hId, treasureCardId: card.id });
 			}
@@ -5349,16 +5428,29 @@ socket.on("message", response => {
 			}
 		}
 
+		// Divine intervention: как только карта вышла из колоды — через 1с в сброс и +1 уровень всем клирикам.
+		if (card && zone) {
+			// Если карта оказалась в сбросе — снимаем флаг, чтобы её можно было применить повторно позже.
+			if (isDoorSpecial(card.id, "Divine intervention") && zone.id === "zone_doors_drop") {
+				card.dataset.divineScheduled = "";
+			}
+			scheduleDivineInterventionIfNeeded(card.id, zone);
+		}
+
 		// Когда в main кладут шмотку (не разовую) и есть наёмничек — спрашиваем "дать ему?".
 		if (card && String(card.id || "").includes("treasure") && isMainEquipmentZoneElement(zone)) {
 			const seat = getGlobalSeatForPlayZone(zone);
 			if (seat != null && Number(seat) === Number(localSeat)) {
+				// Если это карта, которую мы только что снимали с наёмничка — не предлагаем сразу же обратно.
+				if (card.dataset?.hirelingJustDetached) {
+					return;
+				}
 				const tr = window.treasures?.find((t) => t.name === card.id);
 				const alreadyBound = Boolean(card.dataset?.hirelingCardId) || Boolean(card.dataset?.cheatCardId);
 				const isHireling = isTreasureSpecial(card.id, "Hireling");
 				if (tr && !tr.oneTime && !alreadyBound && !isHireling) {
 					const hEl = getHirelingCardInMainForSeat(seat);
-					if (hEl && !String(hEl.dataset?.hirelingAttachedTreasureId || "")) {
+					if (hEl && !String(hEl.dataset?.hirelingAttachedTreasureId || "") && !hEl.dataset?.hirelingSuppressOffer) {
 						openHirelingOfferModal({ seat, treasureCardId: card.id, fromZoneId: response.fromZoneId || null });
 					}
 				}
@@ -5420,6 +5512,10 @@ socket.on("message", response => {
 			}
 		}
 
+		// Все пост-эффекты отработали — теперь безопасно пересчитать силы/инварианты.
+		recalculateAllPowerDisplays();
+		UpdateZones();
+	
 	
   }
   if (response.method === "UpdatePower") {
@@ -5465,6 +5561,13 @@ socket.on("message", response => {
 			return;
 		}
 		clearHirelingAttachment(hirelingCardId, treasureCardId);
+	}
+	if (response.method === "DivineInterventionResolve") {
+		const cardId = String(response.cardId || "");
+		if (!cardId) {
+			return;
+		}
+		applyDivineInterventionResolve(cardId);
 	}
 	if (response.method === "SetTurn") {
 		const nextSeat = parseInt(response.seat, 10);
@@ -6361,11 +6464,7 @@ socket.on("message", response => {
 		recalculateAllPowerDisplays();
 		applyTurnHighlight();
 		Start_game(num);
-		// Временно для тестов: у первого игрока (seat 0) наёмничек всегда доступен.
-		if (!mercTestDealt && localSeat === 0) {
-			mercTestDealt = true;
-			socket.emit("message", { method: "MercTestDeal", seat: 0, cardId: "treasure40" });
-		}
+		// Тестовую раздачу наёмничка убрали.
 		recalculateAllPowerDisplays();
 		applyTurnHighlight();
 		window.button.remove();
@@ -6475,24 +6574,6 @@ socket.on("message", response => {
 
 
 
-	}
-	if (response.method === "MercTestDeal") {
-		const seat = parseInt(response.seat, 10);
-		const cardId = String(response.cardId || "");
-		if (Number.isNaN(seat) || seat < 0 || !cardId) {
-			return;
-		}
-		const card = document.getElementById(cardId);
-		const { main } = getMainAndSideZoneElementsForSeat(seat);
-		if (card && main) {
-			main.appendChild(card);
-			UpdatebackImgTreasure();
-			adjustCardWidth('.zone2');
-			adjustCardWidth('.zone_opponent');
-			adjustCardWidth('.zone_opponent2');
-			adjustCardWidth('.zone_opponent3');
-			recalculateAllPowerDisplays();
-		}
 	}
 	if (response.method === "FoldCount"){
 		const turnSeat = parseInt(response.turnSeat, 10);
@@ -6784,7 +6865,7 @@ const door86 = new Card_door("door86", "Wandering Monster",  "../img/doors1/card
 const door87 = new Card_door("door87", "Wandering Monster",  "../img/doors1/card0087.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Wandering Monster");
 const door88 = new Card_door("door88", "Wandering Monster",  "../img/doors1/card0088.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Wandering Monster");
 const door89 = new Card_door("door89", "Cheat",  "../img/doors1/card0089.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Cheat");
-const door90 = new Card_door("door90", "",  "../img/doors1/card0090.png", "../img/doors1/cardBack_Doors.png",0);
+const door90 = new Card_door("door90", "",  "../img/doors1/card0090.png", "../img/doors1/cardBack_Doors.png",0, "", "", "Divine intervention");
 const door91 = new Card_door("door91", "",  "../img/doors1/card0091.png", "../img/doors1/cardBack_Doors.png",0);
 const door92 = new Card_door("door92", "",  "../img/doors1/card0092.png", "../img/doors1/cardBack_Doors.png",0);
 const door93 = new Card_door("door93", "",  "../img/doors1/card0093.png", "../img/doors1/cardBack_Doors.png",0);
