@@ -914,6 +914,415 @@ function scheduleDivineInterventionIfNeeded(cardId, zoneEl) {
 	}, 1000);
 }
 
+function applyOutToLunchResolve(cardId) {
+	const el = document.getElementById(cardId);
+	if (el) {
+		el.dataset.outToLunchScheduled = "";
+	}
+	// Срабатывает только если на поле боя есть хотя бы один монстр.
+	if (!getMonsterBattleContext().hasMonster) {
+		return;
+	}
+	// Сбрасываем все карты с поля боя (монстры + бонусы игрока/монстра).
+	MoveMonstersToDrop();
+
+	// Завершаем бой без победителя/проигравшего.
+	battleActive = false;
+	battleTurnSeat = null;
+	pendingHelpSeats.clear();
+	acceptedHelperSeat = null;
+	resetEscapeStateNow();
+	deathLootActive = false;
+	deathLootState = null;
+	resumeEscapeAfterLoot = false;
+	deathLootAwaitingEscapeFinish = false;
+	turnAwaitingManualEnd = true;
+
+	clearInterval(countdownInterval);
+	const timerElement = document.getElementById('timer');
+	if (timerElement) {
+		timerElement.textContent = "";
+	}
+	updateTurnActionButtons(false);
+	applyTurnHighlight();
+	updateHelpUi();
+	recalculateAllPowerDisplays();
+
+	showBattleResult(`${getSeatLabel(currentTurnSeat)}, возьми 2 сокровища`);
+	setTimeout(() => {
+		hideBattleResult();
+	}, 2000);
+}
+
+function applyFriendshipPotionResolve(cardId) {
+	const el = document.getElementById(cardId);
+	if (el) {
+		el.dataset.friendshipPotionScheduled = "";
+	}
+	// Срабатывает только если на поле боя есть хотя бы один монстр.
+	if (!getMonsterBattleContext().hasMonster) {
+		return;
+	}
+	MoveMonstersToDrop();
+	battleActive = false;
+	battleTurnSeat = null;
+	pendingHelpSeats.clear();
+	acceptedHelperSeat = null;
+	resetEscapeStateNow();
+	deathLootActive = false;
+	deathLootState = null;
+	resumeEscapeAfterLoot = false;
+	deathLootAwaitingEscapeFinish = false;
+	turnAwaitingManualEnd = true;
+	clearInterval(countdownInterval);
+	const timerElement = document.getElementById('timer');
+	if (timerElement) {
+		timerElement.textContent = "";
+	}
+	updateTurnActionButtons(false);
+	applyTurnHighlight();
+	updateHelpUi();
+	recalculateAllPowerDisplays();
+
+	showBattleResult(`${getSeatLabel(currentTurnSeat)}, можешь почистить нычки`);
+	setTimeout(() => {
+		hideBattleResult();
+	}, 2000);
+}
+
+function endBattleNoWinnerAndDropBattlefield(message, ms = 2000) {
+	MoveMonstersToDrop();
+	battleActive = false;
+	battleTurnSeat = null;
+	pendingHelpSeats.clear();
+	acceptedHelperSeat = null;
+	resetEscapeStateNow();
+	deathLootActive = false;
+	deathLootState = null;
+	resumeEscapeAfterLoot = false;
+	deathLootAwaitingEscapeFinish = false;
+	turnAwaitingManualEnd = true;
+	clearInterval(countdownInterval);
+	const timerElement = document.getElementById('timer');
+	if (timerElement) {
+		timerElement.textContent = "";
+	}
+	updateTurnActionButtons(false);
+	applyTurnHighlight();
+	updateHelpUi();
+	recalculateAllPowerDisplays();
+	if (message) {
+		showBattleResult(message);
+		setTimeout(() => hideBattleResult(), ms);
+	}
+}
+
+function hidePotionPickMonsterModal() {
+	const existing = document.getElementById("potion-pick-monster-modal");
+	if (existing) {
+		existing.remove();
+	}
+}
+
+function openPickMonsterToDiscardModal({ titleText, applyText, monsters, onApply }) {
+	hidePotionPickMonsterModal();
+	const modal = document.createElement("div");
+	modal.id = "potion-pick-monster-modal";
+	modal.className = "wizard-taming-pick-modal";
+	const panel = document.createElement("div");
+	panel.className = "wizard-taming-pick-panel";
+	const title = document.createElement("div");
+	title.className = "wizard-taming-pick-title";
+	title.textContent = titleText || "Выбери монстра";
+
+	const cardsWrap = document.createElement("div");
+	cardsWrap.className = "wizard-taming-pick-cards";
+	const applyBtn = document.createElement("button");
+	applyBtn.type = "button";
+	applyBtn.className = "wizard-taming-pick-apply-btn";
+	applyBtn.textContent = applyText || "Выбрать";
+	applyBtn.disabled = true;
+
+	let selectedMonster = null;
+	(monsters || []).forEach((m) => {
+		const btn = document.createElement("button");
+		btn.type = "button";
+		btn.className = "wizard-taming-pick-card";
+		btn.dataset.cardId = m.cardId;
+		const img = document.createElement("img");
+		img.className = "wizard-taming-pick-card-img";
+		img.src = m.img || "";
+		img.alt = m.cardId;
+		btn.appendChild(img);
+
+		const bonusSum = getAttachedMonsterBonusPowerSum(m.cardId);
+		const sumEl = document.createElement("div");
+		sumEl.className = "wizard-taming-pick-sum";
+		sumEl.textContent = bonusSum ? `Бонус: ${bonusSum > 0 ? `+${bonusSum}` : String(bonusSum)}` : "Бонус: 0";
+		sumEl.style.marginTop = "4px";
+		sumEl.style.fontSize = "16px";
+		sumEl.style.color = "#ffd37a";
+		sumEl.style.textAlign = "center";
+		btn.appendChild(sumEl);
+
+		const attachedBonuses = getAttachedMonsterBonusCards(m.cardId);
+		if (attachedBonuses.length > 0) {
+			const bonusesWrap = document.createElement("div");
+			bonusesWrap.className = "wizard-taming-pick-bonuses";
+			bonusesWrap.style.display = "flex";
+			bonusesWrap.style.flexWrap = "wrap";
+			bonusesWrap.style.justifyContent = "center";
+			bonusesWrap.style.gap = "6px";
+			bonusesWrap.style.marginTop = "6px";
+			attachedBonuses.forEach((bc) => {
+				const bi = document.createElement("img");
+				bi.className = "wizard-taming-pick-bonus-img";
+				bi.src = bc.img || "";
+				bi.alt = bc.cardId;
+				bi.style.width = "40px";
+				bi.style.height = "auto";
+				bi.style.borderRadius = "6px";
+				bonusesWrap.appendChild(bi);
+			});
+			btn.appendChild(bonusesWrap);
+		}
+		btn.addEventListener("click", () => {
+			cardsWrap.querySelectorAll(".wizard-taming-pick-card").forEach((x) => x.classList.remove("is-selected"));
+			btn.classList.add("is-selected");
+			selectedMonster = m.cardId;
+			applyBtn.disabled = !selectedMonster;
+		});
+		cardsWrap.appendChild(btn);
+	});
+
+	applyBtn.addEventListener("click", () => {
+		if (!selectedMonster) {
+			return;
+		}
+		onApply?.(selectedMonster);
+		modal.remove();
+	});
+
+	panel.appendChild(title);
+	panel.appendChild(cardsWrap);
+	panel.appendChild(applyBtn);
+	modal.appendChild(panel);
+	document.body.appendChild(modal);
+	modal.addEventListener("click", (e) => {
+		if (e.target === modal) {
+			modal.remove();
+		}
+	});
+}
+
+function applyPotionDiscardMonster({ potionCardId, monsterCardId }) {
+	const potionEl = potionCardId ? document.getElementById(potionCardId) : null;
+	if (potionEl) {
+		// Разрешаем повторное использование после сброса/перемещения.
+		potionEl.dataset.potionUsed = "";
+	}
+	if (potionCardId) {
+		moveCardToDiscardById(potionCardId);
+	}
+	if (monsterCardId) {
+		moveCardToDiscardById(monsterCardId);
+	}
+	// Пересчитываем базовую силу монстров по оставшимся картам (включая модификаторы).
+	setMonsterBasePower(computeMonsterZoneBasePower());
+	// Если монстр был один — после его ухода поле боя очищается и бой завершается.
+	const ctx = getMonsterBattleContext();
+	if (!ctx.hasMonster || ctx.monsters.length <= 0) {
+		endBattleNoWinnerAndDropBattlefield(null, 0);
+	}
+	recalculateAllPowerDisplays();
+}
+
+function schedulePotionPickMonsterIfNeeded({ cardId, zoneEl, mode }) {
+	if (!cardId || !zoneEl) {
+		return;
+	}
+	const isBattleBonusZone = zoneEl.id === "zone_monster" || zoneEl.id === "zone3";
+	if (!isBattleBonusZone) {
+		return;
+	}
+	if (!battleActive || !getMonsterBattleContext().hasMonster) {
+		return;
+	}
+	const tr = window.treasures?.find((t) => t.name === cardId);
+	if (!tr) {
+		return;
+	}
+	const expected = mode === "magic" ? "Magic lamp" : "Pollymorth Potion";
+	if (String(tr.special || "") !== expected) {
+		return;
+	}
+	const el = document.getElementById(cardId);
+	if (!el) {
+		return;
+	}
+	if (el.dataset?.potionUsed) {
+		return;
+	}
+	// Модалку открывает только игрок, который реально сделал ход локально (своя рука).
+	const fromHand = Boolean(el.dataset?.movedFromLocalHand) || Boolean(zoneEl && zoneEl.id); // soft guard
+	if (!fromHand && Number(localSeat) !== Number(currentTurnSeat)) {
+		// всё равно не открываем чужому клиенту
+	}
+	if (Number(localSeat) !== Number(currentTurnSeat) && mode === "magic") {
+		// Magic lamp в бой может класть только активный игрок — если дошло сюда, просто откатим.
+		const back = document.querySelector(".myhand");
+		if (back) {
+			socket.emit("message", { method: "moveCard", cardId, targetId: null, zoneId: back.id });
+		}
+		return;
+	}
+
+	el.dataset.potionUsed = "1";
+	setTimeout(() => {
+		// всё ещё на поле боя
+		const curEl = document.getElementById(cardId);
+		const parentId = curEl?.parentElement?.id || "";
+		const stillOnBattlefield = parentId === "zone_monster" || parentId === "zone3";
+		if (!curEl || !stillOnBattlefield) {
+			if (curEl) {
+				curEl.dataset.potionUsed = "";
+			}
+			return;
+		}
+		const ctx = getMonsterBattleContext();
+		if (!ctx.hasMonster) {
+			curEl.dataset.potionUsed = "";
+			return;
+		}
+		const monsters = ctx.monsters;
+		if (monsters.length <= 1) {
+			// Важно: это должно произойти у ВСЕХ игроков, поэтому делаем через сокет-событие.
+			socket.emit("message", { method: "PotionResolveSingleMonster", potionCardId: cardId });
+			return;
+		}
+		openPickMonsterToDiscardModal({
+			titleText: "Выбери монстра, который уйдёт в сброс",
+			applyText: "Сбросить выбранного монстра",
+			monsters,
+			onApply: (monsterCardId) => {
+				socket.emit("message", { method: "PotionResolve", potionCardId: cardId, monsterCardId });
+			},
+		});
+	}, 30);
+}
+
+export function scheduleMagicLampIfNeeded(cardId, zoneEl) {
+	return schedulePotionPickMonsterIfNeeded({ cardId, zoneEl, mode: "magic" });
+}
+
+export function schedulePollymorthPotionIfNeeded(cardId, zoneEl) {
+	return schedulePotionPickMonsterIfNeeded({ cardId, zoneEl, mode: "poly" });
+}
+
+export function canLocalPlayMagicLampToBattleZone(zoneEl) {
+	if (!zoneEl) {
+		return true;
+	}
+	const isBattleBonusZone = zoneEl.id === "zone_monster" || zoneEl.id === "zone3";
+	if (!isBattleBonusZone) {
+		return true;
+	}
+	// Ограничение действует ТОЛЬКО во время боя, когда на поле есть хотя бы 1 монстр.
+	// Вне боя (или если монстров нет) — не блокируем перемещение.
+	if (!battleActive || !getMonsterBattleContext().hasMonster) {
+		return true;
+	}
+	return Number(localSeat) === Number(currentTurnSeat);
+}
+function scheduleOutToLunchIfNeeded(cardId, zoneEl) {
+	if (!cardId || !zoneEl) {
+		return;
+	}
+	if (!isDoorSpecial(cardId, "Out to lunch")) {
+		return;
+	}
+	// Эффект запускается только когда карту кладут на поле боя (к бонусам монстра или игрока).
+	const isBattleBonusZone = zoneEl.id === "zone_monster" || zoneEl.id === "zone3";
+	if (!isBattleBonusZone) {
+		return;
+	}
+	// Срабатывает только если на поле боя уже есть хотя бы один монстр.
+	if (!getMonsterBattleContext().hasMonster) {
+		return;
+	}
+	const el = document.getElementById(cardId);
+	if (!el) {
+		return;
+	}
+	if (el.dataset?.outToLunchScheduled) {
+		return;
+	}
+	el.dataset.outToLunchScheduled = "1";
+
+	// Не ограничиваем seat-ом: иначе у клиентов, которые не seat0, эффект не запустится.
+	// Повторные resolve безвредны (сброс поля боя и так идемпотентен).
+	setTimeout(() => {
+		const curEl = document.getElementById(cardId);
+		if (!curEl) {
+			return;
+		}
+		// Если карту успели куда-то убрать с поля боя — отменяем.
+		const parentId = curEl.parentElement?.id || "";
+		const stillOnBattlefield = parentId === "zone_monster" || parentId === "zone3";
+		if (!stillOnBattlefield) {
+			curEl.dataset.outToLunchScheduled = "";
+			return;
+		}
+		// На момент срабатывания тоже проверяем, что монстр всё ещё есть.
+		if (!getMonsterBattleContext().hasMonster) {
+			curEl.dataset.outToLunchScheduled = "";
+			return;
+		}
+		socket.emit("message", { method: "OutToLunchResolve", cardId });
+	}, 1000);
+}
+
+function scheduleFriendshipPotionIfNeeded(cardId, zoneEl) {
+	if (!cardId || !zoneEl) {
+		return;
+	}
+	if (!isTreasureSpecial(cardId, "Friendship potion")) {
+		return;
+	}
+	const isBattleBonusZone = zoneEl.id === "zone_monster" || zoneEl.id === "zone3";
+	if (!isBattleBonusZone) {
+		return;
+	}
+	if (!getMonsterBattleContext().hasMonster) {
+		return;
+	}
+	const el = document.getElementById(cardId);
+	if (!el) {
+		return;
+	}
+	if (el.dataset?.friendshipPotionScheduled) {
+		return;
+	}
+	el.dataset.friendshipPotionScheduled = "1";
+	setTimeout(() => {
+		const curEl = document.getElementById(cardId);
+		if (!curEl) {
+			return;
+		}
+		const parentId = curEl.parentElement?.id || "";
+		const stillOnBattlefield = parentId === "zone_monster" || parentId === "zone3";
+		if (!stillOnBattlefield) {
+			curEl.dataset.friendshipPotionScheduled = "";
+			return;
+		}
+		if (!getMonsterBattleContext().hasMonster) {
+			curEl.dataset.friendshipPotionScheduled = "";
+			return;
+		}
+		socket.emit("message", { method: "FriendshipPotionResolve", cardId });
+	}, 1000);
+}
+
 function moveTreasureCardToDiscard(cardId) {
 	const card = document.getElementById(cardId);
 	const dropZone = document.getElementById('zone_treasure_drop');
@@ -5300,6 +5709,7 @@ export function recalculateAllPowerDisplays() {
 
 let gameStarted = false;
 // mercTestDealt removed (no test deal)
+let potionTestDealt = false;
 socket.on("message", response => {
 	
 	num = response.num;
@@ -5437,6 +5847,30 @@ socket.on("message", response => {
 			scheduleDivineInterventionIfNeeded(card.id, zone);
 		}
 
+		// Out to lunch: если карту положили на поле боя (к бонусам) — через 1с сбросить всё поле боя и закончить бой.
+		if (card && zone) {
+			if (isDoorSpecial(card.id, "Out to lunch") && zone.id === "zone_doors_drop") {
+				card.dataset.outToLunchScheduled = "";
+			}
+			scheduleOutToLunchIfNeeded(card.id, zone);
+		}
+
+		// Friendship potion: работает как Out to lunch, но другая надпись (treasure-карта).
+		if (card && zone) {
+			if (isTreasureSpecial(card.id, "Friendship potion") && zone.id === "zone_treasure_drop") {
+				card.dataset.friendshipPotionScheduled = "";
+			}
+			scheduleFriendshipPotionIfNeeded(card.id, zone);
+		}
+
+		// Зелья/лампа должны быть переиспользуемыми: при уходе в сброс очищаем флаг использования.
+		if (card && zone && zone.id === "zone_treasure_drop") {
+			const tr = window.treasures?.find((t) => t.name === card.id);
+			if (tr && (String(tr.special || "") === "Magic lamp" || String(tr.special || "") === "Pollymorth Potion")) {
+				card.dataset.potionUsed = "";
+			}
+		}
+
 		// Когда в main кладут шмотку (не разовую) и есть наёмничек — спрашиваем "дать ему?".
 		if (card && String(card.id || "").includes("treasure") && isMainEquipmentZoneElement(zone)) {
 			const seat = getGlobalSeatForPlayZone(zone);
@@ -5568,6 +6002,50 @@ socket.on("message", response => {
 			return;
 		}
 		applyDivineInterventionResolve(cardId);
+	}
+	if (response.method === "OutToLunchResolve") {
+		const cardId = String(response.cardId || "");
+		if (!cardId) {
+			return;
+		}
+		applyOutToLunchResolve(cardId);
+	}
+	if (response.method === "FriendshipPotionResolve") {
+		const cardId = String(response.cardId || "");
+		if (!cardId) {
+			return;
+		}
+		applyFriendshipPotionResolve(cardId);
+	}
+	if (response.method === "PotionDiscardMonster") {
+		const potionCardId = String(response.potionCardId || "");
+		const monsterCardId = String(response.monsterCardId || "");
+		if (!potionCardId || !monsterCardId) {
+			return;
+		}
+		applyPotionDiscardMonster({ potionCardId, monsterCardId });
+	}
+	if (response.method === "PotionResolve") {
+		const potionCardId = String(response.potionCardId || "");
+		const monsterCardId = String(response.monsterCardId || "");
+		if (!potionCardId || !monsterCardId) {
+			return;
+		}
+		applyPotionDiscardMonster({ potionCardId, monsterCardId });
+		hidePotionPickMonsterModal();
+	}
+	if (response.method === "PotionResolveSingleMonster") {
+		const potionCardId = String(response.potionCardId || "");
+		if (!potionCardId) {
+			return;
+		}
+		const el = document.getElementById(potionCardId);
+		if (el) {
+			el.dataset.potionUsed = "";
+		}
+		// У всех игроков: очистить поле боя и закончить бой без победителей.
+		endBattleNoWinnerAndDropBattlefield(null, 0);
+		hidePotionPickMonsterModal();
 	}
 	if (response.method === "SetTurn") {
 		const nextSeat = parseInt(response.seat, 10);
@@ -6464,6 +6942,11 @@ socket.on("message", response => {
 		recalculateAllPowerDisplays();
 		applyTurnHighlight();
 		Start_game(num);
+		// Временно для тестов: у первого игрока (seat 0) обе карты (Magic lamp + Pollymorth Potion) сразу в руке.
+		if (!potionTestDealt && localSeat === 0) {
+			potionTestDealt = true;
+			socket.emit("message", { method: "PotionTestDeal", seat: 0, cardIds: ["treasure45", "treasure57"] });
+		}
 		// Тестовую раздачу наёмничка убрали.
 		recalculateAllPowerDisplays();
 		applyTurnHighlight();
@@ -6574,6 +7057,28 @@ socket.on("message", response => {
 
 
 
+	}
+	if (response.method === "PotionTestDeal") {
+		const seat = parseInt(response.seat, 10);
+		const cardIds = Array.isArray(response.cardIds) ? response.cardIds.filter(Boolean) : [];
+		if (Number.isNaN(seat) || seat < 0 || cardIds.length === 0) {
+			return;
+		}
+		const hand = getHandElementForPlayerSeat(seat);
+		if (!hand) {
+			return;
+		}
+		cardIds.forEach((cid) => {
+			const card = document.getElementById(cid);
+			if (card) {
+				hand.appendChild(card);
+			}
+		});
+		UpdatebackImgTreasure();
+		adjustCardWidth('.myhand');
+		adjustCardWidth('.opponenthand');
+		adjustCardWidth('.opponent2hand');
+		adjustCardWidth('.opponent3hand');
 	}
 	if (response.method === "FoldCount"){
 		const turnSeat = parseInt(response.turnSeat, 10);
@@ -6728,7 +7233,7 @@ const treasure41 = new Card_treasure("treasure41", "",  "../img/Treasure1/card01
 const treasure42 = new Card_treasure("treasure42", "",  "../img/Treasure1/card0137.png", "../img/Treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure43 = new Card_treasure("treasure43", "",  "../img/Treasure1/card0138.png", "../img/Treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure44 = new Card_treasure("treasure44", "",  "../img/Treasure1/card0139.png", "../img/Treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "", 0, null, true);
-const treasure45 = new Card_treasure("treasure45", "",  "../img/Treasure1/card0140.png", "../img/Treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure45 = new Card_treasure("treasure45", "Magic lamp",  "../img/Treasure1/card0140.png", "../img/Treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0, 0, 0, "Magic lamp", 0, null, true);
 const treasure46 = new Card_treasure("treasure46", "",  "../img/Treasure1/card0141.png", "../img/Treasure1/cardBack_Treasure.png", 0, 1100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure47 = new Card_treasure("treasure47", "",  "../img/Treasure1/card0142.png", "../img/Treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure48 = new Card_treasure("treasure48", "",  "../img/Treasure1/card0143.png", "../img/Treasure1/cardBack_Treasure.png", 0, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
@@ -6740,13 +7245,13 @@ const treasure53 = new Card_treasure("treasure53", "",  "../img/Treasure1/card01
 const treasure54 = new Card_treasure("treasure54", "",  "../img/Treasure1/card0149.png", "../img/Treasure1/cardBack_Treasure.png", 2, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure55 = new Card_treasure("treasure55", "",  "../img/Treasure1/card0150.png", "../img/Treasure1/cardBack_Treasure.png", 0, 200, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure56 = new Card_treasure("treasure56", "",  "../img/Treasure1/card0151.png", "../img/Treasure1/cardBack_Treasure.png", 5, 200, 0, 0, 0, 0, 0, 0, "", 0, null, true);
-const treasure57 = new Card_treasure("treasure57", "",  "../img/Treasure1/card0152.png", "../img/Treasure1/cardBack_Treasure.png", 0, 1300, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure57 = new Card_treasure("treasure57", "Pollymorth Potion",  "../img/Treasure1/card0152.png", "../img/Treasure1/cardBack_Treasure.png", 0, 1300, 0, 0, 0, 0, 0, 0, "Pollymorth Potion", 0, null, true);
 const treasure58 = new Card_treasure("treasure58", "",  "../img/Treasure1/card0153.png", "../img/Treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure59 = new Card_treasure("treasure59", "",  "../img/Treasure1/card0154.png", "../img/Treasure1/cardBack_Treasure.png", 5, 300, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure60 = new Card_treasure("treasure60", "",  "../img/Treasure1/card0155.png", "../img/Treasure1/cardBack_Treasure.png", 2, 200, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure61 = new Card_treasure("treasure61", "",  "../img/Treasure1/card0156.png", "../img/Treasure1/cardBack_Treasure.png", 2, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure62 = new Card_treasure("treasure62", "",  "../img/Treasure1/card0157.png", "../img/Treasure1/cardBack_Treasure.png", 3, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
-const treasure63 = new Card_treasure("treasure63", "",  "../img/Treasure1/card0158.png", "../img/Treasure1/cardBack_Treasure.png", 0, 200, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure63 = new Card_treasure("treasure63", "Friendship potion",  "../img/Treasure1/card0158.png", "../img/Treasure1/cardBack_Treasure.png", 0, 200, 0, 0, 0, 0, 0, 0, "Friendship potion", 0, null, true);
 const treasure64 = new Card_treasure("treasure64", "",  "../img/Treasure1/card0159.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure65 = new Card_treasure("treasure65", "Steal a level",  "../img/Treasure1/card0160.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure66 = new Card_treasure("treasure66", "",  "../img/Treasure1/card0161.png", "../img/Treasure1/cardBack_Treasure.png", 1, 200, 0, 0, 0, 0);
@@ -6865,11 +7370,13 @@ const door86 = new Card_door("door86", "Wandering Monster",  "../img/doors1/card
 const door87 = new Card_door("door87", "Wandering Monster",  "../img/doors1/card0087.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Wandering Monster");
 const door88 = new Card_door("door88", "Wandering Monster",  "../img/doors1/card0088.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Wandering Monster");
 const door89 = new Card_door("door89", "Cheat",  "../img/doors1/card0089.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Cheat");
+// card0090: вернуть как раньше (Divine intervention)
 const door90 = new Card_door("door90", "",  "../img/doors1/card0090.png", "../img/doors1/cardBack_Doors.png",0, "", "", "Divine intervention");
 const door91 = new Card_door("door91", "",  "../img/doors1/card0091.png", "../img/doors1/cardBack_Doors.png",0);
 const door92 = new Card_door("door92", "",  "../img/doors1/card0092.png", "../img/doors1/cardBack_Doors.png",0);
 const door93 = new Card_door("door93", "",  "../img/doors1/card0093.png", "../img/doors1/cardBack_Doors.png",0);
-const door94 = new Card_door("door94", "",  "../img/doors1/card0094.png", "../img/doors1/cardBack_Doors.png",0);
+// card0094: Out to lunch
+const door94 = new Card_door("door94", "Out to lunch",  "../img/doors1/card0094.png", "../img/doors1/cardBack_Doors.png",0, "", "", "Out to lunch");
 const door95 = new Card_door("door95", "",  "../img/doors1/card0000.png", "../img/doors1/cardBack_Doors.png", 0, "", "Cleric");
 
 

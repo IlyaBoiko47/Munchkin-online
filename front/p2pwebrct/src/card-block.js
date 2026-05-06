@@ -1,5 +1,5 @@
 import { UpdateZones } from './увеличение карточек во время игры.js';
-import { UpdatebackImgTreasure, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, scheduleWanderingMonsterIfNeeded, scheduleCheatIfNeeded, canPlaceTreasureInPlayerEquipment } from './game.js';
+import { UpdatebackImgTreasure, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, scheduleWanderingMonsterIfNeeded, scheduleCheatIfNeeded, scheduleMagicLampIfNeeded, schedulePollymorthPotionIfNeeded, canLocalPlayMagicLampToBattleZone, canPlaceTreasureInPlayerEquipment } from './game.js';
 import { UpdatebackImgDoor } from './game.js';
 import socket from './socket/index.js';
 //import {socket} from './game.js';
@@ -47,6 +47,29 @@ function canPlaceCardIntoMonsterBattleZone(cardEl, zoneEl) {
 		return false;
 	}
 	return true;
+}
+
+function isMagicLampTreasureCard(cardEl) {
+	const id = cardEl?.id;
+	if (!id) {
+		return false;
+	}
+	const tr = window.treasures?.find((t) => t.name === id);
+	return Boolean(tr && String(tr.special || "") === "Magic lamp");
+}
+
+function canPlaceMagicLampIntoBattleZone(cardEl, zoneEl) {
+	if (!cardEl || !zoneEl) {
+		return true;
+	}
+	const isBattleBonusZone = zoneEl.id === "zone_monster" || zoneEl.id === "zone3";
+	if (!isBattleBonusZone) {
+		return true;
+	}
+	if (!isMagicLampTreasureCard(cardEl)) {
+		return true;
+	}
+	return canLocalPlayMagicLampToBattleZone(zoneEl);
 }
 
 function dragend_handler(e) {
@@ -172,7 +195,8 @@ function dragover_handler(e) {
 	e.dataTransfer.dropEffect = 'move';
 	const invalidTreasureEquip = currentDrag && zone && !canPlaceTreasureInPlayerEquipment(currentDrag, zone);
 	const invalidMonsterToBattle = currentDrag && zone && !canPlaceCardIntoMonsterBattleZone(currentDrag, zone);
-	if (invalidTreasureEquip || invalidMonsterToBattle) {
+	const invalidMagicLampToBattle = currentDrag && zone && !canPlaceMagicLampIntoBattleZone(currentDrag, zone);
+	if (invalidTreasureEquip || invalidMonsterToBattle || invalidMagicLampToBattle) {
 		if (currentDrag) {
 			currentDrag.style.filter = invalidMonsterToBattle ? INVALID_MONSTER_TO_BATTLE_FILTER : INVALID_TREASURE_EQUIPMENT_FILTER;
 		}
@@ -190,7 +214,8 @@ function drop_handler(e) {
   const zone = e.target.closest('.cards-zone');
   const invalidTreasureEquip = currentDrag && zone && !canPlaceTreasureInPlayerEquipment(currentDrag, zone);
   const invalidMonsterToBattle = currentDrag && zone && !canPlaceCardIntoMonsterBattleZone(currentDrag, zone);
-  if (currentDrag && zone && (invalidTreasureEquip || invalidMonsterToBattle) && dragFromSnapshot?.parent) {
+  const invalidMagicLampToBattle = currentDrag && zone && !canPlaceMagicLampIntoBattleZone(currentDrag, zone);
+  if (currentDrag && zone && (invalidTreasureEquip || invalidMonsterToBattle || invalidMagicLampToBattle) && dragFromSnapshot?.parent) {
 	dragFromSnapshot.parent.insertBefore(currentDrag, dragFromSnapshot.next);
 	if (currentDrag) {
 		currentDrag.style.filter = '';
@@ -229,6 +254,8 @@ function drop_handler(e) {
 			scheduleMonsterBonusAttachIfNeeded(currentDrag.id, parentZone);
 			scheduleWanderingMonsterIfNeeded(currentDrag.id, parentZone);
 			scheduleCheatIfNeeded(currentDrag.id, parentZone);
+			scheduleMagicLampIfNeeded(currentDrag.id, parentZone);
+			schedulePollymorthPotionIfNeeded(currentDrag.id, parentZone);
 		}
 	}
 	return;
@@ -358,6 +385,8 @@ function drop_handler(e) {
     scheduleMonsterBonusAttachIfNeeded(currentDrag.id, zone);
     scheduleWanderingMonsterIfNeeded(currentDrag.id, zone);
     scheduleCheatIfNeeded(currentDrag.id, zone);
+    scheduleMagicLampIfNeeded(currentDrag.id, zone);
+    schedulePollymorthPotionIfNeeded(currentDrag.id, zone);
   }
 }
 
