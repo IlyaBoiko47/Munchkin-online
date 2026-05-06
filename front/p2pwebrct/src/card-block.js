@@ -447,7 +447,9 @@ let prevHeight = {};
 let prevcardsCount2 = {};
 
 export function adjustCardHeight(zoneSelector) {
-	let cards = document.querySelectorAll(zoneSelector + ' .card');
+	// Важно: берём только ПРЯМЫЕ карты в зоне, иначе вложенные "визуальные" карты (например Cheat внутри шмотки)
+	// будут ломать расчёт ширины/высоты и раскладку в ряд.
+	let cards = document.querySelectorAll(zoneSelector + ' > .card');
 	let totalHeight = 0;
 	cards.forEach(function(card) {
 		totalHeight += card.offsetHeight;
@@ -483,7 +485,9 @@ export function adjustCardHeight(zoneSelector) {
 }
 
 export function adjustCardWidth(zoneSelector) {
-	let cards = document.querySelectorAll(zoneSelector + ' .card');
+	// Важно: берём только ПРЯМЫЕ карты в зоне, иначе вложенные "визуальные" карты (например Cheat внутри шмотки)
+	// будут ломать расчёт ширины/высоты и раскладку в ряд.
+	let cards = document.querySelectorAll(zoneSelector + ' > .card');
 	let totalWidth = 0;
 	cards.forEach(function(card) {
 		totalWidth += card.offsetWidth;

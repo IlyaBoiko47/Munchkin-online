@@ -763,6 +763,7 @@ function moveBadStaffCardToDiscard(cardId) {
 				trEl.dataset.cheatCardId = "";
 			}
 		}
+		clearCheatVisualPlacement(cardId, trId);
 		card.dataset.cheatAttachedTreasureId = "";
 		card.dataset.cheatUsed = "";
 	}
@@ -785,10 +786,12 @@ function enforceCheatAttachmentsInvariant() {
 		}
 		const inMain = isMainEquipmentZoneElement(trEl.parentElement);
 		if (inMain) {
+			applyCheatVisualPlacement(cheatId, treasureId);
 			return;
 		}
 		// Снимаем привязку со шмотки сразу.
 		trEl.dataset.cheatCardId = "";
+		clearCheatVisualPlacement(cheatId, treasureId);
 		const cheatEl = document.getElementById(cheatId);
 		if (cheatEl && cheatEl.parentElement?.id !== "zone_doors_drop") {
 			socket.emit("message", {
@@ -814,6 +817,7 @@ function moveTreasureCardToDiscard(cardId) {
 	const attachedCheatId = String(card.dataset?.cheatCardId || "");
 	if (attachedCheatId) {
 		card.dataset.cheatCardId = "";
+		clearCheatVisualPlacement(attachedCheatId, cardId);
 		const cheatEl = document.getElementById(attachedCheatId);
 		if (cheatEl && cheatEl.parentElement?.id !== "zone_doors_drop") {
 			moveBadStaffCardToDiscard(attachedCheatId);
@@ -4478,6 +4482,40 @@ function isDoorSpecial(cardId, specialValue) {
 	return Boolean(door && String(door.special || "") === String(specialValue || ""));
 }
 
+function applyCheatVisualPlacement(cheatCardId, treasureCardId) {
+	const cheatEl = document.getElementById(cheatCardId);
+	const trEl = document.getElementById(treasureCardId);
+	if (!cheatEl || !trEl) {
+		return;
+	}
+
+	// ВАЖНО: не вкладываем реальную карту Cheat внутрь шмотки.
+	// Иначе при ужатии/раскладке (когда >3 карт) ломается позиционирование и подсчёт карточек.
+	// Вместо этого рисуем Cheat как "подложку" через ::after у шмотки.
+	const cheatImgEl = cheatEl.querySelector?.(".card-item");
+	const cheatImgSrc = cheatImgEl?.src || "";
+	if (cheatImgSrc) {
+		trEl.style.setProperty("--cheat-img", `url("${cheatImgSrc}")`);
+	}
+	trEl.classList.add("cheat-host-card");
+	// Сама карта Cheat в зоне больше не должна влиять на раскладку.
+	cheatEl.classList.add("cheat-attached-hidden");
+	cheatEl.draggable = false;
+}
+
+function clearCheatVisualPlacement(cheatCardId, treasureCardId) {
+	const cheatEl = cheatCardId ? document.getElementById(cheatCardId) : null;
+	const trEl = treasureCardId ? document.getElementById(treasureCardId) : null;
+	if (cheatEl) {
+		cheatEl.classList.remove("cheat-attached-hidden");
+		cheatEl.draggable = true;
+	}
+	if (trEl) {
+		trEl.classList.remove("cheat-host-card");
+		trEl.style.removeProperty("--cheat-img");
+	}
+}
+
 function setCheatAttachment(cheatCardId, treasureCardId) {
 	const cheatEl = document.getElementById(cheatCardId);
 	const trEl = document.getElementById(treasureCardId);
@@ -4486,6 +4524,7 @@ function setCheatAttachment(cheatCardId, treasureCardId) {
 	}
 	cheatEl.dataset.cheatAttachedTreasureId = treasureCardId || "";
 	trEl.dataset.cheatCardId = cheatCardId || "";
+	applyCheatVisualPlacement(cheatCardId, treasureCardId);
 	recalculateAllPowerDisplays();
 }
 
@@ -4512,6 +4551,10 @@ function openCheatAttachModal(cheatCardId, seat) {
 		const tr = window.treasures?.find((t) => t.name === cardId);
 		// Cheat можно применить к любой шмотке/предмету сокровищ (для тестов — ко всем treasure-картам).
 		if (!tr) {
+			return;
+		}
+		// Cheat нельзя применять на разовые шмотки.
+		if (tr.oneTime) {
 			return;
 		}
 		options.push({ cardId, img: tr.img || "", from, fromZoneId });
@@ -4775,7 +4818,18 @@ function updateCharacterStatesFromBoard() {
 
 		// Теперь, когда race/kind уже актуальны, считаем силу от шмоток (часть может зависеть от расы).
 		const equippedTreasures = mainCards
-			.map(cardEl => window.treasures?.find(t => t.name === cardEl.id))
+			.map((cardEl) => {
+				const t = window.treasures?.find((tr) => tr.name === cardEl.id);
+				if (!t) {
+					return null;
+				}
+				// Разовые шмотки можно класть в экипировку, но бонус силы они не дают.
+				// Слоты/типы при этом остаются как у обычной шмотки.
+				if (t.oneTime) {
+					return { ...t, power: 0, powerByRace: null };
+				}
+				return t;
+			})
 			.filter(Boolean);
 		character.applyEquipmentCards(equippedTreasures);
 		character.remover += doorRemoverBonus;
@@ -4996,6 +5050,7 @@ socket.on("message", response => {
 			if (attachedCheatId) {
 				// Очищаем связь на шмотке сразу, чтобы не было "висящих" ограничений.
 				card.dataset.cheatCardId = "";
+				clearCheatVisualPlacement(attachedCheatId, card.id);
 				// Надёжно: если Cheat ещё не в сбросе, отправляем его в сброс (дубликаты moveCard не страшны).
 				const cheatEl = document.getElementById(attachedCheatId);
 				const alreadyInDrop = cheatEl?.parentElement?.id === "zone_doors_drop";
@@ -5015,6 +5070,7 @@ socket.on("message", response => {
 		if (card && card.dataset?.cheatCardId && !isMainEquipmentZoneElement(zone)) {
 			const attachedCheatId = String(card.dataset.cheatCardId || "");
 			card.dataset.cheatCardId = "";
+			clearCheatVisualPlacement(attachedCheatId, card.id);
 			const cheatEl = document.getElementById(attachedCheatId);
 			const alreadyInDrop = cheatEl?.parentElement?.id === "zone_doors_drop";
 			if (attachedCheatId && !alreadyInDrop) {
@@ -5045,9 +5101,11 @@ socket.on("message", response => {
 							trEl.dataset.cheatCardId = "";
 						}
 					}
+					clearCheatVisualPlacement(movedEl.id, trId);
 					movedEl.dataset.cheatAttachedTreasureId = "";
 				} else if (!isPlayerPlayZoneElement(zone)) {
 					// В остальных не-экипировочных перемещениях тоже не держим старую привязку.
+					clearCheatVisualPlacement(movedEl.id, String(movedEl.dataset?.cheatAttachedTreasureId || ""));
 					movedEl.dataset.cheatAttachedTreasureId = "";
 				}
 			}
@@ -6202,7 +6260,7 @@ function randomizeDice(diceContainer, numberOfDice) {
 
 
 class Card_treasure {
-  constructor(name = "", card_name = "", img = "", backimg = "", power = 0, cost = 0, body = 0, hand = 0, footwear = 0, hat = 0, big = 0, level = 0, special = "", remover = 0, restrictions = null) {
+  constructor(name = "", card_name = "", img = "", backimg = "", power = 0, cost = 0, body = 0, hand = 0, footwear = 0, hat = 0, big = 0, level = 0, special = "", remover = 0, restrictions = null, oneTime = false) {
     this.name = name;
 	this.card_name = card_name;
 	this.img = img;
@@ -6218,6 +6276,7 @@ class Card_treasure {
 	this.special = special;
 	this.remover = remover;
 	this.restrictions = restrictions;
+	this.oneTime = Boolean(oneTime); // true = разовая, false = нет
   }
 }
 
@@ -6255,42 +6314,41 @@ const treasure27 = new Card_treasure("treasure27", "",  "../img/Treasure1/card01
 const treasure28 = new Card_treasure("treasure28", "",  "../img/Treasure1/card0123.png", "../img/Treasure1/cardBack_Treasure.png", 3, 0, 0, 2, 0, 0, 1);
 const treasure29 = new Card_treasure("treasure29", "",  "../img/Treasure1/card0124.png", "../img/Treasure1/cardBack_Treasure.png", 4, 600, 0, 2, 0, 0, 1, 0, "", 0, [{ mode: "only", race: ["Human"] }]);
 const treasure30 = new Card_treasure("treasure30", "",  "../img/Treasure1/card0125.png", "../img/Treasure1/cardBack_Treasure.png", 1, 200, 0, 2, 0, 0);
-
-const treasure31 = new Card_treasure("treasure31", "",  "../img/Treasure1/card0126.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1);
-const treasure32 = new Card_treasure("treasure32", "",  "../img/Treasure1/card0127.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1);
-const treasure33 = new Card_treasure("treasure33", "",  "../img/Treasure1/card0128.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1);
-const treasure34 = new Card_treasure("treasure34", "",  "../img/Treasure1/card0129.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1);
-const treasure35 = new Card_treasure("treasure35", "",  "../img/Treasure1/card0130.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1);
-const treasure36 = new Card_treasure("treasure36", "",  "../img/Treasure1/card0131.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1);
-const treasure37 = new Card_treasure("treasure37", "",  "../img/Treasure1/card0132.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1);
-const treasure38 = new Card_treasure("treasure38", "",  "../img/Treasure1/card0133.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1);
-const treasure39 = new Card_treasure("treasure39", "",  "../img/Treasure1/card0134.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1);
-const treasure40 = new Card_treasure("treasure40", "",  "../img/Treasure1/card0135.png", "../img/Treasure1/cardBack_Treasure.png", 1, 0, 0, 0, 0, 0);
-const treasure41 = new Card_treasure("treasure41", "",  "../img/Treasure1/card0136.png", "../img/Treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0);
-const treasure42 = new Card_treasure("treasure42", "",  "../img/Treasure1/card0137.png", "../img/Treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0);
-const treasure43 = new Card_treasure("treasure43", "",  "../img/Treasure1/card0138.png", "../img/Treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0);
-const treasure44 = new Card_treasure("treasure44", "",  "../img/Treasure1/card0139.png", "../img/Treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0);
-const treasure45 = new Card_treasure("treasure45", "",  "../img/Treasure1/card0140.png", "../img/Treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0);
-const treasure46 = new Card_treasure("treasure46", "",  "../img/Treasure1/card0141.png", "../img/Treasure1/cardBack_Treasure.png", 0, 1100, 0, 0, 0, 0);
-const treasure47 = new Card_treasure("treasure47", "",  "../img/Treasure1/card0142.png", "../img/Treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0);
-const treasure48 = new Card_treasure("treasure48", "",  "../img/Treasure1/card0143.png", "../img/Treasure1/cardBack_Treasure.png", 0, 100, 0, 0, 0, 0);
-const treasure49 = new Card_treasure("treasure49", "",  "../img/Treasure1/card0144.png", "../img/Treasure1/cardBack_Treasure.png", 5, 0, 0, 0, 0, 0);
-const treasure50 = new Card_treasure("treasure50", "",  "../img/Treasure1/card0145.png", "../img/Treasure1/cardBack_Treasure.png", 2, 100, 0, 0, 0, 0);
-const treasure51 = new Card_treasure("treasure51", "",  "../img/Treasure1/card0146.png", "../img/Treasure1/cardBack_Treasure.png", 0, 100, 0, 0, 0, 0);
-const treasure52 = new Card_treasure("treasure52", "",  "../img/Treasure1/card0147.png", "../img/Treasure1/cardBack_Treasure.png", 3, 100, 0, 0, 0, 0);
-const treasure53 = new Card_treasure("treasure53", "",  "../img/Treasure1/card0148.png", "../img/Treasure1/cardBack_Treasure.png", 3, 100, 0, 0, 0, 0);
-const treasure54 = new Card_treasure("treasure54", "",  "../img/Treasure1/card0149.png", "../img/Treasure1/cardBack_Treasure.png", 2, 100, 0, 0, 0, 0);
-const treasure55 = new Card_treasure("treasure55", "",  "../img/Treasure1/card0150.png", "../img/Treasure1/cardBack_Treasure.png", 0, 200, 0, 0, 0, 0);
-const treasure56 = new Card_treasure("treasure56", "",  "../img/Treasure1/card0151.png", "../img/Treasure1/cardBack_Treasure.png", 5, 200, 0, 0, 0, 0);
-const treasure57 = new Card_treasure("treasure57", "",  "../img/Treasure1/card0152.png", "../img/Treasure1/cardBack_Treasure.png", 0, 1300, 0, 0, 0, 0);
-const treasure58 = new Card_treasure("treasure58", "",  "../img/Treasure1/card0153.png", "../img/Treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0);
-const treasure59 = new Card_treasure("treasure59", "",  "../img/Treasure1/card0154.png", "../img/Treasure1/cardBack_Treasure.png", 5, 300, 0, 0, 0, 0);
-const treasure60 = new Card_treasure("treasure60", "",  "../img/Treasure1/card0155.png", "../img/Treasure1/cardBack_Treasure.png", 2, 200, 0, 0, 0, 0);
-const treasure61 = new Card_treasure("treasure61", "",  "../img/Treasure1/card0156.png", "../img/Treasure1/cardBack_Treasure.png", 2, 100, 0, 0, 0, 0);
-const treasure62 = new Card_treasure("treasure62", "",  "../img/Treasure1/card0157.png", "../img/Treasure1/cardBack_Treasure.png", 3, 100, 0, 0, 0, 0);
-const treasure63 = new Card_treasure("treasure63", "",  "../img/Treasure1/card0158.png", "../img/Treasure1/cardBack_Treasure.png", 0, 200, 0, 0, 0, 0);
-const treasure64 = new Card_treasure("treasure64", "",  "../img/Treasure1/card0159.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0);
-const treasure65 = new Card_treasure("treasure65", "Steal a level",  "../img/Treasure1/card0160.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0);
+const treasure31 = new Card_treasure("treasure31", "",  "../img/Treasure1/card0126.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
+const treasure32 = new Card_treasure("treasure32", "",  "../img/Treasure1/card0127.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
+const treasure33 = new Card_treasure("treasure33", "",  "../img/Treasure1/card0128.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
+const treasure34 = new Card_treasure("treasure34", "",  "../img/Treasure1/card0129.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
+const treasure35 = new Card_treasure("treasure35", "",  "../img/Treasure1/card0130.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
+const treasure36 = new Card_treasure("treasure36", "",  "../img/Treasure1/card0131.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
+const treasure37 = new Card_treasure("treasure37", "",  "../img/Treasure1/card0132.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
+const treasure38 = new Card_treasure("treasure38", "",  "../img/Treasure1/card0133.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
+const treasure39 = new Card_treasure("treasure39", "",  "../img/Treasure1/card0134.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
+const treasure40 = new Card_treasure("treasure40", "",  "../img/Treasure1/card0135.png", "../img/Treasure1/cardBack_Treasure.png", 1, 0, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure41 = new Card_treasure("treasure41", "",  "../img/Treasure1/card0136.png", "../img/Treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure42 = new Card_treasure("treasure42", "",  "../img/Treasure1/card0137.png", "../img/Treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure43 = new Card_treasure("treasure43", "",  "../img/Treasure1/card0138.png", "../img/Treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure44 = new Card_treasure("treasure44", "",  "../img/Treasure1/card0139.png", "../img/Treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure45 = new Card_treasure("treasure45", "",  "../img/Treasure1/card0140.png", "../img/Treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure46 = new Card_treasure("treasure46", "",  "../img/Treasure1/card0141.png", "../img/Treasure1/cardBack_Treasure.png", 0, 1100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure47 = new Card_treasure("treasure47", "",  "../img/Treasure1/card0142.png", "../img/Treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure48 = new Card_treasure("treasure48", "",  "../img/Treasure1/card0143.png", "../img/Treasure1/cardBack_Treasure.png", 0, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure49 = new Card_treasure("treasure49", "",  "../img/Treasure1/card0144.png", "../img/Treasure1/cardBack_Treasure.png", 5, 0, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure50 = new Card_treasure("treasure50", "",  "../img/Treasure1/card0145.png", "../img/Treasure1/cardBack_Treasure.png", 2, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure51 = new Card_treasure("treasure51", "",  "../img/Treasure1/card0146.png", "../img/Treasure1/cardBack_Treasure.png", 0, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure52 = new Card_treasure("treasure52", "",  "../img/Treasure1/card0147.png", "../img/Treasure1/cardBack_Treasure.png", 3, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure53 = new Card_treasure("treasure53", "",  "../img/Treasure1/card0148.png", "../img/Treasure1/cardBack_Treasure.png", 3, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure54 = new Card_treasure("treasure54", "",  "../img/Treasure1/card0149.png", "../img/Treasure1/cardBack_Treasure.png", 2, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure55 = new Card_treasure("treasure55", "",  "../img/Treasure1/card0150.png", "../img/Treasure1/cardBack_Treasure.png", 0, 200, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure56 = new Card_treasure("treasure56", "",  "../img/Treasure1/card0151.png", "../img/Treasure1/cardBack_Treasure.png", 5, 200, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure57 = new Card_treasure("treasure57", "",  "../img/Treasure1/card0152.png", "../img/Treasure1/cardBack_Treasure.png", 0, 1300, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure58 = new Card_treasure("treasure58", "",  "../img/Treasure1/card0153.png", "../img/Treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure59 = new Card_treasure("treasure59", "",  "../img/Treasure1/card0154.png", "../img/Treasure1/cardBack_Treasure.png", 5, 300, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure60 = new Card_treasure("treasure60", "",  "../img/Treasure1/card0155.png", "../img/Treasure1/cardBack_Treasure.png", 2, 200, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure61 = new Card_treasure("treasure61", "",  "../img/Treasure1/card0156.png", "../img/Treasure1/cardBack_Treasure.png", 2, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure62 = new Card_treasure("treasure62", "",  "../img/Treasure1/card0157.png", "../img/Treasure1/cardBack_Treasure.png", 3, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure63 = new Card_treasure("treasure63", "",  "../img/Treasure1/card0158.png", "../img/Treasure1/cardBack_Treasure.png", 0, 200, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure64 = new Card_treasure("treasure64", "",  "../img/Treasure1/card0159.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure65 = new Card_treasure("treasure65", "Steal a level",  "../img/Treasure1/card0160.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure66 = new Card_treasure("treasure66", "",  "../img/Treasure1/card0161.png", "../img/Treasure1/cardBack_Treasure.png", 1, 200, 0, 0, 0, 0);
 const treasure67 = new Card_treasure("treasure67", "",  "../img/Treasure1/card0162.png", "../img/Treasure1/cardBack_Treasure.png", 2, 600, 0, 0, 0, 0, 0, 0, "", 0, [{ mode: "not", kind: ["Thief"] }]);
 const treasure68 = new Card_treasure("treasure68", "",  "../img/Treasure1/card0163.png", "../img/Treasure1/cardBack_Treasure.png", 3, 400, 0, 0, 0, 0, 0, 0, "", 0, [{ mode: "only", race: ["Halfling"] }]);

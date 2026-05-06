@@ -453,6 +453,39 @@ a{
   
 }
 
+/* Cheat: визуально показываем, к какой шмотке привязан */
+.cheat-host-card {
+	/* Нужен якорь для absolute Cheat внутри шмотки */
+	position: relative;
+}
+.cheat-host-card::after{
+	content: "";
+	position: absolute;
+	/* Размер должен совпадать с реальными картинками карт */
+	width: 100px;
+	height: 150px;
+	left: 50%;
+	top: 50%;
+	background-image: var(--cheat-img);
+	background-repeat: no-repeat;
+	background-position: center;
+	/* Ровно как у обычной карты */
+	background-size: 100% 100%;
+	transform: translate(-50%, -50%) translateY(42px);
+	/* Под картинкой шмотки */
+	z-index: 0;
+	pointer-events: none;
+}
+.cheat-host-card > .card-item{
+	position: relative;
+	z-index: 1;
+}
+
+/* Реальную карту Cheat прячем, когда она "прикреплена" (чтобы не влияла на ряд/ужатие) */
+.cheat-attached-hidden{
+	display: none !important;
+}
+
 .myhand{
   /*border: 1px solid black; */
 	display: flex;
