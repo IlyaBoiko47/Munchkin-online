@@ -1,5 +1,5 @@
 import { UpdateZones } from './увеличение карточек во время игры.js';
-import { UpdatebackImgTreasure, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, scheduleWanderingMonsterIfNeeded, canPlaceTreasureInPlayerEquipment } from './game.js';
+import { UpdatebackImgTreasure, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, scheduleWanderingMonsterIfNeeded, scheduleCheatIfNeeded, canPlaceTreasureInPlayerEquipment } from './game.js';
 import { UpdatebackImgDoor } from './game.js';
 import socket from './socket/index.js';
 //import {socket} from './game.js';
@@ -217,6 +217,7 @@ function drop_handler(e) {
 		cardId: currentDrag.id,
 		targetId: currentDrag.previousElementSibling ? currentDrag.previousElementSibling.id : null,
 		zoneId: currentDrag.parentElement ? currentDrag.parentElement.id : null,
+		fromZoneId: dragFromSnapshot?.parent?.id || null,
 	};
 	socket.emit("message", moveData);
 	if (currentDrag) {
@@ -227,15 +228,23 @@ function drop_handler(e) {
 			scheduleTreasure65IfNeeded(currentDrag.id, parentZone);
 			scheduleMonsterBonusAttachIfNeeded(currentDrag.id, parentZone);
 			scheduleWanderingMonsterIfNeeded(currentDrag.id, parentZone);
+			scheduleCheatIfNeeded(currentDrag.id, parentZone);
 		}
 	}
 	return;
   }
-  if (currentDrag && target && target.nextSibling && zone.contains(target.nextSibling)) {
-    zone.insertBefore(currentDrag, target.nextSibling);
-  } else if (currentDrag) {
-    zone.appendChild(currentDrag);
-		
+  if (currentDrag && zone) {
+	// Вставляем после target только если target реально в этой зоне — иначе appendChild.
+	if (target && zone.contains(target)) {
+		const next = target.nextSibling;
+		if (next && zone.contains(next)) {
+			zone.insertBefore(currentDrag, next);
+		} else {
+			zone.appendChild(currentDrag);
+		}
+	} else {
+		zone.appendChild(currentDrag);
+	}
   }
 
 	const droppedToZone2 = zone.classList.contains('zone2');
@@ -337,7 +346,8 @@ function drop_handler(e) {
     method: "moveCard",
     cardId: currentDrag.id,
     targetId: target ? target.id : null,
-    zoneId: zone.id
+    zoneId: zone.id,
+	fromZoneId: dragFromSnapshot?.parent?.id || null,
   };
   socket.emit("message",moveData);
 
@@ -347,6 +357,7 @@ function drop_handler(e) {
     scheduleTreasure65IfNeeded(currentDrag.id, zone);
     scheduleMonsterBonusAttachIfNeeded(currentDrag.id, zone);
     scheduleWanderingMonsterIfNeeded(currentDrag.id, zone);
+    scheduleCheatIfNeeded(currentDrag.id, zone);
   }
 }
 

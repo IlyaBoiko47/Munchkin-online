@@ -420,6 +420,34 @@ export function getGlobalSeatForPlayZone(zoneEl) {
 	return null;
 }
 
+function isMainEquipmentZoneElement(zoneEl) {
+	if (!zoneEl || !num) {
+		return false;
+	}
+	const maxSeat = Math.min(num, characterBySeat.length);
+	for (let seat = 0; seat < maxSeat; seat += 1) {
+		const { main } = getMainAndSideZoneElementsForSeat(seat);
+		if (main && zoneEl === main) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function isSideEquipmentZoneElement(zoneEl) {
+	if (!zoneEl || !num) {
+		return false;
+	}
+	const maxSeat = Math.min(num, characterBySeat.length);
+	for (let seat = 0; seat < maxSeat; seat += 1) {
+		const { side } = getMainAndSideZoneElementsForSeat(seat);
+		if (side && zoneEl === side) {
+			return true;
+		}
+	}
+	return false;
+}
+
 // Пары main/side по class-селекторам, как в getSeatToBattleZoneMap (id у блоков НЕ двигаются при 2/3P swap).
 const BATTLE_MAIN_SELECTOR_TO_SIDE_SELECTOR = {
 	'.zone2': '.zone5',
@@ -579,9 +607,10 @@ export function canPlaceTreasureInPlayerEquipment(draggingCardEl, targetZoneEl) 
 		return true;
 	}
 	const isTargetSideZone = !!side && targetZoneEl === side;
+	const hasCheat = Boolean(draggingCardEl?.dataset?.cheatCardId);
 	// ВАЖНО: ограничения по расе/классу/полу блокируют экипировку в ОСНОВНУЮ зону,
 	// но в боковую зону такие карты класть можно.
-	if (!isTargetSideZone && !doesTreasureRestrictionsAllowSeat(treasure, seat)) {
+	if (!isTargetSideZone && !hasCheat && !doesTreasureRestrictionsAllowSeat(treasure, seat)) {
 		return false;
 	}
 	const draggedBig = Number(treasure.big) || 0;
@@ -600,12 +629,16 @@ export function canPlaceTreasureInPlayerEquipment(draggingCardEl, targetZoneEl) 
 		if (el === draggingCardEl) {
 			return;
 		}
+		// Шмотка под Cheat не занимает слоты и не считается big.
+		if (el?.dataset?.cheatCardId) {
+			return;
+		}
 		const t = window.treasures.find(tr => tr.name === el.id);
 		if (t) {
 			existingBigTotal += Number(t.big) || 0;
 		}
 	});
-	const nextBigTotal = existingBigTotal + draggedBig;
+	const nextBigTotal = existingBigTotal + (hasCheat ? 0 : draggedBig);
 	const dwarfUnlimitedBig = isSeatDwarfRaceActive(seat);
 	if (!dwarfUnlimitedBig && nextBigTotal > 1) {
 		return false;
@@ -637,6 +670,10 @@ export function canPlaceTreasureInPlayerEquipment(draggingCardEl, targetZoneEl) 
 		if (el === draggingCardEl) {
 			return;
 		}
+		// Шмотка под Cheat не занимает слоты.
+		if (el?.dataset?.cheatCardId) {
+			return;
+		}
 		const t = window.treasures.find(tr => tr.name === el.id);
 		if (t) {
 			body += Number(t.body) || 0;
@@ -647,11 +684,13 @@ export function canPlaceTreasureInPlayerEquipment(draggingCardEl, targetZoneEl) 
 		}
 	});
 
-	body += Number(treasure.body) || 0;
-	hand += Number(treasure.hand) || 0;
-	footwear += Number(treasure.footwear) || 0;
-	hat += Number(treasure.hat) || 0;
-	big += Number(treasure.big) || 0;
+	if (!hasCheat) {
+		body += Number(treasure.body) || 0;
+		hand += Number(treasure.hand) || 0;
+		footwear += Number(treasure.footwear) || 0;
+		hat += Number(treasure.hat) || 0;
+		big += Number(treasure.big) || 0;
+	}
 
 	return isEquipmentSumsValid(body, hand, footwear, hat, big);
 }
@@ -714,9 +753,52 @@ function moveBadStaffCardToDiscard(cardId) {
 	if (!cardId.includes('door')) {
 		return;
 	}
+	// Если сбрасываем Cheat — снимаем привязки, чтобы карту можно было применять повторно.
+	const door = window.doors?.find((d) => d.name === cardId);
+	if (door && String(door.special || "") === "Cheat") {
+		const trId = String(card.dataset?.cheatAttachedTreasureId || "");
+		if (trId) {
+			const trEl = document.getElementById(trId);
+			if (trEl) {
+				trEl.dataset.cheatCardId = "";
+			}
+		}
+		card.dataset.cheatAttachedTreasureId = "";
+		card.dataset.cheatUsed = "";
+	}
 	dropZone.appendChild(card);
 	UpdatebackImgDoor();
 	adjustCardWidth('.zone_doors_drop');
+}
+
+function enforceCheatAttachmentsInvariant() {
+	// Инвариант: Cheat действует только пока сокровище в ОСНОВНОЙ зоне экипировки.
+	// Где бы карта ни оказалась (кража/способности/локальные перемещения), если она не в main — Cheat уходит в сброс.
+	document.querySelectorAll('.card[data-cheat-card-id]').forEach((trEl) => {
+		const treasureId = trEl?.id;
+		if (!treasureId || !String(treasureId).includes("treasure")) {
+			return;
+		}
+		const cheatId = String(trEl.dataset?.cheatCardId || "");
+		if (!cheatId) {
+			return;
+		}
+		const inMain = isMainEquipmentZoneElement(trEl.parentElement);
+		if (inMain) {
+			return;
+		}
+		// Снимаем привязку со шмотки сразу.
+		trEl.dataset.cheatCardId = "";
+		const cheatEl = document.getElementById(cheatId);
+		if (cheatEl && cheatEl.parentElement?.id !== "zone_doors_drop") {
+			socket.emit("message", {
+				method: "moveCard",
+				cardId: cheatId,
+				targetId: null,
+				zoneId: "zone_doors_drop",
+			});
+		}
+	});
 }
 
 function moveTreasureCardToDiscard(cardId) {
@@ -727,6 +809,15 @@ function moveTreasureCardToDiscard(cardId) {
 	}
 	if (!cardId.includes('treasure')) {
 		return;
+	}
+	// Если на шмотке был Cheat — при любом её выходе из основной экипировки Cheat должен уйти в сброс.
+	const attachedCheatId = String(card.dataset?.cheatCardId || "");
+	if (attachedCheatId) {
+		card.dataset.cheatCardId = "";
+		const cheatEl = document.getElementById(attachedCheatId);
+		if (cheatEl && cheatEl.parentElement?.id !== "zone_doors_drop") {
+			moveBadStaffCardToDiscard(attachedCheatId);
+		}
 	}
 	dropZone.appendChild(card);
 	UpdatebackImgTreasure();
@@ -4382,6 +4473,182 @@ export function scheduleWanderingMonsterIfNeeded(cardId, zoneEl) {
 	}, 30);
 }
 
+function isDoorSpecial(cardId, specialValue) {
+	const door = window.doors?.find((d) => d.name === cardId);
+	return Boolean(door && String(door.special || "") === String(specialValue || ""));
+}
+
+function setCheatAttachment(cheatCardId, treasureCardId) {
+	const cheatEl = document.getElementById(cheatCardId);
+	const trEl = document.getElementById(treasureCardId);
+	if (!cheatEl || !trEl) {
+		return;
+	}
+	cheatEl.dataset.cheatAttachedTreasureId = treasureCardId || "";
+	trEl.dataset.cheatCardId = cheatCardId || "";
+	recalculateAllPowerDisplays();
+}
+
+function hideCheatAttachModal() {
+	const existing = document.getElementById("cheat-attach-modal");
+	if (existing) {
+		existing.remove();
+	}
+}
+
+function openCheatAttachModal(cheatCardId, seat) {
+	hideCheatAttachModal();
+	if (!cheatCardId || seat == null) {
+		return;
+	}
+	const { main, side } = getMainAndSideZoneElementsForSeat(seat);
+	const handEl = Number(seat) === Number(localSeat) ? document.querySelector(".myhand") : null;
+	if (!main) {
+		return;
+	}
+
+	const options = [];
+	const pushTreasureOption = (cardId, from, fromZoneId = null) => {
+		const tr = window.treasures?.find((t) => t.name === cardId);
+		// Cheat можно применить к любой шмотке/предмету сокровищ (для тестов — ко всем treasure-картам).
+		if (!tr) {
+			return;
+		}
+		options.push({ cardId, img: tr.img || "", from, fromZoneId });
+	};
+
+	// Из экипировки (main+side)
+	main.querySelectorAll(".card").forEach((el) => pushTreasureOption(el.id, "equip", main.id || null));
+	side?.querySelectorAll?.(".card")?.forEach((el) => pushTreasureOption(el.id, "equip", side?.id || null));
+	// Из руки (чтобы можно было “зачитить” и сразу экипировать)
+	handEl?.querySelectorAll?.(".card")?.forEach((el) => pushTreasureOption(el.id, "hand", handEl?.id || null));
+
+	if (options.length <= 0) {
+		showBattleResult("Нет шмоток, к которым можно применить Cheat.");
+		setTimeout(hideBattleResult, 1800);
+		return;
+	}
+
+	const modal = document.createElement("div");
+	modal.id = "cheat-attach-modal";
+	modal.className = "wizard-taming-pick-modal";
+	const panel = document.createElement("div");
+	panel.className = "wizard-taming-pick-panel";
+	const title = document.createElement("div");
+	title.className = "wizard-taming-pick-title";
+	title.textContent = "Cheat: выбери шмотку";
+
+	const cardsWrap = document.createElement("div");
+	cardsWrap.className = "wizard-taming-pick-cards";
+
+	const applyBtn = document.createElement("button");
+	applyBtn.type = "button";
+	applyBtn.className = "wizard-taming-pick-apply-btn";
+	applyBtn.textContent = "Применить Cheat";
+	applyBtn.disabled = true;
+
+	let selected = null;
+	options.forEach((o) => {
+		const btn = document.createElement("button");
+		btn.type = "button";
+		btn.className = "wizard-taming-pick-card";
+		btn.dataset.cardId = o.cardId;
+		const img = document.createElement("img");
+		img.className = "wizard-taming-pick-card-img";
+		img.src = o.img || "";
+		img.alt = o.cardId;
+		btn.appendChild(img);
+		btn.addEventListener("click", () => {
+			cardsWrap.querySelectorAll(".wizard-taming-pick-card").forEach((x) => x.classList.remove("is-selected"));
+			btn.classList.add("is-selected");
+			selected = o;
+			applyBtn.disabled = !selected;
+		});
+		cardsWrap.appendChild(btn);
+	});
+
+	applyBtn.addEventListener("click", () => {
+		if (!selected?.cardId) {
+			return;
+		}
+
+		// Если шмотка была в руке ИЛИ в боковой зоне — сначала перемещаем её в main,
+		// а привязку Cheat делаем только после того, как карта реально окажется в main (иначе инвариант сразу сбросит Cheat).
+		const needsMoveToMain = selected.from === "hand"
+			|| (selected.from === "equip" && selected.fromZoneId && side?.id && selected.fromZoneId === side.id);
+		const cheatEl = document.getElementById(cheatCardId);
+		if (needsMoveToMain) {
+			if (cheatEl) {
+				cheatEl.dataset.cheatPendingTreasureId = selected.cardId;
+			}
+			socket.emit("message", {
+				method: "moveCard",
+				cardId: selected.cardId,
+				targetId: null,
+				zoneId: main.id,
+			});
+		} else {
+			// Уже в main — можно привязывать сразу.
+			socket.emit("message", {
+				method: "CheatAttach",
+				seat,
+				cheatCardId,
+				treasureCardId: selected.cardId,
+			});
+		}
+
+		modal.remove();
+	});
+
+	panel.appendChild(title);
+	panel.appendChild(cardsWrap);
+	panel.appendChild(applyBtn);
+	modal.appendChild(panel);
+	document.body.appendChild(modal);
+	modal.addEventListener("click", (e) => {
+		if (e.target === modal) {
+			modal.remove();
+		}
+	});
+}
+
+export function scheduleCheatIfNeeded(cardId, zoneEl) {
+	if (!cardId || !zoneEl) {
+		return;
+	}
+	// Cheat активируется только когда его кладут в ОСНОВНУЮ зону экипировки (main).
+	if (!isMainEquipmentZoneElement(zoneEl)) {
+		return;
+	}
+	if (!isDoorSpecial(cardId, "Cheat")) {
+		return;
+	}
+	const seat = getGlobalSeatForPlayZone(zoneEl);
+	if (seat == null || Number(seat) !== Number(localSeat)) {
+		return;
+	}
+	const el = document.getElementById(cardId);
+	if (!el || el.dataset?.cheatUsed) {
+		return;
+	}
+	setTimeout(() => {
+		const cheatEl = document.getElementById(cardId);
+		if (!cheatEl) {
+			return;
+		}
+		// всё ещё в ОСНОВНОЙ зоне экипировки этого игрока
+		const stillInMainEquip = isMainEquipmentZoneElement(cheatEl.parentElement);
+		if (!stillInMainEquip) {
+			return;
+		}
+		if (cheatEl.dataset?.cheatUsed) {
+			return;
+		}
+		cheatEl.dataset.cheatUsed = "1";
+		openCheatAttachModal(cardId, seat);
+	}, 30);
+}
+
 function normalizeAdvantageTargets(typeValue) {
 	if (!typeValue) {
 		return [];
@@ -4628,6 +4895,8 @@ function updateHelpUi() {
 
 export function recalculateAllPowerDisplays() {
 	updateCharacterStatesFromBoard();
+	// Fail-safe: после любого пересчёта держим Cheat в консистентном состоянии.
+	enforceCheatAttachmentsInvariant();
 
 	const seatToPowerMap = getSeatToPowerMap();
 	Object.entries(seatToPowerMap).forEach(([seatKey, selector]) => {
@@ -4657,6 +4926,7 @@ export function recalculateAllPowerDisplays() {
 }
 
 let gameStarted = false;
+let cheatTestDealt = false;
 socket.on("message", response => {
 	
 	num = response.num;
@@ -4666,6 +4936,11 @@ socket.on("message", response => {
     const card = document.getElementById(response.cardId);
     const target = response.targetId ? document.getElementById(response.targetId) : null;
     const zone = document.getElementById(response.zoneId);
+	// Важно: отправитель двигает карту локально ещё до прихода этого сообщения.
+	// Поэтому для корректной логики "вышло из экипировки" используем fromZoneId, если он есть.
+	const fromZone = response.fromZoneId ? document.getElementById(response.fromZoneId) : null;
+	const prevParent = fromZone || card?.parentElement || null;
+	const prevWasEquip = isPlayerPlayZoneElement(prevParent);
 		
     if (card && zone) {
       if (target && zone.contains(target)) {
@@ -4693,9 +4968,93 @@ socket.on("message", response => {
     UpdatebackImgDoor();
 		recalculateAllPowerDisplays();
 
+		// Если кто-то переместил цель в main (из руки/side), и у Cheat есть "ожидающая" привязка — выполняем её сейчас.
+		if (card && String(card.id || "").includes("treasure") && isMainEquipmentZoneElement(zone)) {
+			const seat = getGlobalSeatForPlayZone(zone);
+			if (seat != null && Number(seat) === Number(localSeat)) {
+				zone.querySelectorAll?.(".card")?.forEach((maybeCheatEl) => {
+					if (!maybeCheatEl?.id) {
+						return;
+					}
+					const door = window.doors?.find((d) => d.name === maybeCheatEl.id);
+					if (!door || String(door.special || "") !== "Cheat") {
+						return;
+					}
+					const pending = String(maybeCheatEl.dataset?.cheatPendingTreasureId || "");
+					if (pending && pending === card.id) {
+						maybeCheatEl.dataset.cheatPendingTreasureId = "";
+						socket.emit("message", { method: "CheatAttach", seat, cheatCardId: maybeCheatEl.id, treasureCardId: pending });
+					}
+				});
+			}
+		}
+
+		// Cheat действует только пока шмотка в ОСНОВНОЙ зоне экипировки.
+		// Если шмотка уходит из main (в side или куда угодно) — Cheat уходит в сброс.
+		if (card && isMainEquipmentZoneElement(prevParent) && !isMainEquipmentZoneElement(zone)) {
+			const attachedCheatId = String(card.dataset?.cheatCardId || "");
+			if (attachedCheatId) {
+				// Очищаем связь на шмотке сразу, чтобы не было "висящих" ограничений.
+				card.dataset.cheatCardId = "";
+				// Надёжно: если Cheat ещё не в сбросе, отправляем его в сброс (дубликаты moveCard не страшны).
+				const cheatEl = document.getElementById(attachedCheatId);
+				const alreadyInDrop = cheatEl?.parentElement?.id === "zone_doors_drop";
+				if (!alreadyInDrop) {
+					socket.emit("message", {
+						method: "moveCard",
+						cardId: attachedCheatId,
+						targetId: null,
+						zoneId: "zone_doors_drop",
+					});
+				}
+			}
+		}
+
+		// Fail-safe: даже если "fromZoneId" не прилетел (способность/локальный перенос),
+		// как только шмотка с cheatCardId НЕ находится в main — Cheat должен уйти в сброс.
+		if (card && card.dataset?.cheatCardId && !isMainEquipmentZoneElement(zone)) {
+			const attachedCheatId = String(card.dataset.cheatCardId || "");
+			card.dataset.cheatCardId = "";
+			const cheatEl = document.getElementById(attachedCheatId);
+			const alreadyInDrop = cheatEl?.parentElement?.id === "zone_doors_drop";
+			if (attachedCheatId && !alreadyInDrop) {
+				socket.emit("message", {
+					method: "moveCard",
+					cardId: attachedCheatId,
+					targetId: null,
+					zoneId: "zone_doors_drop",
+				});
+			}
+		}
+
+		// Если сам Cheat куда-то переехал — чистим его привязку (чтобы не “висела”).
+		const movedDoor = window.doors?.find((d) => d.name === response.cardId);
+		if (movedDoor && String(movedDoor.special || "") === "Cheat") {
+			const movedEl = document.getElementById(response.cardId);
+			if (movedEl) {
+				// Если Cheat ушёл в сброс — его можно применять повторно.
+				if (response.zoneId === "zone_doors_drop") {
+					movedEl.dataset.cheatUsed = "";
+				}
+				// Если Cheat ушёл в сброс — обязательно отвязываем его от шмотки.
+				if (response.zoneId === "zone_doors_drop") {
+					const trId = String(movedEl.dataset?.cheatAttachedTreasureId || "");
+					if (trId) {
+						const trEl = document.getElementById(trId);
+						if (trEl) {
+							trEl.dataset.cheatCardId = "";
+						}
+					}
+					movedEl.dataset.cheatAttachedTreasureId = "";
+				} else if (!isPlayerPlayZoneElement(zone)) {
+					// В остальных не-экипировочных перемещениях тоже не держим старую привязку.
+					movedEl.dataset.cheatAttachedTreasureId = "";
+				}
+			}
+		}
+
 		// Если карта-модификатор монстра вышла из зоны бонусов монстра (или ушла в сброс) — сбрасываем привязку,
 		// чтобы её можно было привязать заново к новому монстру.
-		const movedDoor = window.doors?.find((d) => d.name === response.cardId);
 		if (movedDoor && String(movedDoor.special || "") === "bonus_power_monster") {
 			const movedEl = document.getElementById(response.cardId);
 			if (movedEl && response.zoneId !== "zone_monster") {
@@ -4721,6 +5080,15 @@ socket.on("message", response => {
 		}
 		// Обновляем тексты, где могли использоваться имена.
 		recalculateAllPowerDisplays();
+	}
+	if (response.method === "CheatAttach") {
+		const seat = parseInt(response.seat, 10);
+		const cheatCardId = String(response.cheatCardId || "");
+		const treasureCardId = String(response.treasureCardId || "");
+		if (Number.isNaN(seat) || seat < 0 || !cheatCardId || !treasureCardId) {
+			return;
+		}
+		setCheatAttachment(cheatCardId, treasureCardId);
 	}
 	if (response.method === "SetTurn") {
 		const nextSeat = parseInt(response.seat, 10);
@@ -5617,6 +5985,11 @@ socket.on("message", response => {
 		recalculateAllPowerDisplays();
 		applyTurnHighlight();
 		Start_game(num);
+		// Временно для тестов: у первого игрока (seat 0) карта Cheat сразу в руке.
+		if (!cheatTestDealt && localSeat === 0) {
+			cheatTestDealt = true;
+			socket.emit("message", { method: "CheatTestDeal", seat: 0, cardId: "door89" });
+		}
 		recalculateAllPowerDisplays();
 		applyTurnHighlight();
 		window.button.remove();
@@ -5726,6 +6099,23 @@ socket.on("message", response => {
 
 
 
+	}
+	if (response.method === "CheatTestDeal") {
+		const seat = parseInt(response.seat, 10);
+		const cardId = String(response.cardId || "");
+		if (Number.isNaN(seat) || seat < 0 || !cardId) {
+			return;
+		}
+		const card = document.getElementById(cardId);
+		const hand = getHandElementForPlayerSeat(seat);
+		if (card && hand) {
+			hand.appendChild(card);
+			UpdatebackImgDoor();
+			adjustCardWidth('.myhand');
+			adjustCardWidth('.opponenthand');
+			adjustCardWidth('.opponent2hand');
+			adjustCardWidth('.opponent3hand');
+		}
 	}
 	if (response.method === "FoldCount"){
 		const turnSeat = parseInt(response.turnSeat, 10);
@@ -6016,7 +6406,7 @@ const door85 = new Card_door("door85", "",  "../img/doors1/card0085.png", "../im
 const door86 = new Card_door("door86", "Wandering Monster",  "../img/doors1/card0086.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Wandering Monster");
 const door87 = new Card_door("door87", "Wandering Monster",  "../img/doors1/card0087.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Wandering Monster");
 const door88 = new Card_door("door88", "Wandering Monster",  "../img/doors1/card0088.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Wandering Monster");
-const door89 = new Card_door("door89", "",  "../img/doors1/card0089.png", "../img/doors1/cardBack_Doors.png",0);
+const door89 = new Card_door("door89", "Cheat",  "../img/doors1/card0089.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Cheat");
 const door90 = new Card_door("door90", "",  "../img/doors1/card0090.png", "../img/doors1/cardBack_Doors.png",0);
 const door91 = new Card_door("door91", "",  "../img/doors1/card0091.png", "../img/doors1/cardBack_Doors.png",0);
 const door92 = new Card_door("door92", "",  "../img/doors1/card0092.png", "../img/doors1/cardBack_Doors.png",0);
