@@ -608,10 +608,22 @@ export function canPlaceTreasureInPlayerEquipment(draggingCardEl, targetZoneEl) 
 	}
 	const isTargetSideZone = !!side && targetZoneEl === side;
 	const hasCheat = Boolean(draggingCardEl?.dataset?.cheatCardId);
+	const hasHireling = Boolean(draggingCardEl?.dataset?.hirelingCardId);
+
+	const allowHirelingAssist = !isTargetSideZone
+		&& isMainEquipmentZoneElement(targetZoneEl)
+		&& !hasCheat
+		&& !hasHireling
+		&& !Boolean(treasure?.oneTime)
+		&& !isTreasureSpecial(draggingCardEl.id, "Hireling")
+		&& (() => {
+			const h = getHirelingCardInMainForSeat(seat);
+			return Boolean(h && !String(h.dataset?.hirelingAttachedTreasureId || ""));
+		})();
 	// ВАЖНО: ограничения по расе/классу/полу блокируют экипировку в ОСНОВНУЮ зону,
 	// но в боковую зону такие карты класть можно.
-	if (!isTargetSideZone && !hasCheat && !doesTreasureRestrictionsAllowSeat(treasure, seat)) {
-		return false;
+	if (!isTargetSideZone && !hasCheat && !hasHireling && !doesTreasureRestrictionsAllowSeat(treasure, seat)) {
+		return allowHirelingAssist;
 	}
 	const draggedBig = Number(treasure.big) || 0;
 
@@ -630,7 +642,7 @@ export function canPlaceTreasureInPlayerEquipment(draggingCardEl, targetZoneEl) 
 			return;
 		}
 		// Шмотка под Cheat не занимает слоты и не считается big.
-		if (el?.dataset?.cheatCardId) {
+		if (el?.dataset?.cheatCardId || el?.dataset?.hirelingCardId) {
 			return;
 		}
 		const t = window.treasures.find(tr => tr.name === el.id);
@@ -638,10 +650,10 @@ export function canPlaceTreasureInPlayerEquipment(draggingCardEl, targetZoneEl) 
 			existingBigTotal += Number(t.big) || 0;
 		}
 	});
-	const nextBigTotal = existingBigTotal + (hasCheat ? 0 : draggedBig);
+	const nextBigTotal = existingBigTotal + ((hasCheat || hasHireling) ? 0 : draggedBig);
 	const dwarfUnlimitedBig = isSeatDwarfRaceActive(seat);
 	if (!dwarfUnlimitedBig && nextBigTotal > 1) {
-		return false;
+		return allowHirelingAssist;
 	}
 
 	if (isTargetSideZone) {
@@ -671,7 +683,7 @@ export function canPlaceTreasureInPlayerEquipment(draggingCardEl, targetZoneEl) 
 			return;
 		}
 		// Шмотка под Cheat не занимает слоты.
-		if (el?.dataset?.cheatCardId) {
+		if (el?.dataset?.cheatCardId || el?.dataset?.hirelingCardId) {
 			return;
 		}
 		const t = window.treasures.find(tr => tr.name === el.id);
@@ -684,7 +696,7 @@ export function canPlaceTreasureInPlayerEquipment(draggingCardEl, targetZoneEl) 
 		}
 	});
 
-	if (!hasCheat) {
+	if (!hasCheat && !hasHireling) {
 		body += Number(treasure.body) || 0;
 		hand += Number(treasure.hand) || 0;
 		footwear += Number(treasure.footwear) || 0;
@@ -692,7 +704,8 @@ export function canPlaceTreasureInPlayerEquipment(draggingCardEl, targetZoneEl) 
 		big += Number(treasure.big) || 0;
 	}
 
-	return isEquipmentSumsValid(body, hand, footwear, hat, big);
+	const ok = isEquipmentSumsValid(body, hand, footwear, hat, big);
+	return ok || allowHirelingAssist;
 }
 
 function normalizeBadStaff(badStaff) {
@@ -804,6 +817,44 @@ function enforceCheatAttachmentsInvariant() {
 	});
 }
 
+function enforceHirelingFollowInvariant() {
+	// Инвариант: если у Наёмничка есть прикреплённая шмотка — она всегда должна быть в той же зоне.
+	document.querySelectorAll('.card').forEach((maybeHireling) => {
+		if (!maybeHireling?.id || !String(maybeHireling.id).includes("treasure")) {
+			return;
+		}
+		if (!isTreasureSpecial(maybeHireling.id, "Hireling")) {
+			return;
+		}
+		const attachedId = String(maybeHireling.dataset?.hirelingAttachedTreasureId || "");
+		if (!attachedId) {
+			return;
+		}
+		const attachedEl = document.getElementById(attachedId);
+		if (!attachedEl) {
+			maybeHireling.dataset.hirelingAttachedTreasureId = "";
+			return;
+		}
+		// Поддерживаем двустороннюю ссылку.
+		if (String(attachedEl.dataset?.hirelingCardId || "") !== String(maybeHireling.id)) {
+			attachedEl.dataset.hirelingCardId = String(maybeHireling.id);
+		}
+		const hirelingZoneId = maybeHireling.parentElement?.id || "";
+		const attachedZoneId = attachedEl.parentElement?.id || "";
+		if (!hirelingZoneId || !attachedZoneId) {
+			return;
+		}
+		if (hirelingZoneId !== attachedZoneId) {
+			socket.emit("message", {
+				method: "moveCard",
+				cardId: attachedId,
+				targetId: null,
+				zoneId: hirelingZoneId,
+			});
+		}
+	});
+}
+
 function moveTreasureCardToDiscard(cardId) {
 	const card = document.getElementById(cardId);
 	const dropZone = document.getElementById('zone_treasure_drop');
@@ -812,6 +863,18 @@ function moveTreasureCardToDiscard(cardId) {
 	}
 	if (!cardId.includes('treasure')) {
 		return;
+	}
+	// Если сбрасываем Наёмничка — его шмотка должна уйти вместе с ним.
+	if (isTreasureSpecial(cardId, "Hireling")) {
+		const attachedId = String(card.dataset?.hirelingAttachedTreasureId || "");
+		if (attachedId) {
+			const attachedEl = document.getElementById(attachedId);
+			if (attachedEl) {
+				attachedEl.dataset.hirelingCardId = "";
+				dropZone.appendChild(attachedEl);
+			}
+		}
+		card.dataset.hirelingAttachedTreasureId = "";
 	}
 	// Если на шмотке был Cheat — при любом её выходе из основной экипировки Cheat должен уйти в сброс.
 	const attachedCheatId = String(card.dataset?.cheatCardId || "");
@@ -4482,6 +4545,197 @@ function isDoorSpecial(cardId, specialValue) {
 	return Boolean(door && String(door.special || "") === String(specialValue || ""));
 }
 
+function isTreasureSpecial(cardId, specialValue) {
+	const tr = window.treasures?.find((t) => t.name === cardId);
+	return Boolean(tr && String(tr.special || "") === String(specialValue || ""));
+}
+
+function getHirelingCardInMainForSeat(seat) {
+	const { main } = getMainAndSideZoneElementsForSeat(seat);
+	if (!main) {
+		return null;
+	}
+	const candidates = Array.from(main.querySelectorAll(".card"));
+	return candidates.find((el) => isTreasureSpecial(el.id, "Hireling")) || null;
+}
+
+function setHirelingAttachment(hirelingCardId, treasureCardId) {
+	const hirelingEl = document.getElementById(hirelingCardId);
+	const trEl = document.getElementById(treasureCardId);
+	if (!hirelingEl || !trEl) {
+		return;
+	}
+	hirelingEl.dataset.hirelingAttachedTreasureId = treasureCardId || "";
+	trEl.dataset.hirelingCardId = hirelingCardId || "";
+	recalculateAllPowerDisplays();
+}
+
+function clearHirelingAttachment(hirelingCardId, treasureCardId) {
+	const hirelingEl = hirelingCardId ? document.getElementById(hirelingCardId) : null;
+	const trEl = treasureCardId ? document.getElementById(treasureCardId) : null;
+	if (hirelingEl && String(hirelingEl.dataset?.hirelingAttachedTreasureId || "") === String(treasureCardId || "")) {
+		hirelingEl.dataset.hirelingAttachedTreasureId = "";
+	}
+	if (trEl && String(trEl.dataset?.hirelingCardId || "") === String(hirelingCardId || "")) {
+		trEl.dataset.hirelingCardId = "";
+	}
+	recalculateAllPowerDisplays();
+}
+
+function canEquipTreasureToMainStrict(seat, treasureEl) {
+	const treasure = window.treasures?.find((t) => t.name === treasureEl?.id);
+	if (!treasure) {
+		return true;
+	}
+	const { main, side } = getMainAndSideZoneElementsForSeat(seat);
+	if (!main) {
+		return true;
+	}
+	// Ограничения должны соблюдаться.
+	if (!doesTreasureRestrictionsAllowSeat(treasure, seat)) {
+		return false;
+	}
+	// Big лимит считаем по main+side, игнорируя уже "читнутые" и выданные наёмничку шмотки.
+	const allPlayerCards = [];
+	const pushUnique = (cardEl) => {
+		if (cardEl && allPlayerCards.indexOf(cardEl) === -1) {
+			allPlayerCards.push(cardEl);
+		}
+	};
+	main.querySelectorAll(".card").forEach(pushUnique);
+	side?.querySelectorAll?.(".card")?.forEach(pushUnique);
+	let existingBigTotal = 0;
+	allPlayerCards.forEach((el) => {
+		if (!el || el === treasureEl) {
+			return;
+		}
+		if (el?.dataset?.cheatCardId || el?.dataset?.hirelingCardId) {
+			return;
+		}
+		const t = window.treasures?.find((tr) => tr.name === el.id);
+		if (t) {
+			existingBigTotal += Number(t.big) || 0;
+		}
+	});
+	const draggedBig = Number(treasure.big) || 0;
+	const nextBigTotal = existingBigTotal + draggedBig;
+	const dwarfUnlimitedBig = isSeatDwarfRaceActive(seat);
+	if (!dwarfUnlimitedBig && nextBigTotal > 1) {
+		return false;
+	}
+
+	// Слоты считаем только по main, игнорируя cheated/hireling items.
+	const mainCards = Array.from(main.querySelectorAll(".card"));
+	let body = 0;
+	let hand = 0;
+	let footwear = 0;
+	let hat = 0;
+	let big = 0;
+	mainCards.forEach((el) => {
+		if (!el || el === treasureEl) {
+			return;
+		}
+		if (el?.dataset?.cheatCardId || el?.dataset?.hirelingCardId) {
+			return;
+		}
+		const t = window.treasures?.find((tr) => tr.name === el.id);
+		if (t) {
+			body += Number(t.body) || 0;
+			hand += Number(t.hand) || 0;
+			footwear += Number(t.footwear) || 0;
+			hat += Number(t.hat) || 0;
+			big += Number(t.big) || 0;
+		}
+	});
+	body += Number(treasure.body) || 0;
+	hand += Number(treasure.hand) || 0;
+	footwear += Number(treasure.footwear) || 0;
+	hat += Number(treasure.hat) || 0;
+	big += Number(treasure.big) || 0;
+	return isEquipmentSumsValid(body, hand, footwear, hat, big);
+}
+
+function hideHirelingOfferModal() {
+	const existing = document.getElementById("hireling-offer-modal");
+	if (existing) {
+		existing.remove();
+	}
+}
+
+function openHirelingOfferModal({ seat, treasureCardId, fromZoneId }) {
+	hideHirelingOfferModal();
+	if (seat == null || !treasureCardId) {
+		return;
+	}
+	const hirelingEl = getHirelingCardInMainForSeat(seat);
+	if (!hirelingEl) {
+		return;
+	}
+
+	const modal = document.createElement("div");
+	modal.id = "hireling-offer-modal";
+	modal.className = "wizard-taming-pick-modal";
+	const panel = document.createElement("div");
+	panel.className = "wizard-taming-pick-panel";
+	const title = document.createElement("div");
+	title.className = "wizard-taming-pick-title";
+	title.textContent = "Наёмничек: отдать ему шмотку?";
+
+	const buttons = document.createElement("div");
+	buttons.style.display = "flex";
+	buttons.style.gap = "10px";
+	buttons.style.justifyContent = "center";
+
+	const yesBtn = document.createElement("button");
+	yesBtn.type = "button";
+	yesBtn.className = "wizard-taming-pick-apply-btn";
+	yesBtn.textContent = "Да";
+
+	const noBtn = document.createElement("button");
+	noBtn.type = "button";
+	noBtn.className = "wizard-taming-pick-apply-btn";
+	noBtn.textContent = "Нет";
+
+	yesBtn.addEventListener("click", () => {
+		socket.emit("message", {
+			method: "MercenaryAttach",
+			seat,
+			hirelingCardId: hirelingEl.id,
+			treasureCardId,
+		});
+		modal.remove();
+	});
+
+	noBtn.addEventListener("click", () => {
+		const trEl = document.getElementById(treasureCardId);
+		const okNormally = trEl ? canEquipTreasureToMainStrict(seat, trEl) : true;
+		if (!okNormally) {
+			const backZoneId = fromZoneId || getHandElementForPlayerSeat(seat)?.id || null;
+			if (backZoneId) {
+				socket.emit("message", {
+					method: "moveCard",
+					cardId: treasureCardId,
+					targetId: null,
+					zoneId: backZoneId,
+				});
+			}
+		}
+		modal.remove();
+	});
+
+	buttons.appendChild(yesBtn);
+	buttons.appendChild(noBtn);
+	panel.appendChild(title);
+	panel.appendChild(buttons);
+	modal.appendChild(panel);
+	document.body.appendChild(modal);
+	modal.addEventListener("click", (e) => {
+		if (e.target === modal) {
+			modal.remove();
+		}
+	});
+}
+
 function applyCheatVisualPlacement(cheatCardId, treasureCardId) {
 	const cheatEl = document.getElementById(cheatCardId);
 	const trEl = document.getElementById(treasureCardId);
@@ -4823,6 +5077,10 @@ function updateCharacterStatesFromBoard() {
 				if (!t) {
 					return null;
 				}
+				// Шмотка, выданная наёмничку, не занимает слоты/big и игнорирует ограничения.
+				if (cardEl?.dataset?.hirelingCardId) {
+					return { ...t, body: 0, hand: 0, footwear: 0, hat: 0, big: 0, restrictions: null };
+				}
 				// Разовые шмотки можно класть в экипировку, но бонус силы они не дают.
 				// Слоты/типы при этом остаются как у обычной шмотки.
 				if (t.oneTime) {
@@ -4951,6 +5209,8 @@ export function recalculateAllPowerDisplays() {
 	updateCharacterStatesFromBoard();
 	// Fail-safe: после любого пересчёта держим Cheat в консистентном состоянии.
 	enforceCheatAttachmentsInvariant();
+	// Fail-safe: наёмничек всегда таскает свою шмотку за собой.
+	enforceHirelingFollowInvariant();
 
 	const seatToPowerMap = getSeatToPowerMap();
 	Object.entries(seatToPowerMap).forEach(([seatKey, selector]) => {
@@ -4980,7 +5240,7 @@ export function recalculateAllPowerDisplays() {
 }
 
 let gameStarted = false;
-let cheatTestDealt = false;
+let mercTestDealt = false;
 socket.on("message", response => {
 	
 	num = response.num;
@@ -5061,6 +5321,46 @@ socket.on("message", response => {
 						targetId: null,
 						zoneId: "zone_doors_drop",
 					});
+				}
+			}
+		}
+
+		// Наёмничек: если шмотка, выданная наёмничку, ушла из main — отвязываем.
+		if (card && isMainEquipmentZoneElement(prevParent) && !isMainEquipmentZoneElement(zone)) {
+			const hId = String(card.dataset?.hirelingCardId || "");
+			if (hId) {
+				card.dataset.hirelingCardId = "";
+				const hEl = document.getElementById(hId);
+				if (hEl && String(hEl.dataset?.hirelingAttachedTreasureId || "") === String(card.id || "")) {
+					hEl.dataset.hirelingAttachedTreasureId = "";
+				}
+				socket.emit("message", { method: "MercenaryDetach", seat: getGlobalSeatForPlayZone(prevParent), hirelingCardId: hId, treasureCardId: card.id });
+			}
+		}
+
+		// Если переместили наёмничка — его шмотка должна уйти вместе с ним в ту же зону.
+		if (card && isTreasureSpecial(card.id, "Hireling")) {
+			const attachedId = String(card.dataset?.hirelingAttachedTreasureId || "");
+			if (attachedId && zone?.id) {
+				const trEl = document.getElementById(attachedId);
+				if (trEl && trEl.parentElement?.id !== zone.id) {
+					socket.emit("message", { method: "moveCard", cardId: attachedId, targetId: null, zoneId: zone.id });
+				}
+			}
+		}
+
+		// Когда в main кладут шмотку (не разовую) и есть наёмничек — спрашиваем "дать ему?".
+		if (card && String(card.id || "").includes("treasure") && isMainEquipmentZoneElement(zone)) {
+			const seat = getGlobalSeatForPlayZone(zone);
+			if (seat != null && Number(seat) === Number(localSeat)) {
+				const tr = window.treasures?.find((t) => t.name === card.id);
+				const alreadyBound = Boolean(card.dataset?.hirelingCardId) || Boolean(card.dataset?.cheatCardId);
+				const isHireling = isTreasureSpecial(card.id, "Hireling");
+				if (tr && !tr.oneTime && !alreadyBound && !isHireling) {
+					const hEl = getHirelingCardInMainForSeat(seat);
+					if (hEl && !String(hEl.dataset?.hirelingAttachedTreasureId || "")) {
+						openHirelingOfferModal({ seat, treasureCardId: card.id, fromZoneId: response.fromZoneId || null });
+					}
 				}
 			}
 		}
@@ -5147,6 +5447,24 @@ socket.on("message", response => {
 			return;
 		}
 		setCheatAttachment(cheatCardId, treasureCardId);
+	}
+	if (response.method === "MercenaryAttach") {
+		const seat = parseInt(response.seat, 10);
+		const hirelingCardId = String(response.hirelingCardId || "");
+		const treasureCardId = String(response.treasureCardId || "");
+		if (Number.isNaN(seat) || seat < 0 || !hirelingCardId || !treasureCardId) {
+			return;
+		}
+		setHirelingAttachment(hirelingCardId, treasureCardId);
+	}
+	if (response.method === "MercenaryDetach") {
+		const seat = parseInt(response.seat, 10);
+		const hirelingCardId = String(response.hirelingCardId || "");
+		const treasureCardId = String(response.treasureCardId || "");
+		if (Number.isNaN(seat) || seat < 0 || !hirelingCardId || !treasureCardId) {
+			return;
+		}
+		clearHirelingAttachment(hirelingCardId, treasureCardId);
 	}
 	if (response.method === "SetTurn") {
 		const nextSeat = parseInt(response.seat, 10);
@@ -6043,10 +6361,10 @@ socket.on("message", response => {
 		recalculateAllPowerDisplays();
 		applyTurnHighlight();
 		Start_game(num);
-		// Временно для тестов: у первого игрока (seat 0) карта Cheat сразу в руке.
-		if (!cheatTestDealt && localSeat === 0) {
-			cheatTestDealt = true;
-			socket.emit("message", { method: "CheatTestDeal", seat: 0, cardId: "door89" });
+		// Временно для тестов: у первого игрока (seat 0) наёмничек всегда доступен.
+		if (!mercTestDealt && localSeat === 0) {
+			mercTestDealt = true;
+			socket.emit("message", { method: "MercTestDeal", seat: 0, cardId: "treasure40" });
 		}
 		recalculateAllPowerDisplays();
 		applyTurnHighlight();
@@ -6158,21 +6476,22 @@ socket.on("message", response => {
 
 
 	}
-	if (response.method === "CheatTestDeal") {
+	if (response.method === "MercTestDeal") {
 		const seat = parseInt(response.seat, 10);
 		const cardId = String(response.cardId || "");
 		if (Number.isNaN(seat) || seat < 0 || !cardId) {
 			return;
 		}
 		const card = document.getElementById(cardId);
-		const hand = getHandElementForPlayerSeat(seat);
-		if (card && hand) {
-			hand.appendChild(card);
-			UpdatebackImgDoor();
-			adjustCardWidth('.myhand');
-			adjustCardWidth('.opponenthand');
-			adjustCardWidth('.opponent2hand');
-			adjustCardWidth('.opponent3hand');
+		const { main } = getMainAndSideZoneElementsForSeat(seat);
+		if (card && main) {
+			main.appendChild(card);
+			UpdatebackImgTreasure();
+			adjustCardWidth('.zone2');
+			adjustCardWidth('.zone_opponent');
+			adjustCardWidth('.zone_opponent2');
+			adjustCardWidth('.zone_opponent3');
+			recalculateAllPowerDisplays();
 		}
 	}
 	if (response.method === "FoldCount"){
@@ -6323,7 +6642,7 @@ const treasure36 = new Card_treasure("treasure36", "",  "../img/Treasure1/card01
 const treasure37 = new Card_treasure("treasure37", "",  "../img/Treasure1/card0132.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
 const treasure38 = new Card_treasure("treasure38", "",  "../img/Treasure1/card0133.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
 const treasure39 = new Card_treasure("treasure39", "",  "../img/Treasure1/card0134.png", "../img/Treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
-const treasure40 = new Card_treasure("treasure40", "",  "../img/Treasure1/card0135.png", "../img/Treasure1/cardBack_Treasure.png", 1, 0, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure40 = new Card_treasure("treasure40", "",  "../img/Treasure1/card0135.png", "../img/Treasure1/cardBack_Treasure.png", 1, 0, 0, 0, 0, 0, 0, 0, "Hireling", 0, null);
 const treasure41 = new Card_treasure("treasure41", "",  "../img/Treasure1/card0136.png", "../img/Treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure42 = new Card_treasure("treasure42", "",  "../img/Treasure1/card0137.png", "../img/Treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure43 = new Card_treasure("treasure43", "",  "../img/Treasure1/card0138.png", "../img/Treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0, 0, 0, "", 0, null, true);
