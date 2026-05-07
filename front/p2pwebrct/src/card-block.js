@@ -1,5 +1,5 @@
 import { UpdateZones } from './увеличение карточек во время игры.js';
-import { UpdatebackImgTreasure, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, scheduleWanderingMonsterIfNeeded, scheduleCheatIfNeeded, scheduleMagicLampIfNeeded, schedulePollymorthPotionIfNeeded, canLocalPlayMagicLampToBattleZone, canPlaceTreasureInPlayerEquipment } from './game.js';
+import { UpdatebackImgTreasure, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, scheduleWanderingMonsterIfNeeded, scheduleCheatIfNeeded, scheduleMagicLampIfNeeded, schedulePollymorthPotionIfNeeded, scheduleIllusionIfNeeded, scheduleMateIfNeeded, canLocalPlayMagicLampToBattleZone, canPlaceTreasureInPlayerEquipment } from './game.js';
 import { UpdatebackImgDoor } from './game.js';
 import socket from './socket/index.js';
 //import {socket} from './game.js';
@@ -256,6 +256,8 @@ function drop_handler(e) {
 			scheduleCheatIfNeeded(currentDrag.id, parentZone);
 			scheduleMagicLampIfNeeded(currentDrag.id, parentZone);
 			schedulePollymorthPotionIfNeeded(currentDrag.id, parentZone);
+			scheduleIllusionIfNeeded(currentDrag.id, parentZone);
+			scheduleMateIfNeeded(currentDrag.id, parentZone);
 		}
 	}
 	return;
@@ -387,6 +389,8 @@ function drop_handler(e) {
     scheduleCheatIfNeeded(currentDrag.id, zone);
     scheduleMagicLampIfNeeded(currentDrag.id, zone);
     schedulePollymorthPotionIfNeeded(currentDrag.id, zone);
+    scheduleIllusionIfNeeded(currentDrag.id, zone);
+    scheduleMateIfNeeded(currentDrag.id, zone);
   }
 }
 
