@@ -13,6 +13,42 @@ let localSeat = null;
 let currentTurnSeat = 0;
 const levelBySeat = [1, 1, 1];
 const STEAL_LEVEL_CARD_NAME = "Steal a level";
+
+function getCharacterRaces(character) {
+	if (!character) {
+		return [];
+	}
+	const r1 = String(character.race || "").trim();
+	const r2 = String(character.race2 || "").trim();
+	return [r1, r2].filter(Boolean);
+}
+
+function seatHasRace(seat, race) {
+	const ch = characterBySeat?.[seat];
+	const target = String(race || "").trim();
+	if (!ch || !target) {
+		return false;
+	}
+	return getCharacterRaces(ch).includes(target);
+}
+
+function getCharacterKinds(character) {
+	if (!character) {
+		return [];
+	}
+	const k1 = String(character.kind || "").trim();
+	const k2 = String(character.kind2 || "").trim();
+	return [k1, k2].filter(Boolean);
+}
+
+function seatHasKind(seat, kind) {
+	const ch = characterBySeat?.[seat];
+	const target = String(kind || "").trim();
+	if (!ch || !target) {
+		return false;
+	}
+	return getCharacterKinds(ch).includes(target);
+}
 class PlayerCharacterState {
 	constructor(seat) {
 		this.seat = seat;
@@ -22,7 +58,15 @@ class PlayerCharacterState {
 		this.level = 1;
 		this.power = 1;
 		this.race = "Human";
+		/** Вторая раса (используется только при Half-breed). */
+		this.race2 = "";
+		/** Экипирована ли карта Half-breed (полукровка). */
+		this.hasHalfBreed = false;
 		this.kind = "";
+		/** Второй класс (используется только при Super Munchkin). */
+		this.kind2 = "";
+		/** Экипирована ли карта Super Munchkin. */
+		this.hasSuperMunchkin = false;
 		this.body = 0;
 		this.hand = 0;
 		this.footwear = 0;
@@ -78,11 +122,20 @@ function getTreasureEffectivePower(treasure, character) {
 	const base = Number(treasure?.power) || 0;
 	const map = treasure?.powerByRace;
 	if (map && typeof map === "object") {
-		const race = String(character?.race || "");
-		if (race && Object.prototype.hasOwnProperty.call(map, race)) {
-			const v = Number(map[race]);
-			return Number.isFinite(v) ? v : base;
-		}
+		const races = [
+			String(character?.race || "").trim(),
+			String(character?.race2 || "").trim(),
+		].filter(Boolean);
+		let best = base;
+		races.forEach((race) => {
+			if (race && Object.prototype.hasOwnProperty.call(map, race)) {
+				const v = Number(map[race]);
+				if (Number.isFinite(v)) {
+					best = Math.max(best, v);
+				}
+			}
+		});
+		return best;
 	}
 	return base;
 }
@@ -554,10 +607,21 @@ function doesTreasureRestrictionsAllowSeat(treasure, seat) {
 		return true;
 	}
 	const ch = characterBySeat?.[seat];
-	const race = String(ch?.race || "");
+	const isHalfBreedSingleRace = Boolean(ch?.hasHalfBreed) && String(ch?.race2 || "") === "Human";
+	const isSuperMunchkinSingleClass = Boolean(ch?.hasSuperMunchkin) && !String(ch?.kind2 || "").trim();
+	const races = [
+		String(ch?.race || "").trim(),
+		String(ch?.race2 || "").trim(),
+	].filter(Boolean);
+	const kinds = [
+		String(ch?.kind || "").trim(),
+		String(ch?.kind2 || "").trim(),
+	].filter(Boolean);
 	const kind = String(ch?.kind || "");
 	const gender = String(ch?.gender || "");
 	const matchesAny = (value, allowedList) => Array.isArray(allowedList) && allowedList.some((x) => String(x) === String(value));
+	const matchesAnyRace = (allowedList) => Array.isArray(allowedList) && races.some((r) => matchesAny(r, allowedList));
+	const matchesAnyKind = (allowedList) => Array.isArray(allowedList) && kinds.some((k) => matchesAny(k, allowedList));
 
 	return rules.every((rule) => {
 		const mode = String(rule?.mode || "");
@@ -571,8 +635,19 @@ function doesTreasureRestrictionsAllowSeat(treasure, seat) {
 			return true;
 		}
 
-		const okRace = !Array.isArray(raceList) || (mode === "not" ? !matchesAny(race, raceList) : matchesAny(race, raceList));
-		const okKind = !Array.isArray(kindList) || (mode === "not" ? !matchesAny(kind, kindList) : matchesAny(kind, kindList));
+		// Half-breed + 1 раса: режим "not" не действует (полностью).
+		if ((isHalfBreedSingleRace || isSuperMunchkinSingleClass) && mode === "not") {
+			return true;
+		}
+
+		// "only Human" должен запрещать шмот при Half-breed + 1 раса (даже если вторая раса базовая Human).
+		if (mode === "only" && Array.isArray(raceList) && raceList.some((x) => String(x) === "Human")) {
+			const isPureHuman = races.length === 1 && races[0] === "Human";
+			return isPureHuman;
+		}
+
+		const okRace = !Array.isArray(raceList) || (mode === "not" ? !matchesAnyRace(raceList) : matchesAnyRace(raceList));
+		const okKind = !Array.isArray(kindList) || (mode === "not" ? !matchesAnyKind(kindList) : matchesAnyKind(kindList));
 		const okGender = !Array.isArray(genderList) || (mode === "not" ? !matchesAny(gender, genderList) : matchesAny(gender, genderList));
 
 		// AND между полями
@@ -706,6 +781,132 @@ export function canPlaceTreasureInPlayerEquipment(draggingCardEl, targetZoneEl) 
 
 	const ok = isEquipmentSumsValid(body, hand, footwear, hat, big);
 	return ok || allowHirelingAssist;
+}
+
+function isHalfBreedDoorCard(doorCard) {
+	return Boolean(doorCard && (String(doorCard.special || "") === "Half-breed" || String(doorCard.card_name || "") === "Half-breed"));
+}
+
+function isSuperMunchkinDoorCard(doorCard) {
+	return Boolean(doorCard && (String(doorCard.special || "") === "Super Munchkin" || String(doorCard.card_name || "") === "Super Munchkin"));
+}
+
+/**
+ * Проверка экипировки дверных карт (расы / Half-breed) в основную экипировку.
+ * Нужна для подсветки/отката при drag&drop как у шмоток.
+ */
+export function canPlaceDoorInPlayerEquipment(draggingCardEl, targetZoneEl) {
+	if (!draggingCardEl || !isPlayerPlayZoneElement(targetZoneEl)) {
+		return true;
+	}
+	// Ограничения действуют только для основной экипировки.
+	if (!isMainEquipmentZoneElement(targetZoneEl)) {
+		return true;
+	}
+	const seat = getGlobalSeatForPlayZone(targetZoneEl);
+	if (seat == null) {
+		return true;
+	}
+	const door = window.doors?.find((d) => d.name === draggingCardEl.id);
+	if (!door) {
+		return true;
+	}
+	// Монстры / не-дверные эффекты не ограничиваем здесь.
+	if (String(door.race || "") === "monster") {
+		return true;
+	}
+
+	const { main } = getMainAndSideZoneElementsForSeat(seat);
+	if (!main) {
+		return true;
+	}
+
+	// Собираем текущее состояние экипировки ПО ФАКТУ в main (dragover уже вставил карту в DOM).
+	let hasHalfBreed = false;
+	let halfBreedCount = 0;
+	const raceCounts = new Map(); // race -> count
+	let hasSuperMunchkin = false;
+	let superMunchkinCount = 0;
+	const kindCounts = new Map(); // kind -> count
+	main.querySelectorAll(".card").forEach((el) => {
+		const d = window.doors?.find((x) => x.name === el.id);
+		if (!d) {
+			return;
+		}
+		if (isHalfBreedDoorCard(d)) {
+			hasHalfBreed = true;
+			halfBreedCount += 1;
+		}
+		if (isSuperMunchkinDoorCard(d)) {
+			hasSuperMunchkin = true;
+			superMunchkinCount += 1;
+		}
+		if (d.race && String(d.race) !== "monster") {
+			const r = String(d.race);
+			raceCounts.set(r, (raceCounts.get(r) || 0) + 1);
+		}
+		if (d.kind) {
+			const k = String(d.kind);
+			kindCounts.set(k, (kindCounts.get(k) || 0) + 1);
+		}
+	});
+
+	// Разрешаем максимум одну Half-breed.
+	if (isHalfBreedDoorCard(door) && halfBreedCount > 1) {
+		return false;
+	}
+	// Разрешаем максимум одну Super Munchkin.
+	if (isSuperMunchkinDoorCard(door) && superMunchkinCount > 1) {
+		return false;
+	}
+
+	// Half-breed можно экипировать только если уже есть (хотя бы 1) раса в main (кроме Human по умолчанию).
+	if (isHalfBreedDoorCard(door)) {
+		const raceCardCount = Array.from(raceCounts.values()).reduce((a, b) => a + b, 0);
+		return raceCardCount >= 1;
+	}
+	// Super Munchkin можно экипировать только если уже есть (хотя бы 1) класс в main.
+	if (isSuperMunchkinDoorCard(door)) {
+		const kindCardCount = Array.from(kindCounts.values()).reduce((a, b) => a + b, 0);
+		return kindCardCount >= 1;
+	}
+
+	// Если это карта расы.
+	if (door.race) {
+		const totalRaceCards = Array.from(raceCounts.values()).reduce((a, b) => a + b, 0);
+		const uniqueRaceCards = raceCounts.size;
+
+		// Запрет на одинаковые расы при Half-breed.
+		if (hasHalfBreed) {
+			// дубликат любой расы запрещён
+			if ((raceCounts.get(String(door.race)) || 0) > 1) {
+				return false;
+			}
+			// максимум 2 разных рас
+			return uniqueRaceCards <= 2 && totalRaceCards <= 2;
+		}
+
+		// Пока Half-breed не экипирована — максимум 1 раса в экипировке.
+		return totalRaceCards <= 1;
+	}
+
+	// Если это карта класса.
+	if (door.kind) {
+		const totalKindCards = Array.from(kindCounts.values()).reduce((a, b) => a + b, 0);
+		const uniqueKindCards = kindCounts.size;
+		if (hasSuperMunchkin) {
+			// дубликат любого класса запрещён
+			if ((kindCounts.get(String(door.kind)) || 0) > 1) {
+				return false;
+			}
+			// максимум 2 класса
+			return uniqueKindCards <= 2 && totalKindCards <= 2;
+		}
+		// Без Super Munchkin — максимум 1 класс
+		return totalKindCards <= 1;
+	}
+
+	return true;
 }
 
 function normalizeBadStaff(badStaff) {
@@ -916,8 +1117,8 @@ function scheduleDivineInterventionIfNeeded(cardId, zoneEl) {
 	if (!isDoorSpecial(cardId, "Divine intervention")) {
 		return;
 	}
-	// Пока карта в колоде дверей — ничего не делаем.
-	if (zoneEl.id === "zone_doors") {
+	// Пока карта в колоде или в сбросе дверей — ничего не делаем.
+	if (zoneEl.id === "zone_doors" || zoneEl.id === "zone_doors_drop") {
 		return;
 	}
 	const el = document.getElementById(cardId);
@@ -940,8 +1141,8 @@ function scheduleDivineInterventionIfNeeded(cardId, zoneEl) {
 		if (!curEl) {
 			return;
 		}
-		// Если карту успели вернуть в колоду — не срабатываем.
-		if (curEl.parentElement?.id === "zone_doors") {
+		// Если карту успели вернуть в колоду или в сброс — не срабатываем.
+		if (curEl.parentElement?.id === "zone_doors" || curEl.parentElement?.id === "zone_doors_drop") {
 			curEl.dataset.divineScheduled = "";
 			return;
 		}
@@ -1747,7 +1948,7 @@ function openSellTreasuresModal() {
 
 	const sellableCards = getLocalPlayerSellableTreasureCards();
 	const localCharacter = characterBySeat[localSeat];
-	const isLocalHalfling = String(localCharacter?.race || "") === "Halfling";
+	const isLocalHalfling = seatHasRace(localSeat, "Halfling");
 	const halflingBonusAvailable = isLocalHalfling && !halflingDoubleSellUsedBySeat[localSeat];
 	const modal = document.createElement('div');
 	modal.id = 'sell-treasures-modal';
@@ -2896,7 +3097,7 @@ function isSeatWarriorClassActive(seat) {
 		return false;
 	}
 	updateCharacterStatesFromBoard();
-	return String(characterBySeat[seat]?.kind || "") === "Warrior";
+	return seatHasKind(seat, "Warrior");
 }
 
 function isSeatClericClassActive(seat) {
@@ -2904,7 +3105,7 @@ function isSeatClericClassActive(seat) {
 		return false;
 	}
 	updateCharacterStatesFromBoard();
-	return String(characterBySeat[seat]?.kind || "") === "Cleric";
+	return seatHasKind(seat, "Cleric");
 }
 
 function isSeatThiefClassActive(seat) {
@@ -2912,7 +3113,7 @@ function isSeatThiefClassActive(seat) {
 		return false;
 	}
 	updateCharacterStatesFromBoard();
-	return String(characterBySeat[seat]?.kind || "") === "Thief";
+	return seatHasKind(seat, "Thief");
 }
 
 function isSeatWizardClassActive(seat) {
@@ -2920,7 +3121,7 @@ function isSeatWizardClassActive(seat) {
 		return false;
 	}
 	updateCharacterStatesFromBoard();
-	return String(characterBySeat[seat]?.kind || "") === "Wizard";
+	return seatHasKind(seat, "Wizard");
 }
 
 /**
@@ -2959,6 +3160,9 @@ function canLocalUseWarriorFrenzyNow() {
 		return false;
 	}
 	if (!battleActive || escapeActive) {
+		return false;
+	}
+	if (!getMonsterBattleContext().hasMonster) {
 		return false;
 	}
 	const isParticipant = Number(localSeat) === Number(currentTurnSeat)
@@ -3030,11 +3234,22 @@ function updateWarriorFrenzyUi() {
 	if (!btn) {
 		return;
 	}
-	if (canLocalUseWarriorFrenzyNow()) {
-		btn.style.display = 'flex';
-		positionWarriorFrenzyButton(btn);
-	} else {
+	if (localSeat == null || localSeat < 0 || !isSeatWarriorClassActive(localSeat)) {
 		btn.style.display = 'none';
+		btn.style.opacity = "";
+		btn.style.cursor = "";
+		hideWarriorFrenzyModal();
+		return;
+	}
+	btn.style.display = 'flex';
+	positionWarriorFrenzyButton(btn);
+	const canUse = canLocalUseWarriorFrenzyNow();
+	if (canUse) {
+		btn.style.opacity = '1';
+		btn.style.cursor = '';
+	} else {
+		btn.style.opacity = '0.5';
+		btn.style.cursor = 'not-allowed';
 		hideWarriorFrenzyModal();
 	}
 }
@@ -3044,11 +3259,22 @@ function updateClericExorcismUi() {
 	if (!btn) {
 		return;
 	}
-	if (canLocalUseClericExorcismNow()) {
-		btn.style.display = 'flex';
-		positionWarriorFrenzyButton(btn);
-	} else {
+	if (localSeat == null || localSeat < 0 || !isSeatClericClassActive(localSeat)) {
 		btn.style.display = 'none';
+		btn.style.opacity = "";
+		btn.style.cursor = "";
+		hideClericExorcismModal();
+		return;
+	}
+	btn.style.display = 'flex';
+	positionWarriorFrenzyButton(btn);
+	const canUse = canLocalUseClericExorcismNow();
+	if (canUse) {
+		btn.style.opacity = '1';
+		btn.style.cursor = '';
+	} else {
+		btn.style.opacity = '0.5';
+		btn.style.cursor = 'not-allowed';
 		hideClericExorcismModal();
 	}
 }
@@ -3058,12 +3284,24 @@ function updateThiefTrimUi() {
 	if (!btn) {
 		return;
 	}
-	// Кнопка по классу; −2 остаётся у жертв без класса (по правилам), но скидывать дальше нельзя.
-	if (canLocalUseThiefTrimNow()) {
-		btn.style.display = 'flex';
-		positionWarriorFrenzyButton(btn);
-	} else {
+	// У вора две способности с кнопками (кража и подрезка). Для UX кнопку подрезки
+	// показываем всегда, когда вор экипирован, но делаем disabled-визуал, если нельзя применять сейчас.
+	if (localSeat == null || localSeat < 0 || !isSeatThiefClassActive(localSeat)) {
 		btn.style.display = 'none';
+		btn.style.opacity = "";
+		btn.style.cursor = "";
+		hideThiefTrimModal();
+		return;
+	}
+	btn.style.display = 'flex';
+	positionWarriorFrenzyButton(btn);
+	const canUse = canLocalUseThiefTrimNow();
+	if (canUse) {
+		btn.style.opacity = "1";
+		btn.style.cursor = "";
+	} else {
+		btn.style.opacity = "0.5";
+		btn.style.cursor = "not-allowed";
 		hideThiefTrimModal();
 	}
 }
@@ -3680,27 +3918,25 @@ function updateWizardTamingUi() {
 	if (!btn) {
 		return;
 	}
-	const isWizard = localSeat != null && localSeat >= 0 && isSeatWizardClassActive(localSeat);
-	const isBattleParticipant = isWizard
-		&& battleActive
-		&& !escapeActive
-		&& getMonsterBattleContext().hasMonster
-		&& (Number(localSeat) === Number(currentTurnSeat)
-			|| (acceptedHelperSeat != null && Number(localSeat) === Number(acceptedHelperSeat)));
-	if (!isBattleParticipant) {
+	if (localSeat == null || localSeat < 0 || !isSeatWizardClassActive(localSeat)) {
 		btn.style.display = 'none';
+		btn.style.opacity = "";
+		btn.style.cursor = "";
 		hideWizardTamingModal();
 		hideWizardTamingPickModal();
 		return;
 	}
 	btn.style.display = 'flex';
 	positionWarriorFrenzyButton(btn);
-	if (canLocalUseWizardTamingNow()) {
+	const canUse = canLocalUseWizardTamingNow();
+	if (canUse) {
 		btn.style.opacity = '1';
 		btn.style.cursor = '';
 	} else {
 		btn.style.opacity = '0.5';
 		btn.style.cursor = 'not-allowed';
+		hideWizardTamingModal();
+		hideWizardTamingPickModal();
 	}
 }
 
@@ -4641,10 +4877,9 @@ function resolveEscapeRollAndBroadcast(seat, rawRoll) {
 		}, 1000);
 		return;
 	}
-	const seatRace = String(characterBySeat[seat]?.race || "");
 	const canUseHalflingRetry = !escaped
 		&& escapeAttemptNumber === 1
-		&& seatRace === "Halfling"
+		&& seatHasRace(seat, "Halfling")
 		&& !escapeHalflingRetryUsedForCurrentAttempt;
 	if (canUseHalflingRetry) {
 		escapeHalflingRetryUsedForCurrentAttempt = true;
@@ -4704,9 +4939,7 @@ function resolveCombatAndBroadcast() {
 		let helperLevel = null;
 		let helperLevelGain = 0;
 		if (!Number.isNaN(helperSeat) && helperSeat >= 0) {
-			const helperCharacter = characterBySeat[helperSeat];
-			const helperRace = String(helperCharacter?.race || "");
-			if (helperRace === "Elf") {
+			if (seatHasRace(helperSeat, "Elf")) {
 				helperLevelGain = monsters.length;
 				if (helperLevelGain > 0) {
 					const helperLevelSelector = seatToLevelMap[helperSeat];
@@ -5808,19 +6041,38 @@ function computeMonsterAdvantageBonus() {
 	// Важно: класс/раса могут поменяться прямо в бою — пересчитываем каждый раз.
 	updateCharacterStatesFromBoard();
 
-	const participants = [];
+	const participantRaces = new Set();
+	const participantKinds = new Set();
+	let ignoreAdvantage = false;
 	const active = characterBySeat[currentTurnSeat];
 	if (active) {
-		participants.push({ race: String(active.race || ""), kind: String(active.kind || "") });
+		const races = getCharacterRaces(active);
+		const kinds = getCharacterKinds(active);
+		races.forEach((r) => participantRaces.add(r));
+		kinds.forEach((k) => participantKinds.add(k));
+		ignoreAdvantage = ignoreAdvantage
+			|| (Boolean(active.hasHalfBreed) && String(active.race2 || "").trim() === "Human")
+			|| (Boolean(active.hasSuperMunchkin) && getCharacterKinds(active).length === 1);
 	}
 	if (acceptedHelperSeat !== null && acceptedHelperSeat !== undefined && acceptedHelperSeat >= 0) {
 		const helper = characterBySeat[acceptedHelperSeat];
 		if (helper) {
-			participants.push({ race: String(helper.race || ""), kind: String(helper.kind || "") });
+			const races = getCharacterRaces(helper);
+			const kinds = getCharacterKinds(helper);
+			races.forEach((r) => participantRaces.add(r));
+			kinds.forEach((k) => participantKinds.add(k));
+			ignoreAdvantage = ignoreAdvantage
+				|| (Boolean(helper.hasHalfBreed) && String(helper.race2 || "").trim() === "Human")
+				|| (Boolean(helper.hasSuperMunchkin) && getCharacterKinds(helper).length === 1);
 		}
 	}
 
-	if (participants.length === 0) {
+	if (participantRaces.size === 0 && participantKinds.size === 0) {
+		return 0;
+	}
+
+	// Half-breed + 1 раса: advantage монстров не действует.
+	if (ignoreAdvantage) {
 		return 0;
 	}
 
@@ -5844,7 +6096,7 @@ function computeMonsterAdvantageBonus() {
 		if (targets.length === 0 || bonus === 0) {
 			return;
 		}
-		const matched = participants.some((p) => targets.includes(p.race) || targets.includes(p.kind));
+		const matched = targets.some((t) => participantRaces.has(t) || participantKinds.has(t));
 		// Если в бою есть и помощник, а у монстра преимущество над обоими — добавляем один раз.
 		if (matched) {
 			total += bonus;
@@ -5901,23 +6153,173 @@ function updateCharacterStatesFromBoard() {
 		// Side-зона — это "отложенная" экипировка/мелкая шмотка и не должна давать расу/класс.
 		// Если таких карт нет, значения сбрасываются к дефолту.
 		let nextRace = "Human";
+		let nextRace2 = "";
+		let hasHalfBreed = false;
 		let nextKind = "";
+		let nextKind2 = "";
+		let hasSuperMunchkin = false;
 		let doorRemoverBonus = 0;
+		const raceCardsInMain = [];
+		const raceCardElByRace = new Map();
+		const kindCardsInMain = [];
+		const kindCardElByKind = new Map();
+		let halfBreedCardEl = null;
+		let superMunchkinCardEl = null;
 		mainCards.forEach((cardEl) => {
 			const doorCard = window.doors?.find(d => d.name === cardEl.id);
 			if (!doorCard) {
 				return;
 			}
+			if (String(doorCard.special || "") === "Half-breed" || String(doorCard.card_name || "") === "Half-breed") {
+				hasHalfBreed = true;
+				halfBreedCardEl = halfBreedCardEl || cardEl;
+			}
+			if (String(doorCard.special || "") === "Super Munchkin" || String(doorCard.card_name || "") === "Super Munchkin") {
+				hasSuperMunchkin = true;
+				superMunchkinCardEl = superMunchkinCardEl || cardEl;
+			}
 			if (doorCard.race) {
-				nextRace = doorCard.race;
+				const r = String(doorCard.race);
+				// Запрет на 2 одинаковые расы при Half-breed: не сбрасываем автоматически,
+				// а откатываем карту обратно в руку игрока.
+				if (hasHalfBreed) {
+					if (raceCardElByRace.has(r)) {
+						appendCardToSeatHand(cardEl.id, seat);
+						return;
+					}
+					raceCardElByRace.set(r, cardEl);
+				}
+				raceCardsInMain.push(r);
 			}
 			if (doorCard.kind) {
-				nextKind = doorCard.kind;
+				const k = String(doorCard.kind);
+				// Запрет на 2 одинаковых класса при Super Munchkin: откат в руку.
+				if (hasSuperMunchkin) {
+					if (kindCardElByKind.has(k)) {
+						appendCardToSeatHand(cardEl.id, seat);
+						return;
+					}
+					kindCardElByKind.set(k, cardEl);
+				}
+				kindCardsInMain.push(k);
 			}
 			doorRemoverBonus += Number(doorCard.remover) || 0;
 		});
+
+		// Уникализируем расы, сохраняя порядок.
+		const uniqueRaces = [];
+		raceCardsInMain.forEach((r) => {
+			if (!r) {
+				return;
+			}
+			if (uniqueRaces.includes(r)) {
+				return;
+			}
+			uniqueRaces.push(r);
+		});
+
+		// Пока Half-breed НЕ экипирована — нельзя иметь больше одной расы.
+		// Если кто-то попытался экипировать вторую расу, откатываем лишние карты обратно в руку.
+		if (!hasHalfBreed) {
+			// Находим все карты рас в main, оставляем последнюю, остальные возвращаем в руку.
+			const raceEls = [];
+			mainCards.forEach((cardEl) => {
+				const doorCard = window.doors?.find(d => d.name === cardEl.id);
+				if (doorCard?.race) {
+					raceEls.push(cardEl);
+				}
+			});
+			if (raceEls.length > 1) {
+				// Оставляем последнюю по DOM-порядку.
+				for (let i = 0; i < raceEls.length - 1; i++) {
+					appendCardToSeatHand(raceEls[i].id, seat);
+				}
+			}
+		}
+
+		// Пока Super Munchkin НЕ экипирован — нельзя иметь больше одного класса.
+		if (!hasSuperMunchkin) {
+			const kindEls = [];
+			mainCards.forEach((cardEl) => {
+				const doorCard = window.doors?.find(d => d.name === cardEl.id);
+				if (doorCard?.kind) {
+					kindEls.push(cardEl);
+				}
+			});
+			if (kindEls.length > 1) {
+				for (let i = 0; i < kindEls.length - 1; i++) {
+					appendCardToSeatHand(kindEls[i].id, seat);
+				}
+			}
+		}
+
+		// Правило сброса: если экипирована Half-breed, но реальной расы нет — Half-breed тоже уходит в сброс.
+		if (hasHalfBreed && uniqueRaces.length === 0 && halfBreedCardEl) {
+			const dropZone = document.getElementById('zone_doors_drop');
+			if (dropZone && halfBreedCardEl.parentElement && halfBreedCardEl.parentElement.id !== 'zone_doors_drop') {
+				dropZone.appendChild(halfBreedCardEl);
+			}
+			hasHalfBreed = false;
+		}
+
+		// Правило сброса: если экипирован Super Munchkin, но класса нет — Super Munchkin тоже уходит в сброс.
+		if (hasSuperMunchkin && kindCardsInMain.length === 0 && superMunchkinCardEl) {
+			const dropZone = document.getElementById('zone_doors_drop');
+			if (dropZone && superMunchkinCardEl.parentElement && superMunchkinCardEl.parentElement.id !== 'zone_doors_drop') {
+				dropZone.appendChild(superMunchkinCardEl);
+			}
+			hasSuperMunchkin = false;
+		}
+
+		if (!hasHalfBreed) {
+			// Без Half-breed: считаем активной последнюю расу (если их вдруг несколько — поведение как раньше).
+			nextRace = uniqueRaces.length > 0 ? uniqueRaces[uniqueRaces.length - 1] : "Human";
+			nextRace2 = "";
+		} else {
+			// Half-breed: 2 расы.
+			// Если надета одна карта расы → вторая раса считается Human.
+			if (uniqueRaces.length === 1) {
+				nextRace = uniqueRaces[0];
+				nextRace2 = "Human";
+			} else {
+				// Если 2+ разных расы → берём последние две.
+				const r1 = uniqueRaces[uniqueRaces.length - 2];
+				const r2 = uniqueRaces[uniqueRaces.length - 1];
+				nextRace = r1;
+				nextRace2 = r2;
+			}
+		}
+
+		// Классы: без Super Munchkin берём последний; с ним — до 2 классов (если 1, то второй пустой).
+		if (!hasSuperMunchkin) {
+			nextKind = kindCardsInMain.length > 0 ? kindCardsInMain[kindCardsInMain.length - 1] : "";
+			nextKind2 = "";
+		} else {
+			const uniqueKinds = [];
+			kindCardsInMain.forEach((k) => {
+				if (!k) {
+					return;
+				}
+				if (uniqueKinds.includes(k)) {
+					return;
+				}
+				uniqueKinds.push(k);
+			});
+			if (uniqueKinds.length === 1) {
+				nextKind = uniqueKinds[0];
+				nextKind2 = "";
+			} else {
+				nextKind = uniqueKinds[uniqueKinds.length - 2];
+				nextKind2 = uniqueKinds[uniqueKinds.length - 1];
+			}
+		}
+
 		character.race = nextRace;
+		character.race2 = nextRace2;
+		character.hasHalfBreed = hasHalfBreed;
 		character.kind = nextKind;
+		character.kind2 = nextKind2;
+		character.hasSuperMunchkin = hasSuperMunchkin;
 
 		// Теперь, когда race/kind уже актуальны, считаем силу от шмоток (часть может зависеть от расы).
 		const equippedTreasures = mainCards
@@ -6090,7 +6492,6 @@ export function recalculateAllPowerDisplays() {
 
 let gameStarted = false;
 // mercTestDealt removed (no test deal)
-let mateTestDealt = false;
 socket.on("message", response => {
 	
 	num = response.num;
@@ -7443,11 +7844,6 @@ socket.on("message", response => {
 		recalculateAllPowerDisplays();
 		applyTurnHighlight();
 		Start_game(num);
-		// Временно для тестов: у первого игрока (seat 0) карта Mate сразу в руке.
-		if (!mateTestDealt && localSeat === 0) {
-			mateTestDealt = true;
-			socket.emit("message", { method: "MateTestDeal", seat: 0, cardId: "door93" });
-		}
 		// Тестовую раздачу наёмничка убрали.
 		recalculateAllPowerDisplays();
 		applyTurnHighlight();
@@ -7858,16 +8254,16 @@ const door78 = new Card_door("door78", "",  "../img/doors1/card0078.png", "../im
 const door79 = new Card_door("door79", "",  "../img/doors1/card0079.png", "../img/doors1/cardBack_Doors.png", 18, "monster", "", "", 2, { type: "death" });
 const door80 = new Card_door("door80", "",  "../img/doors1/card0080.png", "../img/doors1/cardBack_Doors.png", 18, "monster", "", "", 2, { type: "death" });
 const door81 = new Card_door("door81", "",  "../img/doors1/card0081.png", "../img/doors1/cardBack_Doors.png", 20, "monster", "", "", 2, { type: "death" });
-const door82 = new Card_door("door82", "",  "../img/doors1/card0082.png", "../img/doors1/cardBack_Doors.png",0);
-const door83 = new Card_door("door83", "",  "../img/doors1/card0083.png", "../img/doors1/cardBack_Doors.png",0);
-const door84 = new Card_door("door84", "",  "../img/doors1/card0084.png", "../img/doors1/cardBack_Doors.png",0);
-const door85 = new Card_door("door85", "",  "../img/doors1/card0085.png", "../img/doors1/cardBack_Doors.png",0);
+const door82 = new Card_door("door82", "Half-breed",  "../img/doors1/card0082.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Half-breed");
+const door83 = new Card_door("door83", "Half-breed",  "../img/doors1/card0083.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Half-breed");
+const door84 = new Card_door("door84", "Super Munchkin",  "../img/doors1/card0084.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Super Munchkin");
+const door85 = new Card_door("door85", "Super Munchkin",  "../img/doors1/card0085.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Super Munchkin");
 const door86 = new Card_door("door86", "Wandering Monster",  "../img/doors1/card0086.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Wandering Monster");
 const door87 = new Card_door("door87", "Wandering Monster",  "../img/doors1/card0087.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Wandering Monster");
 const door88 = new Card_door("door88", "Wandering Monster",  "../img/doors1/card0088.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Wandering Monster");
 const door89 = new Card_door("door89", "Cheat",  "../img/doors1/card0089.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Cheat");
 // card0090: вернуть как раньше (Divine intervention)
-const door90 = new Card_door("door90", "",  "../img/doors1/card0090.png", "../img/doors1/cardBack_Doors.png",0, "", "", "Divine intervention");
+const door90 = new Card_door("door90", "Divine intervention",  "../img/doors1/card0090.png", "../img/doors1/cardBack_Doors.png",0, "", "", "Divine intervention");
 const door91 = new Card_door("door91", "",  "../img/doors1/card0091.png", "../img/doors1/cardBack_Doors.png",0);
 const door92 = new Card_door("door92", "Illusion",  "../img/doors1/card0092.png", "../img/doors1/cardBack_Doors.png",0, "", "", "Illusion");
 const door93 = new Card_door("door93", "Mate",  "../img/doors1/card0093.png", "../img/doors1/cardBack_Doors.png",0, "", "", "Mate");
@@ -8032,6 +8428,19 @@ function Start_game(num_players){
           }
         });
     }
+
+		// Тестовая раздача: 1 Super Munchkin и по 1 карте каждого класса.
+		// Кладём локальному игроку в руку, если карты ещё в колоде дверей.
+		["door84", "door1", "door3", "door6", "door9"].forEach((id) => {
+			const el = document.getElementById(id);
+			if (!el || !myhand) {
+				return;
+			}
+			const parentId = el.parentElement?.id || "";
+			if (parentId === "zone_doors") {
+				myhand.appendChild(el);
+			}
+		});
     
 
 }

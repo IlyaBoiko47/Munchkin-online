@@ -2176,6 +2176,30 @@ button:hover {
 	transition: background-color 0.2s ease;
 }
 
+/* Панель кнопок способностей классов: кнопки идут столбиком и не пересекаются */
+.abilities-panel{
+	/* Ставим панель в ту же область, где раньше были кнопки классов. */
+	position: fixed;
+	left: calc(50% - 234px);
+	bottom: 168px;
+	transform: translateX(-50%);
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	z-index: 25;
+	pointer-events: none; /* клики проходят только по кнопкам */
+}
+.abilities-panel .fold{
+	/* Перебиваем старые #id правила (там position: fixed и bottom). */
+	position: static !important;
+	left: auto !important;
+	right: auto !important;
+	top: auto !important;
+	bottom: auto !important;
+	transform: none !important;
+	pointer-events: auto;
+}
+
 #offer-help{
   /* Кнопка помощи: по центру по горизонтали. */
   top: 35%;

@@ -1,5 +1,5 @@
 import { UpdateZones } from './увеличение карточек во время игры.js';
-import { UpdatebackImgTreasure, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, scheduleWanderingMonsterIfNeeded, scheduleCheatIfNeeded, scheduleMagicLampIfNeeded, schedulePollymorthPotionIfNeeded, scheduleIllusionIfNeeded, scheduleMateIfNeeded, canLocalPlayMagicLampToBattleZone, canPlaceTreasureInPlayerEquipment } from './game.js';
+import { UpdatebackImgTreasure, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, scheduleWanderingMonsterIfNeeded, scheduleCheatIfNeeded, scheduleMagicLampIfNeeded, schedulePollymorthPotionIfNeeded, scheduleIllusionIfNeeded, scheduleMateIfNeeded, canLocalPlayMagicLampToBattleZone, canPlaceTreasureInPlayerEquipment, canPlaceDoorInPlayerEquipment } from './game.js';
 import { UpdatebackImgDoor } from './game.js';
 import socket from './socket/index.js';
 //import {socket} from './game.js';
@@ -194,9 +194,10 @@ function dragover_handler(e) {
 	// Сила «запрета» передаётся красным filter; dropEffect оставляем 'move', чтобы сработал drop.
 	e.dataTransfer.dropEffect = 'move';
 	const invalidTreasureEquip = currentDrag && zone && !canPlaceTreasureInPlayerEquipment(currentDrag, zone);
+	const invalidDoorEquip = currentDrag && zone && !canPlaceDoorInPlayerEquipment(currentDrag, zone);
 	const invalidMonsterToBattle = currentDrag && zone && !canPlaceCardIntoMonsterBattleZone(currentDrag, zone);
 	const invalidMagicLampToBattle = currentDrag && zone && !canPlaceMagicLampIntoBattleZone(currentDrag, zone);
-	if (invalidTreasureEquip || invalidMonsterToBattle || invalidMagicLampToBattle) {
+	if (invalidTreasureEquip || invalidDoorEquip || invalidMonsterToBattle || invalidMagicLampToBattle) {
 		if (currentDrag) {
 			currentDrag.style.filter = invalidMonsterToBattle ? INVALID_MONSTER_TO_BATTLE_FILTER : INVALID_TREASURE_EQUIPMENT_FILTER;
 		}
@@ -213,9 +214,10 @@ function drop_handler(e) {
   const target = e.target.closest('.card');
   const zone = e.target.closest('.cards-zone');
   const invalidTreasureEquip = currentDrag && zone && !canPlaceTreasureInPlayerEquipment(currentDrag, zone);
+  const invalidDoorEquip = currentDrag && zone && !canPlaceDoorInPlayerEquipment(currentDrag, zone);
   const invalidMonsterToBattle = currentDrag && zone && !canPlaceCardIntoMonsterBattleZone(currentDrag, zone);
   const invalidMagicLampToBattle = currentDrag && zone && !canPlaceMagicLampIntoBattleZone(currentDrag, zone);
-  if (currentDrag && zone && (invalidTreasureEquip || invalidMonsterToBattle || invalidMagicLampToBattle) && dragFromSnapshot?.parent) {
+  if (currentDrag && zone && (invalidTreasureEquip || invalidDoorEquip || invalidMonsterToBattle || invalidMagicLampToBattle) && dragFromSnapshot?.parent) {
 	dragFromSnapshot.parent.insertBefore(currentDrag, dragFromSnapshot.next);
 	if (currentDrag) {
 		currentDrag.style.filter = '';

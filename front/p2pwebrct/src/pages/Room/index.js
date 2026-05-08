@@ -100,11 +100,13 @@ export default function Room() {
 							<div className="timer" id="timer"></div>
 							<div className="fold" id="fold">Пас</div>
 							<div className="fold" id="end-turn">Завершить ход</div>
-							<div className="fold" id="warrior-frenzy-btn">Буйство</div>
-							<div className="fold" id="cleric-exorcism-btn">Изгнание</div>
-							<div className="fold" id="wizard-taming-btn">Заклинание<br />Усмирения</div>
-							<div className="fold" id="thief-theft-btn">Кража</div>
-							<div className="fold" id="thief-trim-btn">Подрезка</div>
+							<div className="abilities-panel" id="abilities-panel">
+								<div className="fold" id="warrior-frenzy-btn">Буйство</div>
+								<div className="fold" id="cleric-exorcism-btn">Изгнание</div>
+								<div className="fold" id="wizard-taming-btn">Заклинание<br />Усмирения</div>
+								<div className="fold" id="thief-theft-btn">Кража</div>
+								<div className="fold" id="thief-trim-btn">Подрезка</div>
+							</div>
 							<div className="fold" id="offer-help">Предложить помощь</div>
 
 							<div className="settings_in_game_board">
