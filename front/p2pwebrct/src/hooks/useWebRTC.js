@@ -196,13 +196,10 @@ export default function useWebRTC(roomID) {
         }
     };
 
-    startCapture()
-        .then((ok) => {
-            if (ok) {
-                socket.emit(ACTIONS.JOIN, {room: roomID});
-            }
-        })
-        .catch((e) => console.error('Error joining room:', e));
+    // Важно: на http (не localhost) браузеры часто блокируют getUserMedia.
+    // Но комната и игра должны работать и без микрофона — поэтому JOIN выполняем всегда.
+    socket.emit(ACTIONS.JOIN, {room: roomID});
+    startCapture().catch((e) => console.error('Error getting userMedia:', e));
 
     return () => {
         if (localMediaStream.current) {
