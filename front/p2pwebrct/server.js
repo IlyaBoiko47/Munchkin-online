@@ -2,11 +2,18 @@ const path = require('path');
 const express = require('express');
 const app = express();
 const server = require('http').createServer(app);
-const io = require('socket.io')(server);
+const io = require('socket.io')(server, {
+  cors: {
+    origin: process.env.SOCKET_CORS_ORIGIN ? process.env.SOCKET_CORS_ORIGIN.split(',').map(s => s.trim()).filter(Boolean) : true,
+    methods: ['GET', 'POST'],
+    credentials: true,
+  },
+});
 const {version, validate} = require('uuid');
 
 const ACTIONS = require('./src/socket/actions');
-const PORT = process.env.PORT || 3001;
+const PORT = Number(process.env.PORT) || 3001;
+const HOST = process.env.HOST || '0.0.0.0';
 
 function getClientRooms() {
   const {rooms} = io.sockets.adapter;
@@ -235,21 +242,27 @@ function matchClientsInRoom(roomID) {
 
 
 
-//const publicPath = path.join(__dirname, 'build');
-//app.use(express.static(publicPath));
+const fs = require('fs');
+const mime = require('mime-types');
+
+// В проде после `npm run build` статика лежит в ./build
+// В dev (без build) оставляем возможность отдавать ./public как раньше.
+const buildPath = path.join(__dirname, 'build');
 const publicPath = path.join(__dirname, 'public');
+const staticPath = fs.existsSync(buildPath) ? buildPath : publicPath;
 
-const mime = require('mime-types'); // Для получения MIME-типов
-
-app.use(express.static(publicPath, {
-  setHeaders: (res, path, stat) => {
-    res.set('Content-Type', mime.lookup(path));
+app.use(express.static(staticPath, {
+  setHeaders: (res, p) => {
+    const type = mime.lookup(p);
+    if (type) {
+      res.set('Content-Type', type);
+    }
   }
 }));
 app.get('*', (req, res) => {
-  res.sendFile(path.join(publicPath, 'index.html'));
+  res.sendFile(path.join(staticPath, 'index.html'));
 });
 
-server.listen(PORT, "0.0.0.0", () => {
-	console.log(`Сервер Socket.IO запущен на порту ${PORT} (0.0.0.0 — доступ из LAN)`);
+server.listen(PORT, HOST, () => {
+  console.log(`Munchkin server started on http://${HOST}:${PORT} (static: ${path.basename(staticPath)})`);
 });

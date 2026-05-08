@@ -39,8 +39,9 @@ io.on("connection", socket => {
   });
 	
 });
-server.listen(8080, () => {
-  //console.log('Server started');
+const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
+server.listen(PORT, () => {
+  console.log(`Server started on port ${PORT}`);
 });
 
 function matchClients(clientId) {

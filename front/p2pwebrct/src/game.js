@@ -8429,20 +8429,6 @@ function Start_game(num_players){
         });
     }
 
-		// Тестовая раздача: 1 Super Munchkin и по 1 карте каждого класса.
-		// Кладём локальному игроку в руку, если карты ещё в колоде дверей.
-		["door84", "door1", "door3", "door6", "door9"].forEach((id) => {
-			const el = document.getElementById(id);
-			if (!el || !myhand) {
-				return;
-			}
-			const parentId = el.parentElement?.id || "";
-			if (parentId === "zone_doors") {
-				myhand.appendChild(el);
-			}
-		});
-    
-
 }
 document.addEventListener('DOMContentLoaded', function() {
   function initialize() {
