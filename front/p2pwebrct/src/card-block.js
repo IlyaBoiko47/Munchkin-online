@@ -1,5 +1,5 @@
 import { UpdateZones } from './увеличение карточек во время игры.js';
-import { UpdatebackImgTreasure, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, scheduleWanderingMonsterIfNeeded, scheduleCheatIfNeeded, scheduleMagicLampIfNeeded, schedulePollymorthPotionIfNeeded, scheduleIllusionIfNeeded, scheduleMateIfNeeded, canLocalPlayMagicLampToBattleZone, canPlaceTreasureInPlayerEquipment, canPlaceDoorInPlayerEquipment } from './game.js';
+import { UpdatebackImgTreasure, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, scheduleWanderingMonsterIfNeeded, scheduleCheatIfNeeded, scheduleMagicLampIfNeeded, schedulePollymorthPotionIfNeeded, scheduleIllusionIfNeeded, scheduleMateIfNeeded, canLocalPlayMagicLampToBattleZone, canPlaceTreasureInPlayerEquipment, canPlaceDoorInPlayerEquipment, canPlaceDopplegangerTreasureInBonusZone, getLocalSeatForSocket } from './game.js';
 import { UpdatebackImgDoor } from './game.js';
 import socket from './socket/index.js';
 //import {socket} from './game.js';
@@ -103,9 +103,10 @@ function dragend_handler(e) {
 		const invalidDoorEquip = currentDrag && zone && !canPlaceDoorInPlayerEquipment(currentDrag, zone);
 		const invalidMonsterToBattle = currentDrag && zone && !canPlaceCardIntoMonsterBattleZone(currentDrag, zone);
 		const invalidMagicLampToBattle = currentDrag && zone && !canPlaceMagicLampIntoBattleZone(currentDrag, zone);
+		const invalidDopplegangerBonus = currentDrag && zone && !canPlaceDopplegangerTreasureInBonusZone(currentDrag, zone);
 
 		// Если перенос в последнюю зону был невалиден — откатываем.
-		if (invalidTreasureEquip || invalidDoorEquip || invalidMonsterToBattle || invalidMagicLampToBattle) {
+		if (invalidTreasureEquip || invalidDoorEquip || invalidMonsterToBattle || invalidMagicLampToBattle || invalidDopplegangerBonus) {
 			dragFromSnapshot.parent.insertBefore(currentDrag, dragFromSnapshot.next);
 			currentDrag.style.filter = '';
 		} else {
@@ -148,6 +149,10 @@ function dragend_handler(e) {
 			zoneId: currentDrag.parentElement ? currentDrag.parentElement.id : null,
 			fromZoneId: dragFromSnapshot?.parent?.id || null,
 		};
+		const seatForPlayed = getLocalSeatForSocket();
+		if (seatForPlayed != null && seatForPlayed !== undefined && !Number.isNaN(Number(seatForPlayed))) {
+			moveData.playedBySeat = Number(seatForPlayed);
+		}
 		socket.emit("message", moveData);
 
 		const parentZone = currentDrag.parentElement;
@@ -306,7 +311,8 @@ function dragover_handler(e) {
 	const invalidDoorEquip = currentDrag && zone && !canPlaceDoorInPlayerEquipment(currentDrag, zone);
 	const invalidMonsterToBattle = currentDrag && zone && !canPlaceCardIntoMonsterBattleZone(currentDrag, zone);
 	const invalidMagicLampToBattle = currentDrag && zone && !canPlaceMagicLampIntoBattleZone(currentDrag, zone);
-	if (invalidTreasureEquip || invalidDoorEquip || invalidMonsterToBattle || invalidMagicLampToBattle) {
+	const invalidDopplegangerBonus = currentDrag && zone && !canPlaceDopplegangerTreasureInBonusZone(currentDrag, zone);
+	if (invalidTreasureEquip || invalidDoorEquip || invalidMonsterToBattle || invalidMagicLampToBattle || invalidDopplegangerBonus) {
 		if (currentDrag) {
 			currentDrag.style.filter = invalidMonsterToBattle ? INVALID_MONSTER_TO_BATTLE_FILTER : INVALID_TREASURE_EQUIPMENT_FILTER;
 		}
@@ -327,7 +333,8 @@ function drop_handler(e) {
   const invalidDoorEquip = currentDrag && zone && !canPlaceDoorInPlayerEquipment(currentDrag, zone);
   const invalidMonsterToBattle = currentDrag && zone && !canPlaceCardIntoMonsterBattleZone(currentDrag, zone);
   const invalidMagicLampToBattle = currentDrag && zone && !canPlaceMagicLampIntoBattleZone(currentDrag, zone);
-  if (currentDrag && zone && (invalidTreasureEquip || invalidDoorEquip || invalidMonsterToBattle || invalidMagicLampToBattle) && dragFromSnapshot?.parent) {
+  const invalidDopplegangerBonus = currentDrag && zone && !canPlaceDopplegangerTreasureInBonusZone(currentDrag, zone);
+  if (currentDrag && zone && (invalidTreasureEquip || invalidDoorEquip || invalidMonsterToBattle || invalidMagicLampToBattle || invalidDopplegangerBonus) && dragFromSnapshot?.parent) {
 	dragFromSnapshot.parent.insertBefore(currentDrag, dragFromSnapshot.next);
 	if (currentDrag) {
 		currentDrag.style.filter = '';
@@ -356,6 +363,10 @@ function drop_handler(e) {
 		zoneId: currentDrag.parentElement ? currentDrag.parentElement.id : null,
 		fromZoneId: dragFromSnapshot?.parent?.id || null,
 	};
+	const seatPlayedInvalid = getLocalSeatForSocket();
+	if (seatPlayedInvalid != null && seatPlayedInvalid !== undefined && !Number.isNaN(Number(seatPlayedInvalid))) {
+		moveData.playedBySeat = Number(seatPlayedInvalid);
+	}
 	socket.emit("message", moveData);
 	if (currentDrag) {
 		const parentZone = currentDrag.parentElement;
@@ -483,14 +494,18 @@ function drop_handler(e) {
   UpdatebackImgDoor();
 	recalculateAllPowerDisplays();
 
-  const moveData = {
-    method: "moveCard",
-    cardId: currentDrag.id,
-    targetId: target ? target.id : null,
-    zoneId: zone.id,
-	fromZoneId: dragFromSnapshot?.parent?.id || null,
-  };
-  socket.emit("message",moveData);
+	const moveData = {
+		method: "moveCard",
+		cardId: currentDrag.id,
+		targetId: target ? target.id : null,
+		zoneId: zone.id,
+		fromZoneId: dragFromSnapshot?.parent?.id || null,
+	};
+	const seatPlayed = getLocalSeatForSocket();
+	if (seatPlayed != null && seatPlayed !== undefined && !Number.isNaN(Number(seatPlayed))) {
+		moveData.playedBySeat = Number(seatPlayed);
+	}
+	socket.emit("message", moveData);
 
   if (currentDrag && zone) {
     scheduleBadStaffIfNeeded(currentDrag.id, zone);

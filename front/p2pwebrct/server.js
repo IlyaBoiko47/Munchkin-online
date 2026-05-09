@@ -92,6 +92,34 @@ function patchRoomDiscards(roomID, cardIds) {
   patchRoomCardEntries(roomID, entries);
 }
 
+function isCardInDoorOrTreasureDiscard(roomID, cardId) {
+  const prev = roomStates.get(roomID) || {};
+  const cards = prev.cards && typeof prev.cards === 'object' ? prev.cards : {};
+  const pos = cards[String(cardId || '').trim()];
+  if (!pos) {
+    return false;
+  }
+  const z = String(pos.zoneId || '');
+  return z === 'zone_doors_drop' || z === 'zone_treasure_drop';
+}
+
+const WAND_OF_DOWSING_CARD_ID = 'treasure46';
+const TRANSFERRAL_POTION_CARD_ID = 'treasure58';
+
+function isWandOfDowsingActivatableZone(zoneId) {
+  const z = String(zoneId || '');
+  if (z === 'zone_monster' || z === 'zone3') {
+    return true;
+  }
+  return (
+    z === 'zone2'
+    || z === 'zone5'
+    || z === 'zone_opponent'
+    || z === 'zone_opponent2'
+    || z === 'zone_opponent3'
+  );
+}
+
 function getClientRooms() {
   const {rooms} = io.sockets.adapter;
 
@@ -193,6 +221,34 @@ io.on('connection', socket => {
           io.to(roomID).emit("message", { method: "moveCard", cardId, targetId: null, zoneId, fromZoneId: "zone_treasure" });
         }
 
+        // Тестовая раздача: Doppleganger (treasure47 / card0142) в руку игрока на месте 0.
+        const doppleCardId = "treasure47";
+        const doppleHand = handZoneIdForSeatInRoom(roomID, 0);
+        const prevDop = state.cards[doppleCardId];
+        const dopFrom = prevDop?.zoneId ? String(prevDop.zoneId) : "zone_treasure";
+        state.cards[doppleCardId] = { zoneId: doppleHand, targetId: null };
+        io.to(roomID).emit("message", {
+          method: "moveCard",
+          cardId: doppleCardId,
+          targetId: null,
+          zoneId: doppleHand,
+          fromZoneId: dopFrom,
+        });
+
+        // Тестовая раздача: Transferral potion (treasure58 / card0153) в руку игрока на месте 0.
+        const transferCardId = "treasure58";
+        const transferHand = handZoneIdForSeatInRoom(roomID, 0);
+        const prevTransfer = state.cards[transferCardId];
+        const transferFrom = prevTransfer?.zoneId ? String(prevTransfer.zoneId) : "zone_treasure";
+        state.cards[transferCardId] = { zoneId: transferHand, targetId: null };
+        io.to(roomID).emit("message", {
+          method: "moveCard",
+          cardId: transferCardId,
+          targetId: null,
+          zoneId: transferHand,
+          fromZoneId: transferFrom,
+        });
+
         roomStates.set(roomID, state);
         shareRoomsInfo();
       }
@@ -233,6 +289,7 @@ io.on('connection', socket => {
       "IllusionResolve",
       "MateApply",
       "MateTestDeal",
+      "WandOfDowsingResolve",
       "OfferHelp",
       "AcceptHelp",
       "EscapeSequenceStart",
@@ -510,6 +567,73 @@ io.on('connection', socket => {
       const cardId = String(moveData.cardId || '').trim();
       if (Number.isFinite(seat) && seat >= 0 && seat <= 2 && cardId) {
         patchRoomCardEntries(roomID, [{ cardId, zoneId: handZoneIdForSeatInRoom(roomID, seat), targetId: null }]);
+      }
+    }
+
+    if (moveData.method === "WandOfDowsingResolve") {
+      const wandId = String(moveData.wandCardId || '').trim();
+      const pickedId = String(moveData.pickedCardId || '').trim();
+      const actorSeat = Number(moveData.actorSeat);
+      if (wandId !== WAND_OF_DOWSING_CARD_ID || !Number.isFinite(actorSeat) || actorSeat < 0 || actorSeat > 2) {
+        // ignore invalid
+      } else {
+        const prev = roomStates.get(roomID) || {};
+        const cards = prev.cards && typeof prev.cards === 'object' ? prev.cards : {};
+        const wandPos = cards[wandId];
+        const wz = wandPos ? String(wandPos.zoneId || '') : '';
+        if (wandPos && isWandOfDowsingActivatableZone(wz)) {
+          const entries = [];
+          if (pickedId && isCardInDoorOrTreasureDiscard(roomID, pickedId)) {
+            entries.push({ cardId: pickedId, zoneId: handZoneIdForSeatInRoom(roomID, actorSeat), targetId: null });
+          }
+          entries.push({ cardId: wandId, zoneId: 'zone_treasure_drop', targetId: null });
+          patchRoomCardEntries(roomID, entries);
+        }
+      }
+    }
+
+    if (moveData.method === "TransferralPotionResolve") {
+      const potionId = String(moveData.potionCardId || '').trim();
+      const newFighter = Number(moveData.newFighterSeat);
+      const prev = roomStates.get(roomID) || {};
+      const numPlayers = Math.max(1, Math.min(3, Number(prev.num) || 3));
+      if (
+        potionId === TRANSFERRAL_POTION_CARD_ID
+        && Number.isFinite(newFighter)
+        && newFighter >= 0
+        && newFighter < numPlayers
+      ) {
+        const cards = prev.cards && typeof prev.cards === 'object' ? prev.cards : {};
+        const potPos = cards[potionId];
+        const pz = potPos ? String(potPos.zoneId || '') : '';
+        if (potPos && isWandOfDowsingActivatableZone(pz)) {
+          const game = getOrInitRoomGameState(roomID);
+          let tp = {};
+          try {
+            tp = game.turnPhase && typeof game.turnPhase === 'object' ? JSON.parse(JSON.stringify(game.turnPhase)) : {};
+          } catch {
+            tp = game.turnPhase && typeof game.turnPhase === 'object' ? { ...game.turnPhase } : {};
+          }
+          const turn = Number.isFinite(Number(tp.currentTurnSeat)) ? Number(tp.currentTurnSeat) : 0;
+          const mfs0 = (tp.monsterFightSeat == null || tp.monsterFightSeat === '' || Number.isNaN(Number(tp.monsterFightSeat)))
+            ? null
+            : Number(tp.monsterFightSeat);
+          const curFight = mfs0 != null ? mfs0 : turn;
+          if (newFighter !== curFight) {
+            patchRoomDiscards(roomID, [potionId]);
+            tp.monsterFightSeat = newFighter;
+            tp.acceptedHelperSeat = null;
+            tp.pendingHelpSeats = [];
+            game.turnPhase = tp;
+            const latest = roomStates.get(roomID) || {};
+            roomStates.set(roomID, { ...latest, game });
+            io.to(roomID).emit("message", {
+              method: "TransferralPotionResolve",
+              potionCardId: potionId,
+              newFighterSeat: newFighter,
+            });
+          }
+        }
       }
     }
 

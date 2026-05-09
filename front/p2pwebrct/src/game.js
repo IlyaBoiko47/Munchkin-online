@@ -10,6 +10,12 @@ window.treasures = [];
 
 let num;
 let localSeat = null;
+
+/** Для moveCard: кто инициировал перенос (локальное место), чтобы удалённые клиенты открыли модалку штыря у нужного игрока. */
+export function getLocalSeatForSocket() {
+	return localSeat;
+}
+
 let currentTurnSeat = 0;
 const levelBySeat = [1, 1, 1];
 const STEAL_LEVEL_CARD_NAME = "Steal a level";
@@ -149,6 +155,23 @@ window.characterBySeat = characterBySeat;
 let battleActive = false;
 let pendingHelpSeats = new Set();
 let acceptedHelperSeat = null;
+/** В бою с монстром: кто ведёт бой (сила MyBonus, смывка, уровни). По умолчанию null = {@link currentTurnSeat}. */
+let monsterFightSeat = null;
+
+function getMonsterFightSeat() {
+	if (!battleActive) {
+		return currentTurnSeat;
+	}
+	if (monsterFightSeat != null && monsterFightSeat !== undefined && !Number.isNaN(Number(monsterFightSeat))) {
+		const m = Number(monsterFightSeat);
+		const maxSeat = Math.max(1, Number(num) || characterBySeat.length || 3) - 1;
+		if (m >= 0 && m <= maxSeat) {
+			return m;
+		}
+	}
+	return currentTurnSeat;
+}
+
 let escapeActive = false;
 let escapeQueue = [];
 let escapeQueueIndex = -1;
@@ -1191,6 +1214,7 @@ function applyOutToLunchResolve(cardId) {
 	battleTurnSeat = null;
 	pendingHelpSeats.clear();
 	acceptedHelperSeat = null;
+	monsterFightSeat = null;
 	resetEscapeStateNow();
 	deathLootActive = false;
 	deathLootState = null;
@@ -1214,6 +1238,410 @@ function applyOutToLunchResolve(cardId) {
 	}, 2000);
 }
 
+function hideWandOfDowsingModal() {
+	const existing = document.getElementById("wand-of-dowsing-modal");
+	if (existing) {
+		existing.remove();
+	}
+}
+
+function collectDiscardCardsForWandOfDowsing() {
+	/** @type {{ cardId: string, img: string, zoneId: string }[]} */
+	const out = [];
+	["zone_doors_drop", "zone_treasure_drop"].forEach((zoneId) => {
+		const z = document.getElementById(zoneId);
+		if (!z) {
+			return;
+		}
+		z.querySelectorAll(".card").forEach((el) => {
+			const id = el?.id;
+			if (!id || id === "card") {
+				return;
+			}
+			const door = window.doors?.find((d) => d.name === id);
+			const tr = window.treasures?.find((t) => t.name === id);
+			const img = door?.img || tr?.img || "";
+			if (!img) {
+				return;
+			}
+			out.push({ cardId: id, img, zoneId });
+		});
+	});
+	return out;
+}
+
+function openWandOfDowsingModal({ wandCardId, actorSeat }) {
+	hideWandOfDowsingModal();
+	const modal = document.createElement("div");
+	modal.id = "wand-of-dowsing-modal";
+	modal.className = "wizard-taming-pick-modal";
+	const panel = document.createElement("div");
+	panel.className = "wizard-taming-pick-panel";
+	const title = document.createElement("div");
+	title.className = "wizard-taming-pick-title";
+	title.textContent = "Штырь лозоходца: выбери карту из сброса";
+
+	const cardsWrap = document.createElement("div");
+	cardsWrap.className = "wizard-taming-pick-cards";
+	cardsWrap.style.maxHeight = "min(62vh, 640px)";
+	cardsWrap.style.overflowY = "auto";
+
+	const candidates = collectDiscardCardsForWandOfDowsing();
+	const applyBtn = document.createElement("button");
+	applyBtn.type = "button";
+	applyBtn.className = "wizard-taming-pick-apply-btn";
+	applyBtn.textContent = "Подтвердить выбор";
+	applyBtn.disabled = true;
+
+	let selectedId = "";
+
+	if (candidates.length === 0) {
+		const empty = document.createElement("div");
+		empty.style.color = "#e8e8f0";
+		empty.style.textAlign = "center";
+		empty.style.margin = "12px 0";
+		empty.textContent = "В сбросах нет карт. Штырь всё равно уйдёт в сброс.";
+		panel.appendChild(title);
+		panel.appendChild(empty);
+		applyBtn.textContent = "ОК";
+		applyBtn.disabled = false;
+		applyBtn.addEventListener("click", () => {
+			socket.emit("message", {
+				method: "WandOfDowsingResolve",
+				wandCardId,
+				pickedCardId: "",
+				actorSeat,
+			});
+			modal.remove();
+		});
+		panel.appendChild(applyBtn);
+		modal.appendChild(panel);
+		document.body.appendChild(modal);
+		modal.addEventListener("click", (e) => {
+			if (e.target === modal) {
+				const w = document.getElementById(wandCardId);
+				if (w) {
+					w.dataset.wandDowsingScheduled = "";
+				}
+				modal.remove();
+			}
+		});
+		return;
+	}
+
+	candidates.forEach((c) => {
+		const btn = document.createElement("button");
+		btn.type = "button";
+		btn.className = "wizard-taming-pick-card";
+		btn.dataset.cardId = c.cardId;
+		const img = document.createElement("img");
+		img.className = "wizard-taming-pick-card-img";
+		img.src = c.img || "";
+		img.alt = c.cardId;
+		btn.appendChild(img);
+		btn.addEventListener("click", () => {
+			cardsWrap.querySelectorAll(".wizard-taming-pick-card").forEach((x) => x.classList.remove("is-selected"));
+			btn.classList.add("is-selected");
+			selectedId = c.cardId;
+			applyBtn.disabled = !selectedId;
+		});
+		cardsWrap.appendChild(btn);
+	});
+
+	applyBtn.addEventListener("click", () => {
+		if (!selectedId) {
+			return;
+		}
+		socket.emit("message", {
+			method: "WandOfDowsingResolve",
+			wandCardId,
+			pickedCardId: selectedId,
+			actorSeat,
+		});
+		modal.remove();
+	});
+
+	panel.appendChild(title);
+	panel.appendChild(cardsWrap);
+	panel.appendChild(applyBtn);
+	modal.appendChild(panel);
+	document.body.appendChild(modal);
+	modal.addEventListener("click", (e) => {
+		if (e.target === modal) {
+			const w = document.getElementById(wandCardId);
+			if (w) {
+				w.dataset.wandDowsingScheduled = "";
+			}
+			modal.remove();
+		}
+	});
+}
+
+function scheduleWandOfDowsingIfNeeded(cardId, zoneEl, playedBySeatRaw) {
+	if (!cardId || !zoneEl) {
+		return;
+	}
+	if (!isTreasureSpecial(cardId, "Wand of dowsing")) {
+		return;
+	}
+	const onMain = isMainEquipmentZoneElement(zoneEl);
+	const onMonster = zoneEl.id === "zone_monster";
+	const onZone3 = zoneEl.id === "zone3";
+	if (!onMain && !onMonster && !onZone3) {
+		return;
+	}
+	const el = document.getElementById(cardId);
+	if (!el) {
+		return;
+	}
+	if (el.dataset?.wandDowsingScheduled) {
+		return;
+	}
+	el.dataset.wandDowsingScheduled = "1";
+	let actorSeat = Number(playedBySeatRaw);
+	if (!Number.isFinite(actorSeat) || actorSeat < 0) {
+		if (onMain) {
+			actorSeat = getGlobalSeatForPlayZone(zoneEl);
+		} else {
+			actorSeat = Number(currentTurnSeat);
+		}
+	}
+	if (!Number.isFinite(actorSeat) || actorSeat < 0) {
+		el.dataset.wandDowsingScheduled = "";
+		return;
+	}
+	setTimeout(() => {
+		const cur = document.getElementById(cardId);
+		if (!cur) {
+			return;
+		}
+		const parent = cur.parentElement;
+		const pId = parent?.id || "";
+		const stillOnMain = isMainEquipmentZoneElement(parent);
+		const stillOnMonster = pId === "zone_monster";
+		const stillOnZone3 = pId === "zone3";
+		const stillOk = (onMain && stillOnMain) || (onMonster && stillOnMonster) || (onZone3 && stillOnZone3);
+		if (!stillOk) {
+			cur.dataset.wandDowsingScheduled = "";
+			return;
+		}
+		if (Number(localSeat) === Number(actorSeat)) {
+			openWandOfDowsingModal({ wandCardId: cardId, actorSeat });
+		}
+	}, 140);
+}
+
+function applyWandOfDowsingResolve({ wandCardId, pickedCardId, actorSeat }) {
+	const hand = getHandElementForPlayerSeat(actorSeat);
+	const drop = document.getElementById("zone_treasure_drop");
+	if (pickedCardId) {
+		const pickEl = document.getElementById(pickedCardId);
+		if (pickEl && hand) {
+			hand.appendChild(pickEl);
+		}
+	}
+	const wandEl = document.getElementById(wandCardId);
+	if (wandEl) {
+		wandEl.dataset.wandDowsingScheduled = "";
+		if (drop) {
+			drop.appendChild(wandEl);
+		}
+	}
+	hideWandOfDowsingModal();
+	adjustCardWidth(".myhand");
+	adjustCardWidth(".zone2");
+	adjustCardWidth(".zone5");
+	adjustCardHeight(".zone3");
+	adjustCardHeight(".zone_monster");
+	adjustCardWidth(".opponenthand");
+	adjustCardWidth(".zone_opponent");
+	adjustCardWidth(".zone_opponent_side");
+	adjustCardWidth(".opponent2hand");
+	adjustCardWidth(".zone_opponent2");
+	adjustCardWidth(".zone_opponent2_side");
+	adjustCardWidth(".opponent3hand");
+	adjustCardWidth(".zone_opponent3");
+	adjustCardWidth(".zone_opponent3_side");
+	UpdatebackImgTreasure();
+	UpdatebackImgDoor();
+	recalculateAllPowerDisplays();
+}
+
+function hideTransferralPotionModal() {
+	const existing = document.getElementById("transferral-potion-modal");
+	if (existing) {
+		existing.remove();
+	}
+}
+
+function openTransferralPotionModal({ potionCardId, actorSeat }) {
+	hideTransferralPotionModal();
+	if (!battleActive || !getMonsterBattleContext().hasMonster) {
+		const el = document.getElementById(potionCardId);
+		if (el) {
+			el.dataset.transferralPotionScheduled = "";
+		}
+		return;
+	}
+	const fightSeat = getMonsterFightSeat();
+	const maxSeat = Math.max(0, (Number(num) || characterBySeat.length || 3) - 1);
+	const candidates = [];
+	for (let s = 0; s <= maxSeat; s++) {
+		if (Number(s) !== Number(fightSeat)) {
+			candidates.push(s);
+		}
+	}
+	if (candidates.length === 0) {
+		const el = document.getElementById(potionCardId);
+		if (el) {
+			el.dataset.transferralPotionScheduled = "";
+		}
+		return;
+	}
+
+	const modal = document.createElement("div");
+	modal.id = "transferral-potion-modal";
+	modal.className = "wizard-taming-pick-modal";
+	const panel = document.createElement("div");
+	panel.className = "wizard-taming-pick-panel";
+	const title = document.createElement("div");
+	title.className = "wizard-taming-pick-title";
+	title.textContent = "Transferral potion: кто теперь сражается с монстрами?";
+
+	const buttons = document.createElement("div");
+	buttons.style.display = "flex";
+	buttons.style.flexDirection = "column";
+	buttons.style.gap = "10px";
+	buttons.style.alignItems = "stretch";
+
+	candidates.forEach((seat) => {
+		const btn = document.createElement("button");
+		btn.type = "button";
+		btn.className = "wizard-taming-pick-apply-btn";
+		btn.textContent = getSeatLabel(seat);
+		btn.addEventListener("click", () => {
+			socket.emit("message", {
+				method: "TransferralPotionResolve",
+				potionCardId,
+				newFighterSeat: seat,
+				actorSeat,
+			});
+			hideTransferralPotionModal();
+		});
+		buttons.appendChild(btn);
+	});
+
+	panel.appendChild(title);
+	panel.appendChild(buttons);
+	modal.appendChild(panel);
+	document.body.appendChild(modal);
+	modal.addEventListener("click", (e) => {
+		if (e.target === modal) {
+			const el = document.getElementById(potionCardId);
+			if (el) {
+				el.dataset.transferralPotionScheduled = "";
+			}
+			hideTransferralPotionModal();
+		}
+	});
+}
+
+function scheduleTransferralPotionIfNeeded(cardId, zoneEl, playedBySeatRaw) {
+	if (!cardId || !zoneEl) {
+		return;
+	}
+	if (!isTreasureSpecial(cardId, "Transferral potion")) {
+		return;
+	}
+	if (!battleActive || !getMonsterBattleContext().hasMonster) {
+		return;
+	}
+	const onMain = isMainEquipmentZoneElement(zoneEl);
+	const onMonster = zoneEl.id === "zone_monster";
+	const onZone3 = zoneEl.id === "zone3";
+	if (!onMain && !onMonster && !onZone3) {
+		return;
+	}
+	const el = document.getElementById(cardId);
+	if (!el) {
+		return;
+	}
+	if (el.dataset?.transferralPotionScheduled) {
+		return;
+	}
+	el.dataset.transferralPotionScheduled = "1";
+	let actorSeat = Number(playedBySeatRaw);
+	if (!Number.isFinite(actorSeat) || actorSeat < 0) {
+		if (onMain) {
+			actorSeat = getGlobalSeatForPlayZone(zoneEl);
+		} else {
+			actorSeat = Number(currentTurnSeat);
+		}
+	}
+	if (!Number.isFinite(actorSeat) || actorSeat < 0) {
+		el.dataset.transferralPotionScheduled = "";
+		return;
+	}
+	setTimeout(() => {
+		const cur = document.getElementById(cardId);
+		if (!cur) {
+			return;
+		}
+		const parent = cur.parentElement;
+		const pId = parent?.id || "";
+		const stillOnMain = isMainEquipmentZoneElement(parent);
+		const stillOnMonster = pId === "zone_monster";
+		const stillOnZone3 = pId === "zone3";
+		const stillOk = (onMain && stillOnMain) || (onMonster && stillOnMonster) || (onZone3 && stillOnZone3);
+		if (!stillOk || !battleActive || !getMonsterBattleContext().hasMonster) {
+			cur.dataset.transferralPotionScheduled = "";
+			return;
+		}
+		if (Number(localSeat) === Number(actorSeat)) {
+			openTransferralPotionModal({ potionCardId: cardId, actorSeat });
+		}
+	}, 140);
+}
+
+function applyTransferralPotionResolve({ potionCardId, newFighterSeat }) {
+	hideTransferralPotionModal();
+	const drop = document.getElementById("zone_treasure_drop");
+	const potionEl = document.getElementById(potionCardId);
+	if (potionEl) {
+		potionEl.dataset.transferralPotionScheduled = "";
+		if (drop) {
+			drop.appendChild(potionEl);
+		}
+	}
+	pendingHelpSeats.clear();
+	acceptedHelperSeat = null;
+	const nf = Number(newFighterSeat);
+	if (Number.isFinite(nf) && nf >= 0) {
+		monsterFightSeat = nf;
+	}
+	adjustCardWidth(".myhand");
+	adjustCardWidth(".zone2");
+	adjustCardWidth(".zone5");
+	adjustCardHeight(".zone3");
+	adjustCardHeight(".zone_monster");
+	adjustCardWidth(".opponenthand");
+	adjustCardWidth(".zone_opponent");
+	adjustCardWidth(".zone_opponent_side");
+	adjustCardWidth(".opponent2hand");
+	adjustCardWidth(".zone_opponent2");
+	adjustCardWidth(".zone_opponent2_side");
+	adjustCardWidth(".opponent3hand");
+	adjustCardWidth(".zone_opponent3");
+	adjustCardWidth(".zone_opponent3_side");
+	UpdatebackImgTreasure();
+	UpdatebackImgDoor();
+	recalculateAllPowerDisplays();
+	updateEffectiveMonsterBonusDisplay();
+	applyTurnHighlight();
+	updateHelpUi();
+	flushTurnStateSyncToServer();
+}
+
 function applyFriendshipPotionResolve(cardId) {
 	const el = document.getElementById(cardId);
 	if (el) {
@@ -1228,6 +1656,7 @@ function applyFriendshipPotionResolve(cardId) {
 	battleTurnSeat = null;
 	pendingHelpSeats.clear();
 	acceptedHelperSeat = null;
+	monsterFightSeat = null;
 	resetEscapeStateNow();
 	deathLootActive = false;
 	deathLootState = null;
@@ -1256,6 +1685,7 @@ function endBattleNoWinnerAndDropBattlefield(message, ms = 2000) {
 	battleTurnSeat = null;
 	pendingHelpSeats.clear();
 	acceptedHelperSeat = null;
+	monsterFightSeat = null;
 	resetEscapeStateNow();
 	deathLootActive = false;
 	deathLootState = null;
@@ -2258,7 +2688,7 @@ function isSeatParticipantInCurrentMonsterBattle(seat) {
 	if (!getMonsterBattleContext().hasMonster) {
 		return false;
 	}
-	if (Number(seat) === Number(currentTurnSeat)) {
+	if (Number(seat) === Number(getMonsterFightSeat())) {
 		return true;
 	}
 	if (acceptedHelperSeat != null && acceptedHelperSeat >= 0 && Number(seat) === Number(acceptedHelperSeat)) {
@@ -2981,6 +3411,7 @@ function applyWizardTaming(seat, handCardIds, monsterCardId) {
 		battleTurnSeat = null;
 		pendingHelpSeats.clear();
 		acceptedHelperSeat = null;
+		monsterFightSeat = null;
 		turnAwaitingManualEnd = true;
 		clearInterval(countdownInterval);
 		const timerElement = document.getElementById('timer');
@@ -3158,14 +3589,15 @@ function getValidThiefTrimVictims() {
 	if (localSeat == null || localSeat < 0 || !battleActive) {
 		return [];
 	}
-	const iAmFighter = Number(localSeat) === Number(currentTurnSeat)
+	const iAmFighter = Number(localSeat) === Number(getMonsterFightSeat())
 		|| (acceptedHelperSeat != null && Number(localSeat) === Number(acceptedHelperSeat));
 	if (iAmFighter) {
 		return [];
 	}
 	const inFight = [];
-	if (currentTurnSeat != null && currentTurnSeat >= 0) {
-		inFight.push(currentTurnSeat);
+	const fightSeat = getMonsterFightSeat();
+	if (fightSeat != null && fightSeat >= 0) {
+		inFight.push(fightSeat);
 	}
 	if (acceptedHelperSeat != null && acceptedHelperSeat >= 0 && inFight.indexOf(acceptedHelperSeat) === -1) {
 		inFight.push(acceptedHelperSeat);
@@ -3191,7 +3623,7 @@ function canLocalUseWarriorFrenzyNow() {
 	if (!getMonsterBattleContext().hasMonster) {
 		return false;
 	}
-	const isParticipant = Number(localSeat) === Number(currentTurnSeat)
+	const isParticipant = Number(localSeat) === Number(getMonsterFightSeat())
 		|| (acceptedHelperSeat !== null && Number(localSeat) === Number(acceptedHelperSeat));
 	if (!isParticipant) {
 		return false;
@@ -3209,7 +3641,7 @@ function canLocalUseClericExorcismNow() {
 	if (!battleActive || escapeActive) {
 		return false;
 	}
-	const isParticipant = Number(localSeat) === Number(currentTurnSeat)
+	const isParticipant = Number(localSeat) === Number(getMonsterFightSeat())
 		|| (acceptedHelperSeat !== null && Number(localSeat) === Number(acceptedHelperSeat));
 	if (!isParticipant) {
 		return false;
@@ -3931,7 +4363,7 @@ function canLocalUseWizardTamingNow() {
 	if (!isSeatWizardClassActive(localSeat)) {
 		return false;
 	}
-	const isParticipant = Number(localSeat) === Number(currentTurnSeat)
+	const isParticipant = Number(localSeat) === Number(getMonsterFightSeat())
 		|| (acceptedHelperSeat != null && Number(localSeat) === Number(acceptedHelperSeat));
 	if (!isParticipant) {
 		return false;
@@ -4187,7 +4619,7 @@ function isValidThiefTrimVictimSeat(seat) {
 	if (seat == null || seat < 0) {
 		return false;
 	}
-	if (seat === currentTurnSeat) {
+	if (seat === getMonsterFightSeat()) {
 		return true;
 	}
 	if (acceptedHelperSeat != null && seat === acceptedHelperSeat) {
@@ -4942,12 +5374,13 @@ function canLocalPlayerRollEscapeNow() {
 function resolveCombatAndBroadcast() {
 	const { hasMonster, levelSum, removerSum, badStaffSum, monsters } = getMonsterBattleContext();
 	const helperSeatSnapshot = acceptedHelperSeat;
+	const fightSeat = getMonsterFightSeat();
 
 	if (!hasMonster) {
 		socket.emit("message", {
 			method: "CombatResolved",
 			winner: "none",
-			seat: currentTurnSeat,
+			seat: fightSeat,
 			helperSeat: helperSeatSnapshot,
 			text: "",
 		});
@@ -4957,13 +5390,13 @@ function resolveCombatAndBroadcast() {
 	const playerPower = getNumericText('.MyBonus');
 	const monsterPower = getEffectiveMonsterPower();
 	const helperSeat = Number.isInteger(helperSeatSnapshot) ? helperSeatSnapshot : parseInt(helperSeatSnapshot, 10);
-	const activeIsWarrior = isSeatWarriorClassActive(currentTurnSeat);
+	const activeIsWarrior = isSeatWarriorClassActive(fightSeat);
 	const helperIsWarrior = !Number.isNaN(helperSeat) && helperSeat >= 0 && isSeatWarriorClassActive(helperSeat);
 	const warriorInBattle = activeIsWarrior || helperIsWarrior;
 
 	if (warriorInBattle ? playerPower >= monsterPower : playerPower > monsterPower) {
 		const seatToLevelMap = getSeatToLevelMap();
-		const activeLevelSelector = seatToLevelMap[currentTurnSeat];
+		const activeLevelSelector = seatToLevelMap[fightSeat];
 		const activeLevel = activeLevelSelector ? getNumericText(activeLevelSelector) : 0;
 		const nextLevel = activeLevel + levelSum;
 		let helperLevel = null;
@@ -4979,7 +5412,7 @@ function resolveCombatAndBroadcast() {
 			}
 		}
 
-		setLevelBySeat(currentTurnSeat, nextLevel);
+		setLevelBySeat(fightSeat, nextLevel);
 		if (helperLevel !== null) {
 			setLevelBySeat(helperSeat, helperLevel);
 		}
@@ -4989,7 +5422,7 @@ function resolveCombatAndBroadcast() {
 		socket.emit("message", {
 			method: "CombatResolved",
 			winner: "player",
-			seat: currentTurnSeat,
+			seat: fightSeat,
 			level: nextLevel,
 			helperSeat: helperSeatSnapshot,
 			helperLevel,
@@ -5003,7 +5436,7 @@ function resolveCombatAndBroadcast() {
 	socket.emit("message", {
 		method: "CombatResolved",
 		winner: "monster",
-		seat: currentTurnSeat,
+		seat: fightSeat,
 		helperSeat: helperSeatSnapshot,
 		monsterRemover: removerSum,
 		monsterBadStaff: badStaffSum,
@@ -5014,17 +5447,30 @@ function resolveCombatAndBroadcast() {
 
 function recalculateMyBonusDisplay() {
 	const seatToPowerMap = getSeatToPowerMap();
-	const activePowerSelector = seatToPowerMap[currentTurnSeat];
+	const powerSeat = battleActive ? getMonsterFightSeat() : currentTurnSeat;
+	const activePowerSelector = seatToPowerMap[powerSeat];
 	const activeCharacterPower = activePowerSelector ? getNumericText(activePowerSelector) : 0;
 	const zone3BonusPower = getTreasurePowerSum('.zone3');
+	const doppelInZone3 = Boolean(document.querySelector(".zone3 #treasure47"));
+	const doppelDoublingActive = battleActive
+		&& acceptedHelperSeat === null
+		&& doppelInZone3;
+	const ch = powerSeat != null ? characterBySeat[powerSeat] : null;
+	const equipPow = Number(ch?.equipmentPower) || 0;
+	let activeCombatPower = activeCharacterPower;
+	let zone3CombatPower = zone3BonusPower;
+	if (doppelDoublingActive) {
+		activeCombatPower = activeCharacterPower + equipPow;
+		zone3CombatPower = 2 * zone3BonusPower;
+	}
 	let helpersBonusPower = 0;
 	let frenzyBonusPower = 0;
 	let exorcismBonusPower = 0;
-	const activeIsWarrior = String(characterBySeat[currentTurnSeat]?.kind || "") === "Warrior";
-	const activeIsCleric = String(characterBySeat[currentTurnSeat]?.kind || "") === "Cleric";
-	if (battleActive && currentTurnSeat != null) {
-		frenzyBonusPower += activeIsWarrior ? (Number(warriorFrenzyBonusBySeat[currentTurnSeat]) || 0) : 0;
-		exorcismBonusPower += activeIsCleric ? ((Number(clericExorcismBonusBySeat[currentTurnSeat]) || 0) * 3) : 0;
+	const activeIsWarrior = String(characterBySeat[powerSeat]?.kind || "") === "Warrior";
+	const activeIsCleric = String(characterBySeat[powerSeat]?.kind || "") === "Cleric";
+	if (battleActive && powerSeat != null) {
+		frenzyBonusPower += activeIsWarrior ? (Number(warriorFrenzyBonusBySeat[powerSeat]) || 0) : 0;
+		exorcismBonusPower += activeIsCleric ? ((Number(clericExorcismBonusBySeat[powerSeat]) || 0) * 3) : 0;
 	}
 	if (battleActive && acceptedHelperSeat !== null) {
 		helpersBonusPower += getSeatCombatPower(acceptedHelperSeat);
@@ -5035,13 +5481,13 @@ function recalculateMyBonusDisplay() {
 	}
 	let trimDebuffActive = 0;
 	let trimDebuffHelper = 0;
-	if (battleActive && currentTurnSeat != null) {
-		trimDebuffActive = Number(thiefBackstabDebuffBySeat[currentTurnSeat]) || 0;
+	if (battleActive && powerSeat != null) {
+		trimDebuffActive = Number(thiefBackstabDebuffBySeat[powerSeat]) || 0;
 	}
 	if (battleActive && acceptedHelperSeat !== null) {
 		trimDebuffHelper = Number(thiefBackstabDebuffBySeat[acceptedHelperSeat]) || 0;
 	}
-	const myBonusValue = activeCharacterPower + zone3BonusPower - trimDebuffActive
+	const myBonusValue = activeCombatPower + zone3CombatPower - trimDebuffActive
 		+ (helpersBonusPower - trimDebuffHelper) + frenzyBonusPower + exorcismBonusPower;
 
 	setPowerText('.MyBonus', myBonusValue);
@@ -5092,6 +5538,7 @@ function setCurrentTurn(seat, shouldBroadcast = false) {
 	battleTurnSeat = null;
 	pendingHelpSeats.clear();
 	acceptedHelperSeat = null;
+	monsterFightSeat = null;
 	applyTurnHighlight();
 	recalculateMyBonusDisplay();
 	updateHelpUi();
@@ -5440,10 +5887,11 @@ function applyRoomStateFromServer(state) {
 	updateThiefTrimUi();
 	setupMunchkinDiceAfterGameStart();
 	// Если кнопка "Начать игру" ещё есть — убираем.
+	// Всегда ищем в document: после «назад/вперёд» React смонтирует новую кнопку, а window.button
+	// может указывать на старый уже отсоединённый узел — тогда remove() не трогает новую кнопку.
 	try {
-		// window.button может быть ещё не инициализирован на момент restore — удаляем по селектору.
-		const startBtnWrap = window.button || document.querySelector(".button_start_game");
-		startBtnWrap?.remove?.();
+		document.querySelector(".button_start_game")?.remove?.();
+		window.button = null;
 	} catch {}
 
 	ensureRoomOpenModalsMutationObserver();
@@ -5803,6 +6251,7 @@ function serializeTurnPhaseForServer() {
 		currentTurnSeat: Number.isFinite(Number(currentTurnSeat)) ? Number(currentTurnSeat) : 0,
 		battleActive: Boolean(battleActive),
 		battleTurnSeat: battleTurnSeat == null || Number.isNaN(Number(battleTurnSeat)) ? null : Number(battleTurnSeat),
+		monsterFightSeat: monsterFightSeat == null || Number.isNaN(Number(monsterFightSeat)) ? null : Number(monsterFightSeat),
 		turnAwaitingManualEnd: Boolean(turnAwaitingManualEnd),
 		pendingHelpSeats: Array.from(pendingHelpSeats || []).map((x) => Number(x)).filter((x) => !Number.isNaN(x)),
 		acceptedHelperSeat: acceptedHelperSeat == null || Number.isNaN(Number(acceptedHelperSeat)) ? null : Number(acceptedHelperSeat),
@@ -5855,6 +6304,11 @@ function applyTurnPhaseFromServer(tp) {
 	}
 	battleActive = Boolean(tp.battleActive);
 	battleTurnSeat = tp.battleTurnSeat == null || tp.battleTurnSeat === "" || Number.isNaN(Number(tp.battleTurnSeat)) ? null : Number(tp.battleTurnSeat);
+	monsterFightSeat = !battleActive
+		? null
+		: (tp.monsterFightSeat == null || tp.monsterFightSeat === "" || Number.isNaN(Number(tp.monsterFightSeat))
+			? null
+			: Number(tp.monsterFightSeat));
 	turnAwaitingManualEnd = Boolean(tp.turnAwaitingManualEnd);
 	pendingHelpSeats = new Set(Array.isArray(tp.pendingHelpSeats) ? tp.pendingHelpSeats.filter((x) => Number.isFinite(Number(x))).map(Number) : []);
 	acceptedHelperSeat = tp.acceptedHelperSeat == null || tp.acceptedHelperSeat === "" || Number.isNaN(Number(tp.acceptedHelperSeat)) ? null : Number(tp.acceptedHelperSeat);
@@ -6327,6 +6781,32 @@ function isTreasureSpecial(cardId, specialValue) {
 	return Boolean(tr && String(tr.special || "") === String(specialValue || ""));
 }
 
+/**
+ * Doppleganger в zone3: в бою без помощника удваивает вклад силы от экипировки и от карт в зоне бонусов (см. recalculateMyBonusDisplay).
+ * Боец — {@link getMonsterFightSeat()} (в т.ч. после Transferral potion), не обязательно владелец хода.
+ */
+export function canPlaceDopplegangerTreasureInBonusZone(cardEl, zoneEl) {
+	if (!cardEl || !zoneEl || String(zoneEl.id) !== "zone3") {
+		return true;
+	}
+	if (!isTreasureSpecial(cardEl.id, "Doppleganger")) {
+		return true;
+	}
+	if (localSeat == null || localSeat < 0) {
+		return false;
+	}
+	if (!battleActive) {
+		return false;
+	}
+	if (acceptedHelperSeat !== null) {
+		return false;
+	}
+	if (Number(localSeat) !== Number(getMonsterFightSeat())) {
+		return false;
+	}
+	return true;
+}
+
 function getHirelingCardInMainForSeat(seat) {
 	const { main } = getMainAndSideZoneElementsForSeat(seat);
 	if (!main) {
@@ -6753,7 +7233,8 @@ function computeMonsterAdvantageBonus() {
 	const participantRaces = new Set();
 	const participantKinds = new Set();
 	let ignoreAdvantage = false;
-	const active = characterBySeat[currentTurnSeat];
+	const fightSeat = getMonsterFightSeat();
+	const active = characterBySeat[fightSeat];
 	if (active) {
 		const races = getCharacterRaces(active);
 		const kinds = getCharacterKinds(active);
@@ -7083,13 +7564,13 @@ function ensureAcceptHelpButtonForSeat(seat) {
 		btn.style.textAlign = 'center';
 		btn.style.cursor = 'pointer';
 		btn.addEventListener('click', () => {
-			if (!battleActive || localSeat !== currentTurnSeat || acceptedHelperSeat !== null) {
+			if (!battleActive || localSeat !== getMonsterFightSeat() || acceptedHelperSeat !== null) {
 				return;
 			}
 			socket.emit("message", {
 				method: "AcceptHelp",
 				helperSeat: seat,
-				turnSeat: currentTurnSeat,
+				turnSeat: getMonsterFightSeat(),
 			});
 		});
 		powerElement.parentElement.appendChild(btn);
@@ -7139,13 +7620,18 @@ function updateHelpUi() {
 		return;
 	}
 
-	const iAmActive = localSeat === currentTurnSeat;
+	const fightSeat = getMonsterFightSeat();
 	const alreadyOffered = localSeat !== null && localSeat !== undefined && pendingHelpSeats.has(localSeat);
 	const helpAlreadyAccepted = acceptedHelperSeat !== null;
-	const canOffer = battleActive && !iAmActive && localSeat !== null && localSeat !== undefined && !alreadyOffered && !helpAlreadyAccepted;
+	const canOffer = battleActive
+		&& localSeat !== null
+		&& localSeat !== undefined
+		&& Number(localSeat) !== Number(fightSeat)
+		&& !alreadyOffered
+		&& !helpAlreadyAccepted;
 	offerHelpButton.style.display = canOffer ? 'flex' : 'none';
 
-	if (battleActive && iAmActive && acceptedHelperSeat === null) {
+	if (battleActive && localSeat === fightSeat && acceptedHelperSeat === null) {
 		pendingHelpSeats.forEach(seat => {
 			const btn = ensureAcceptHelpButtonForSeat(seat);
 			if (btn) {
@@ -7749,11 +8235,27 @@ socket.on("message", response => {
 			scheduleFriendshipPotionIfNeeded(card.id, zone);
 		}
 
-		// Зелья/лампа должны быть переиспользуемыми: при уходе в сброс очищаем флаг использования.
+		// Wand of dowsing: основная экипировка, зона монстра или зона бонусов игрока (zone3) на поле боя.
+		if (card && zone) {
+			scheduleWandOfDowsingIfNeeded(card.id, zone, response.playedBySeat);
+		}
+
+		// Transferral potion: те же зоны активации, что у штыря (экипировка / поле боя / zone3).
+		if (card && zone) {
+			scheduleTransferralPotionIfNeeded(card.id, zone, response.playedBySeat);
+		}
+
+		// Зелья/лампа/штырь: при уходе в сброс сокровищ — сбрасываем флаги, чтобы карту можно было применить снова.
 		if (card && zone && zone.id === "zone_treasure_drop") {
 			const tr = window.treasures?.find((t) => t.name === card.id);
 			if (tr && (String(tr.special || "") === "Magic lamp" || String(tr.special || "") === "Pollymorth Potion")) {
 				card.dataset.potionUsed = "";
+			}
+			if (isTreasureSpecial(card.id, "Wand of dowsing")) {
+				card.dataset.wandDowsingScheduled = "";
+			}
+			if (isTreasureSpecial(card.id, "Transferral potion")) {
+				card.dataset.transferralPotionScheduled = "";
 			}
 		}
 
@@ -7909,6 +8411,23 @@ socket.on("message", response => {
 		}
 		applyFriendshipPotionResolve(cardId);
 	}
+	if (response.method === "WandOfDowsingResolve") {
+		const wandCardId = String(response.wandCardId || "");
+		const pickedCardId = String(response.pickedCardId || "");
+		const actorSeat = parseInt(response.actorSeat, 10);
+		if (!wandCardId || Number.isNaN(actorSeat) || actorSeat < 0) {
+			return;
+		}
+		applyWandOfDowsingResolve({ wandCardId, pickedCardId, actorSeat });
+	}
+	if (response.method === "TransferralPotionResolve") {
+		const potionCardId = String(response.potionCardId || "");
+		const newFighterSeat = parseInt(response.newFighterSeat, 10);
+		if (!potionCardId || Number.isNaN(newFighterSeat) || newFighterSeat < 0) {
+			return;
+		}
+		applyTransferralPotionResolve({ potionCardId, newFighterSeat });
+	}
 	if (response.method === "PotionResolve") {
 		const potionCardId = String(response.potionCardId || "");
 		const monsterCardId = String(response.monsterCardId || "");
@@ -8025,7 +8544,7 @@ socket.on("message", response => {
 	if (response.method === "OfferHelp") {
 		const helperSeat = parseInt(response.helperSeat, 10);
 		const turnSeat = parseInt(response.turnSeat, 10);
-		if (!Number.isNaN(helperSeat) && !Number.isNaN(turnSeat) && turnSeat === currentTurnSeat && battleActive && acceptedHelperSeat === null) {
+		if (!Number.isNaN(helperSeat) && !Number.isNaN(turnSeat) && turnSeat === getMonsterFightSeat() && battleActive && acceptedHelperSeat === null) {
 			pendingHelpSeats.add(helperSeat);
 			updateHelpUi();
 		}
@@ -8033,7 +8552,7 @@ socket.on("message", response => {
 	if (response.method === "AcceptHelp") {
 		const helperSeat = parseInt(response.helperSeat, 10);
 		const turnSeat = parseInt(response.turnSeat, 10);
-		if (!Number.isNaN(helperSeat) && !Number.isNaN(turnSeat) && turnSeat === currentTurnSeat && battleActive && acceptedHelperSeat === null) {
+		if (!Number.isNaN(helperSeat) && !Number.isNaN(turnSeat) && turnSeat === getMonsterFightSeat() && battleActive && acceptedHelperSeat === null) {
 			acceptedHelperSeat = helperSeat;
 			pendingHelpSeats.clear();
 			applyTurnHighlight();
@@ -8072,6 +8591,7 @@ socket.on("message", response => {
 		}
 		pendingHelpSeats.clear();
 		acceptedHelperSeat = null;
+		monsterFightSeat = null;
 		battleActive = false;
 		battleTurnSeat = null;
 		applyTurnHighlight();
@@ -8117,6 +8637,7 @@ socket.on("message", response => {
 		battleTurnSeat = null;
 		pendingHelpSeats.clear();
 		acceptedHelperSeat = null;
+		monsterFightSeat = null;
 		applyTurnHighlight();
 		updateHelpUi();
 		updateTurnActionButtons(false);
@@ -8840,6 +9361,7 @@ socket.on("message", response => {
 		recalculateAllPowerDisplays();
 		applyTurnHighlight();
 		window.button.remove();
+		window.button = null;
 		UpdatebackImgDoor()
 		UpdatebackImgTreasure()
 		UpdateZones();
@@ -9048,8 +9570,8 @@ const treasure42 = new Card_treasure("treasure42", "",  "../img/treasure1/card01
 const treasure43 = new Card_treasure("treasure43", "",  "../img/treasure1/card0138.png", "../img/treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure44 = new Card_treasure("treasure44", "",  "../img/treasure1/card0139.png", "../img/treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure45 = new Card_treasure("treasure45", "Magic lamp",  "../img/treasure1/card0140.png", "../img/treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0, 0, 0, "Magic lamp", 0, null, true);
-const treasure46 = new Card_treasure("treasure46", "",  "../img/treasure1/card0141.png", "../img/treasure1/cardBack_Treasure.png", 0, 1100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
-const treasure47 = new Card_treasure("treasure47", "",  "../img/treasure1/card0142.png", "../img/treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure46 = new Card_treasure("treasure46", "Wand of dowsing", "../img/treasure1/card0141.png", "../img/treasure1/cardBack_Treasure.png", 0, 1100, 0, 0, 0, 0, 0, 0, "Wand of dowsing", 0, null, true);
+const treasure47 = new Card_treasure("treasure47", "Doppleganger", "../img/treasure1/card0142.png", "../img/treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "Doppleganger", 0, null, true);
 const treasure48 = new Card_treasure("treasure48", "",  "../img/treasure1/card0143.png", "../img/treasure1/cardBack_Treasure.png", 0, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure49 = new Card_treasure("treasure49", "",  "../img/treasure1/card0144.png", "../img/treasure1/cardBack_Treasure.png", 5, 0, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure50 = new Card_treasure("treasure50", "",  "../img/treasure1/card0145.png", "../img/treasure1/cardBack_Treasure.png", 2, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
@@ -9060,7 +9582,7 @@ const treasure54 = new Card_treasure("treasure54", "",  "../img/treasure1/card01
 const treasure55 = new Card_treasure("treasure55", "",  "../img/treasure1/card0150.png", "../img/treasure1/cardBack_Treasure.png", 0, 200, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure56 = new Card_treasure("treasure56", "",  "../img/treasure1/card0151.png", "../img/treasure1/cardBack_Treasure.png", 5, 200, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure57 = new Card_treasure("treasure57", "Pollymorth Potion",  "../img/treasure1/card0152.png", "../img/treasure1/cardBack_Treasure.png", 0, 1300, 0, 0, 0, 0, 0, 0, "Pollymorth Potion", 0, null, true);
-const treasure58 = new Card_treasure("treasure58", "",  "../img/treasure1/card0153.png", "../img/treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure58 = new Card_treasure("treasure58", "Transferral potion", "../img/treasure1/card0153.png", "../img/treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "Transferral potion", 0, null, true);
 const treasure59 = new Card_treasure("treasure59", "",  "../img/treasure1/card0154.png", "../img/treasure1/cardBack_Treasure.png", 5, 300, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure60 = new Card_treasure("treasure60", "",  "../img/treasure1/card0155.png", "../img/treasure1/cardBack_Treasure.png", 2, 200, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure61 = new Card_treasure("treasure61", "",  "../img/treasure1/card0156.png", "../img/treasure1/cardBack_Treasure.png", 2, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
@@ -9358,6 +9880,8 @@ document.addEventListener('DOMContentLoaded', function() {
 	// Иначе при refresh можно попасть в цикл, где initialize() каждые 1с снова вызывает
 	// setZoneInteractivityByPlayers(0) (особенно если кнопка старта удалена при restore).
 	if (gameStarted) {
+		document.querySelector(".button_start_game")?.remove?.();
+		window.button = null;
 		return;
 	}
 	// Получаем элемент кнопки по классу
@@ -9440,6 +9964,7 @@ export function timer(initialSeconds = 30, restoring = false) {
     foldedOnTurnSeat = null;
     pendingHelpSeats.clear();
     acceptedHelperSeat = null;
+	monsterFightSeat = null;
 	for (let i = 0; i < warriorFrenzyUsedBySeat.length; i++) {
 		warriorFrenzyUsedBySeat[i] = 0;
 		warriorFrenzyBonusBySeat[i] = 0;
@@ -9502,13 +10027,13 @@ export function timer(initialSeconds = 30, restoring = false) {
 	if (!battleActive || localSeat === null || localSeat === undefined) {
 		return;
 	}
-	if (localSeat === currentTurnSeat) {
+	if (Number(localSeat) === Number(getMonsterFightSeat())) {
 		return;
 	}
 	socket.emit("message", {
 		method: "OfferHelp",
 		helperSeat: localSeat,
-		turnSeat: currentTurnSeat,
+		turnSeat: getMonsterFightSeat(),
 	});
 	if (offerHelpButton) {
 		offerHelpButton.style.display = "none";
