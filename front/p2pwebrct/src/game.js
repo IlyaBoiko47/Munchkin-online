@@ -166,6 +166,8 @@ let escapeAttemptNumber = 0;
 let escapeHalflingRetryUsedForCurrentAttempt = false;
 let escapeHalflingRetryPending = null;
 let escapeWizardFlightPending = null;
+/** Пока ждём выбор монстра для смывки (EscapeMonsterPickStart); нужен для restore после F5. */
+let escapeMonsterPickSession = null;
 let sellTreasuresDelegated = false;
 let turnAwaitingManualEnd = false;
 let deathLootActive = false;
@@ -821,7 +823,7 @@ export function canPlaceDoorInPlayerEquipment(draggingCardEl, targetZoneEl) {
 		return true;
 	}
 
-	// Собираем текущее состояние экипировки ПО ФАКТУ в main (dragover уже вставил карту в DOM).
+	// Состояние main по DOM; если перетаскиваемая карта ещё не в main — добавляем её к счётчикам (проверка до вставки при dragover).
 	let hasHalfBreed = false;
 	let halfBreedCount = 0;
 	const raceCounts = new Map(); // race -> count
@@ -850,6 +852,27 @@ export function canPlaceDoorInPlayerEquipment(draggingCardEl, targetZoneEl) {
 			kindCounts.set(k, (kindCounts.get(k) || 0) + 1);
 		}
 	});
+
+	// Если карта ещё не в main (например, dragover до вставки из руки), учитываем её как «гипотетическую» экипировку.
+	if (!main.contains(draggingCardEl)) {
+		const d = door;
+		if (isHalfBreedDoorCard(d)) {
+			hasHalfBreed = true;
+			halfBreedCount += 1;
+		}
+		if (isSuperMunchkinDoorCard(d)) {
+			hasSuperMunchkin = true;
+			superMunchkinCount += 1;
+		}
+		if (d.race && String(d.race) !== "monster") {
+			const r = String(d.race);
+			raceCounts.set(r, (raceCounts.get(r) || 0) + 1);
+		}
+		if (d.kind) {
+			const k = String(d.kind);
+			kindCounts.set(k, (kindCounts.get(k) || 0) + 1);
+		}
+	}
 
 	// Разрешаем максимум одну Half-breed.
 	if (isHalfBreedDoorCard(door) && halfBreedCount > 1) {
@@ -1009,6 +1032,7 @@ function moveBadStaffCardToDiscard(cardId) {
 					el.dataset.attachedMonsterId = srcId;
 				}
 			});
+			pushMonsterBonusAttachmentsToServer();
 		}
 		// Чистим флаги на карте.
 		card.dataset.mateUsed = "";
@@ -2705,6 +2729,7 @@ function resetEscapeStateNow() {
 	escapeHalflingRetryUsedForCurrentAttempt = false;
 	escapeHalflingRetryPending = null;
 	escapeWizardFlightPending = null;
+	clearEscapeMonsterPickSession();
 	hideWizardFlightModal();
 	hideEscapeMonsterPicker();
 	hideEscapeHalflingRetryModal();
@@ -2890,6 +2915,7 @@ function moveCardToDiscardById(cardId) {
 					}
 				}
 			});
+			pushMonsterBonusAttachmentsToServer();
 		}
 		moveBadStaffCardToDiscard(cardId);
 		return;
@@ -4649,6 +4675,10 @@ function hideEscapeMonsterPicker() {
 	}
 }
 
+function clearEscapeMonsterPickSession() {
+	escapeMonsterPickSession = null;
+}
+
 function showEscapeMonsterPicker(monsters, onPick) {
 	hideEscapeMonsterPicker();
 	const root = document.createElement("div");
@@ -5118,6 +5148,29 @@ function updateTurnActionButtons(isTimerRunning) {
 	endTurnButton.style.display = showEndTurn ? "flex" : "none";
 }
 
+/** Завершение хода вне боя (ручной конец хода). Должно работать и без вызова {@link timer}, иначе после refresh нет onclick. */
+function tryCompleteManualTurnEnd() {
+	if (Number(localSeat) !== Number(currentTurnSeat)) {
+		return;
+	}
+	if (!turnAwaitingManualEnd) {
+		return;
+	}
+	const handCount = getLocalHandCardCount();
+	const handLimit = isSeatDwarfRaceActive(localSeat) ? 6 : 5;
+	if (handCount > handLimit) {
+		showBattleResult(`Сбрось лишние карты с руки (максимум ${handLimit}).`);
+		setTimeout(() => {
+			hideBattleResult();
+		}, 1500);
+		return;
+	}
+	hideBattleResult();
+	turnAwaitingManualEnd = false;
+	updateTurnActionButtons(false);
+	advanceTurnClockwise();
+}
+
 function getNumericText(selector) {
 	const element = document.querySelector(selector);
 	const value = parseInt(element?.textContent ?? '0', 10);
@@ -5149,7 +5202,22 @@ function setPowerText(selector, value) {
 function applyMoveCardLocally(move) {
 	const card = document.getElementById(move?.cardId);
 	const target = move?.targetId ? document.getElementById(move.targetId) : null;
-	const zone = move?.zoneId ? document.getElementById(move.zoneId) : null;
+	let zone = null;
+	if (move?.zoneId) {
+		const z = String(move.zoneId);
+		const handMatch = z.match(/^hand(\d)$/);
+		const mainMatch = z.match(/^main(\d)$/);
+		const sideMatch = z.match(/^side(\d)$/);
+		if (handMatch) {
+			zone = getHandElementForPlayerSeat(parseInt(handMatch[1], 10));
+		} else if (mainMatch) {
+			zone = getMainAndSideZoneElementsForSeat(parseInt(mainMatch[1], 10))?.main || null;
+		} else if (sideMatch) {
+			zone = getMainAndSideZoneElementsForSeat(parseInt(sideMatch[1], 10))?.side || null;
+		} else {
+			zone = document.getElementById(z);
+		}
+	}
 	if (!card || !zone) {
 		return;
 	}
@@ -5175,6 +5243,214 @@ function applyMoveCardLocally(move) {
 	UpdatebackImgTreasure();
 	UpdatebackImgDoor();
 	recalculateAllPowerDisplays();
+}
+
+// Снапшоты от клиентов отключены: состояние комнаты хранит сервер.
+
+function clearAllNonPlaceholderCards() {
+	document.querySelectorAll('.cards-zone .card').forEach((el) => {
+		if (el?.id && el.id !== "card") {
+			el.remove();
+		}
+	});
+}
+
+function ensureDecksFilledForSnapshot(state) {
+	// Если карт ещё нет — заполняем зоны колод.
+	const anyDoor = document.querySelector('#zone_doors .card[id^="door"]');
+	const anyTreasure = document.querySelector('#zone_treasure .card[id^="treasure"]');
+	if (anyDoor || anyTreasure) {
+		return;
+	}
+	window.doors = Array.isArray(state.deckDoors) ? state.deckDoors : (window.doors || []);
+	window.treasures = Array.isArray(state.deckTreasure) ? state.deckTreasure : (window.treasures || []);
+	window.zonedoor = document.querySelector('.zone_doors');
+	window.zoneTreasure = document.querySelector('.zone_treasure');
+	if (window.zonedoor && window.zoneTreasure) {
+		Deck_filling(window.doors, window.zonedoor);
+		UpdatebackImgDoor();
+		Deck_filling(window.treasures, window.zoneTreasure);
+		UpdatebackImgTreasure();
+		UpdateZones();
+		window.allCards = document.querySelectorAll('.card');
+	}
+}
+
+function applyRoomStateFromServer(state) {
+	const zoneDoors = document.getElementById("zone_doors");
+	const zoneTreasure = document.getElementById("zone_treasure");
+	if (!zoneDoors || !zoneTreasure) {
+		setTimeout(() => applyRoomStateFromServer(state), 80);
+		return;
+	}
+
+	clearAllNonPlaceholderCards();
+	ensureDecksFilledForSnapshot(state);
+
+	// Переносим карты по зонам.
+	const cards = state.cards && typeof state.cards === "object" ? state.cards : {};
+	Object.entries(cards).forEach(([cardId, pos]) => {
+		const el = document.getElementById(cardId);
+		if (!el) return;
+		const zoneId = String(pos?.zoneId || "");
+		const targetId = pos?.targetId ? String(pos.targetId) : null;
+		let zoneEl = null;
+		const handMatch = zoneId.match(/^hand(\d)$/);
+		const mainMatch = zoneId.match(/^main(\d)$/);
+		const sideMatch = zoneId.match(/^side(\d)$/);
+		if (handMatch) {
+			zoneEl = getHandElementForPlayerSeat(parseInt(handMatch[1], 10));
+		} else if (mainMatch) {
+			zoneEl = getMainAndSideZoneElementsForSeat(parseInt(mainMatch[1], 10))?.main || null;
+		} else if (sideMatch) {
+			zoneEl = getMainAndSideZoneElementsForSeat(parseInt(sideMatch[1], 10))?.side || null;
+		} else {
+			zoneEl = zoneId ? document.getElementById(zoneId) : null;
+		}
+		if (!zoneEl) return;
+		// targetId — это "вставить после target", а НЕ "сделать target родителем".
+		if (targetId) {
+			const target = document.getElementById(targetId);
+			if (target && target !== el && zoneEl.contains(target)) {
+				zoneEl.insertBefore(el, target.nextSibling);
+				return;
+			}
+		}
+		zoneEl.appendChild(el);
+	});
+
+	// Восстанавливаем привязки Cheat/Наёмничка.
+	const cheat = state.cheatAttachments && typeof state.cheatAttachments === "object" ? state.cheatAttachments : {};
+	Object.entries(cheat).forEach(([cheatId, trId]) => {
+		if (cheatId && trId) {
+			setCheatAttachment(String(cheatId), String(trId));
+		}
+	});
+	const hire = state.hirelingAttachments && typeof state.hirelingAttachments === "object" ? state.hirelingAttachments : {};
+	Object.entries(hire).forEach(([hId, trId]) => {
+		if (hId && trId) {
+			setHirelingAttachment(String(hId), String(trId));
+		}
+	});
+
+	const mba = state.monsterBonusAttachments && typeof state.monsterBonusAttachments === "object" ? state.monsterBonusAttachments : {};
+	lastMonsterBonusAttachmentsJson = JSON.stringify(mba);
+	Object.entries(mba).forEach(([bonusId, monsterId]) => {
+		if (bonusId && monsterId) {
+			setBonusPowerMonsterAttachment(String(bonusId), String(monsterId));
+		}
+	});
+
+	// Обновляем UI.
+	// Важно: после refresh мог остаться "disabled" стиль зон от setZoneInteractivityByPlayers(0),
+	// поэтому принудительно включаем интерактивность под текущее число игроков.
+	const nPlayers = Number(state?.num) || window.num || num || 0;
+	updatePlayersUiVisibility(nPlayers);
+	UpdatebackImgDoor();
+	UpdatebackImgTreasure();
+	UpdateZones();
+	adjustCardWidth('.myhand');
+	adjustCardWidth('.zone2');
+	adjustCardWidth('.zone5');
+	adjustCardHeight('.zone3');
+	adjustCardHeight('.zone_monster');
+	adjustCardWidth('.opponenthand');
+	recalculateAllPowerDisplays();
+	applyTurnHighlight();
+
+	// После раскладки карт DOM заметно меняется — перевязываем drag&drop и сбрасываем визуальные "залипания".
+	try { window.dispatchEvent(new Event("munchkin:zonesChanged")); } catch {}
+
+	gameStarted = true;
+	// Восстанавливаем только то, что хранит сервер-авторитет.
+	const g = state.game && typeof state.game === "object" ? state.game : null;
+	if (g) {
+		if (Number.isFinite(Number(g.currentTurnSeat))) currentTurnSeat = Number(g.currentTurnSeat);
+		// Уровни игроков
+		if (Array.isArray(g.levelBySeat)) {
+			g.levelBySeat.forEach((lvl, i) => {
+				setLevelBySeat(i, lvl);
+			});
+		}
+		// Бонусы от способностей (Warrior/Cleric/Thief)
+		if (Array.isArray(g.warriorFrenzyUsedBySeat)) {
+			g.warriorFrenzyUsedBySeat.forEach((v, i) => { warriorFrenzyUsedBySeat[i] = Number(v) || 0; });
+		}
+		if (Array.isArray(g.warriorFrenzyBonusBySeat)) {
+			g.warriorFrenzyBonusBySeat.forEach((v, i) => { warriorFrenzyBonusBySeat[i] = Number(v) || 0; });
+		}
+		if (Array.isArray(g.clericExorcismUsedBySeat)) {
+			g.clericExorcismUsedBySeat.forEach((v, i) => { clericExorcismUsedBySeat[i] = Number(v) || 0; });
+		}
+		if (Array.isArray(g.clericExorcismBonusBySeat)) {
+			g.clericExorcismBonusBySeat.forEach((v, i) => { clericExorcismBonusBySeat[i] = Number(v) || 0; });
+		}
+		if (Array.isArray(g.victimThiefTrimUsedBySeat)) {
+			g.victimThiefTrimUsedBySeat.forEach((v, i) => { victimThiefTrimUsedBySeat[i] = Number(v) || 0; });
+		}
+		if (Array.isArray(g.thiefBackstabDebuffBySeat)) {
+			g.thiefBackstabDebuffBySeat.forEach((v, i) => { thiefBackstabDebuffBySeat[i] = Number(v) || 0; });
+		}
+		// Бонусы на поле
+		if (Number.isFinite(Number(g.myBonus))) {
+			const el = document.getElementById("MyBonus");
+			if (el) el.textContent = String(Number(g.myBonus) || 0);
+		}
+		if (Number.isFinite(Number(g.monsterBasePower))) {
+			setMonsterBasePower(Number(g.monsterBasePower) || 0);
+		}
+		if (g.turnPhase && typeof g.turnPhase === "object" && g.turnPhase.v === 1) {
+			applyTurnPhaseFromServer(g.turnPhase);
+		}
+		applyTurnHighlight();
+		if (g.timerRunning && Number(g.turnStartedAt) > 0 && Number(g.turnDurationMs) > 0) {
+			const remainingMs = Number(g.turnDurationMs) - (Date.now() - Number(g.turnStartedAt));
+			const remainingSec = Math.max(1, Math.ceil(remainingMs / 1000));
+			updateTurnActionButtons(true);
+			timer(remainingSec, true);
+		} else {
+			updateTurnActionButtons(false);
+		}
+		lastTurnStateSyncJson = JSON.stringify(serializeTurnPhaseForServer());
+	}
+
+	const endTurnEl = document.getElementById("end-turn");
+	if (endTurnEl) {
+		endTurnEl.onclick = tryCompleteManualTurnEnd;
+	}
+
+	// После refresh нужно заново инициализировать интерактивный UI (кубик/кнопки/продажа),
+	// т.к. обработчик StartGame на этом клиенте не выполнялся.
+	initializeSellTreasuresUi();
+	const thiefTheftInitBtn = document.getElementById("thief-theft-btn");
+	if (thiefTheftInitBtn) {
+		thiefTheftInitBtn.onclick = () => openThiefTheftModal();
+	}
+	const thiefTrimInitBtn = document.getElementById("thief-trim-btn");
+	if (thiefTrimInitBtn) {
+		thiefTrimInitBtn.onclick = () => openThiefTrimModal();
+	}
+	const wizardTamingInitBtn = document.getElementById("wizard-taming-btn");
+	if (wizardTamingInitBtn) {
+		wizardTamingInitBtn.onclick = () => openWizardTamingModal();
+	}
+	updateWizardTamingUi();
+	updateWizardFlightUi();
+	updateThiefTheftUi();
+	updateThiefTrimUi();
+	setupMunchkinDiceAfterGameStart();
+	// Если кнопка "Начать игру" ещё есть — убираем.
+	try {
+		// window.button может быть ещё не инициализирован на момент restore — удаляем по селектору.
+		const startBtnWrap = window.button || document.querySelector(".button_start_game");
+		startBtnWrap?.remove?.();
+	} catch {}
+
+	ensureRoomOpenModalsMutationObserver();
+	if (g) {
+		restoreOpenModalsFromServerGameState(g);
+	}
+	reopenEphemeralUiAfterTurnPhaseRestore();
 }
 
 function getMonsterBasePower() {
@@ -5285,6 +5561,433 @@ function setBonusPowerMonsterAttachment(cardId, monsterCardId) {
 	}
 	el.dataset.attachedMonsterId = monsterCardId || "";
 	recalculateAllPowerDisplays();
+}
+
+function collectMonsterBonusAttachmentsFromDom() {
+	const out = {};
+	const zone = document.getElementById("zone_monster") || document.querySelector(".zone_monster");
+	if (!zone) {
+		return out;
+	}
+	zone.querySelectorAll(".card").forEach((el) => {
+		const id = el?.id;
+		if (!id) {
+			return;
+		}
+		const door = window.doors?.find((d) => d.name === id);
+		if (!door || String(door.special || "") !== "bonus_power_monster") {
+			return;
+		}
+		const att = String(el.dataset?.attachedMonsterId || "").trim();
+		if (att) {
+			out[String(id)] = att;
+		}
+	});
+	return out;
+}
+
+let lastMonsterBonusAttachmentsJson = "";
+function pushMonsterBonusAttachmentsToServer() {
+	if (typeof socket === "undefined" || !socket || typeof socket.emit !== "function") {
+		return;
+	}
+	const attachments = collectMonsterBonusAttachmentsFromDom();
+	const json = JSON.stringify(attachments);
+	if (json === lastMonsterBonusAttachmentsJson) {
+		return;
+	}
+	lastMonsterBonusAttachmentsJson = json;
+	socket.emit("message", { method: "MonsterBonusState", attachments });
+}
+
+function collectVisibleModalIdsForRoomUiSync() {
+	const out = [];
+	const seen = new Set();
+	document.querySelectorAll("[id]").forEach((el) => {
+		const id = el.id;
+		if (!id || seen.has(id)) {
+			return;
+		}
+		if (!id.includes("modal") && id !== "escape-monster-picker") {
+			return;
+		}
+		seen.add(id);
+		if (!el.isConnected) {
+			return;
+		}
+		const st = window.getComputedStyle(el);
+		if (st.display === "none" || st.visibility === "hidden") {
+			return;
+		}
+		out.push(id);
+	});
+	return out;
+}
+
+let openModalsSyncTimer = null;
+let lastOpenModalIdsJson = "";
+function pushOpenModalsToServerDebounced() {
+	if (openModalsSyncTimer) {
+		clearTimeout(openModalsSyncTimer);
+	}
+	openModalsSyncTimer = setTimeout(() => {
+		openModalsSyncTimer = null;
+		if (typeof socket === "undefined" || !socket || typeof socket.emit !== "function") {
+			return;
+		}
+		if (localSeat == null || Number.isNaN(Number(localSeat))) {
+			return;
+		}
+		const ids = collectVisibleModalIdsForRoomUiSync();
+		const json = JSON.stringify(ids);
+		if (json === lastOpenModalIdsJson) {
+			return;
+		}
+		lastOpenModalIdsJson = json;
+		socket.emit("message", { method: "RoomUiState", seat: localSeat, openModalIds: ids });
+	}, 200);
+}
+
+let openModalsObserverStarted = false;
+function ensureRoomOpenModalsMutationObserver() {
+	if (openModalsObserverStarted || typeof MutationObserver === "undefined") {
+		return;
+	}
+	if (!document.body) {
+		return;
+	}
+	openModalsObserverStarted = true;
+	const obs = new MutationObserver(() => pushOpenModalsToServerDebounced());
+	obs.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["style", "class", "id"] });
+}
+
+/**
+ * Окна, которые зависят от turnPhase (deathLoot, смывка волшебника), а не только из openModalsBySeat.
+ * Вызывать после applyTurnPhaseFromServer и раскладки карт (doors/treasures в памяти).
+ */
+function reopenEphemeralUiAfterTurnPhaseRestore() {
+	if (deathLootActive && deathLootState && typeof deathLootState === "object") {
+		const ix = Number(deathLootState.index);
+		const idx = Number.isFinite(ix) ? ix : 0;
+		const order = Array.isArray(deathLootState.lootersOrder) ? deathLootState.lootersOrder : [];
+		const looterSeat = order[idx];
+		const deadSeat = Number(deathLootState.deadSeat);
+		const remaining = Array.isArray(deathLootState.remaining) ? deathLootState.remaining.filter(Boolean) : [];
+		if (localSeat != null && !Number.isNaN(Number(localSeat)) && Number(localSeat) === Number(looterSeat) && remaining.length > 0 && !Number.isNaN(deadSeat)) {
+			openDeathLootPickModal(deadSeat, looterSeat, remaining.slice());
+			showLootStatus(`Твоя очередь грабить ${getSeatLabel(deadSeat)}`);
+		} else {
+			const lootModal = document.getElementById("death-loot-pick-modal");
+			if (lootModal) {
+				lootModal.remove();
+			}
+		}
+	} else {
+		const lootModal = document.getElementById("death-loot-pick-modal");
+		if (lootModal) {
+			lootModal.remove();
+		}
+	}
+	if (canLocalUseWizardFlightNow()) {
+		openWizardFlightModal();
+	}
+	if (escapeActive && escapeWaitingForRoll && escapeCurrentSeat != null && !Number.isNaN(Number(escapeCurrentSeat))) {
+		hideEscapeMonsterPicker();
+		showEscapeTurnText(escapeCurrentSeat);
+		if (localSeat != null && Number(localSeat) === Number(escapeCurrentSeat)) {
+			escapeRollInProgress = false;
+		}
+	}
+	const queueIdSet = new Set((escapeMonsterQueue || []).map((m) => String(m?.cardId || "")));
+	const rawPickMonsters = escapeMonsterPickSession && Array.isArray(escapeMonsterPickSession.monsters)
+		? escapeMonsterPickSession.monsters
+		: [];
+	const monstersForPicker = rawPickMonsters.filter((m) => queueIdSet.has(String(m?.cardId || "")));
+	if (
+		escapeActive
+		&& !escapeWaitingForRoll
+		&& escapeMonsterPickSession
+		&& typeof escapeMonsterPickSession === "object"
+		&& monstersForPicker.length > 0
+		&& Number(localSeat) === Number(escapeMonsterPickSession.seat)
+	) {
+		showBattleResult("Выбери монстра, от которого будешь смываться.");
+		showEscapeMonsterPicker(monstersForPicker, (cardId) => {
+			hideEscapeMonsterPicker();
+			socket.emit("message", {
+				method: "EscapeMonsterChosen",
+				seat: localSeat,
+				cardId,
+			});
+		});
+	} else if (escapeMonsterPickSession && Number(localSeat) !== Number(escapeMonsterPickSession.seat)) {
+		hideEscapeMonsterPicker();
+		if (monstersForPicker.length > 0) {
+			showBattleResult(`${getSeatLabel(escapeMonsterPickSession.seat)} выбирает монстра для смывки...`);
+		}
+	} else {
+		hideEscapeMonsterPicker();
+		if (!escapeActive) {
+			clearEscapeMonsterPickSession();
+		} else if (escapeMonsterPickSession && monstersForPicker.length === 0) {
+			clearEscapeMonsterPickSession();
+		}
+	}
+}
+
+function restoreOpenModalsFromServerGameState(g) {
+	if (!g || typeof g.openModalsBySeat !== "object") {
+		return;
+	}
+	if (localSeat == null || Number.isNaN(Number(localSeat))) {
+		return;
+	}
+	const ids = Array.isArray(g.openModalsBySeat[String(localSeat)]) ? g.openModalsBySeat[String(localSeat)] : [];
+	lastOpenModalIdsJson = JSON.stringify(ids);
+	ids.forEach((id) => {
+		if (!id || document.getElementById(id)) {
+			return;
+		}
+		try {
+			switch (id) {
+				case "sell-treasures-modal":
+					openSellTreasuresModal();
+					break;
+				case "player-profile-modal":
+					openPlayerProfileModal();
+					break;
+				case "warrior-frenzy-modal":
+					openWarriorFrenzyModal();
+					break;
+				case "cleric-exorcism-modal":
+					openClericExorcismModal();
+					break;
+				case "thief-theft-modal":
+					openThiefTheftModal();
+					break;
+				case "thief-theft-steal-modal":
+					openThiefTheftStealModal();
+					break;
+				case "thief-trim-modal":
+					openThiefTrimModal();
+					break;
+				case "wizard-flight-modal":
+					openWizardFlightModal();
+					break;
+				case "wizard-taming-modal":
+					openWizardTamingModal();
+					break;
+				default:
+					break;
+			}
+		} catch {
+			// Модалка могла потребовать контекст (смывка/выбор), который после refresh недоступен.
+		}
+	});
+}
+
+function cloneTurnStateJson(value) {
+	if (value == null) {
+		return null;
+	}
+	try {
+		return JSON.parse(JSON.stringify(value));
+	} catch {
+		return null;
+	}
+}
+
+function serializeTurnPhaseForServer() {
+	return {
+		v: 1,
+		currentTurnSeat: Number.isFinite(Number(currentTurnSeat)) ? Number(currentTurnSeat) : 0,
+		battleActive: Boolean(battleActive),
+		battleTurnSeat: battleTurnSeat == null || Number.isNaN(Number(battleTurnSeat)) ? null : Number(battleTurnSeat),
+		turnAwaitingManualEnd: Boolean(turnAwaitingManualEnd),
+		pendingHelpSeats: Array.from(pendingHelpSeats || []).map((x) => Number(x)).filter((x) => !Number.isNaN(x)),
+		acceptedHelperSeat: acceptedHelperSeat == null || Number.isNaN(Number(acceptedHelperSeat)) ? null : Number(acceptedHelperSeat),
+		escapeActive: Boolean(escapeActive),
+		escapeQueue: Array.isArray(escapeQueue) ? escapeQueue.map((x) => Number(x)).filter((x) => !Number.isNaN(x)) : [],
+		escapeQueueIndex: Number.isFinite(Number(escapeQueueIndex)) ? Number(escapeQueueIndex) : -1,
+		escapeMonsterRemover: Number(escapeMonsterRemover) || 0,
+		escapeMonsterBadStaff: cloneTurnStateJson(escapeMonsterBadStaff),
+		escapeMonsterQueue: Array.isArray(escapeMonsterQueue) ? cloneTurnStateJson(escapeMonsterQueue) : [],
+		escapeMonsterInitialCount: Number(escapeMonsterInitialCount) || 0,
+		escapeMonsterTemplateQueue: Array.isArray(escapeMonsterTemplateQueue) ? cloneTurnStateJson(escapeMonsterTemplateQueue) : [],
+		escapeCurrentMonsterCardId: escapeCurrentMonsterCardId == null ? null : String(escapeCurrentMonsterCardId),
+		escapeCurrentSeat: escapeCurrentSeat == null || Number.isNaN(Number(escapeCurrentSeat)) ? null : Number(escapeCurrentSeat),
+		escapeWaitingForRoll: Boolean(escapeWaitingForRoll),
+		escapeOwnerSeat: escapeOwnerSeat == null || Number.isNaN(Number(escapeOwnerSeat)) ? null : Number(escapeOwnerSeat),
+		escapeRollInProgress: Boolean(escapeRollInProgress),
+		escapeAttemptNumber: Number(escapeAttemptNumber) || 0,
+		escapeHalflingRetryUsedForCurrentAttempt: Boolean(escapeHalflingRetryUsedForCurrentAttempt),
+		escapeHalflingRetryPending: cloneTurnStateJson(escapeHalflingRetryPending),
+		escapeWizardFlightPending: cloneTurnStateJson(escapeWizardFlightPending),
+		escapeMonsterPickSession:
+			escapeWaitingForRoll || escapeCurrentMonsterCardId != null
+				? null
+				: cloneTurnStateJson(escapeMonsterPickSession),
+		deathLootActive: Boolean(deathLootActive),
+		deathLootState: cloneTurnStateJson(deathLootState),
+		resumeEscapeAfterLoot: Boolean(resumeEscapeAfterLoot),
+		deathLootAwaitingEscapeFinish: Boolean(deathLootAwaitingEscapeFinish),
+		thiefTheftBoardDicePending: Boolean(thiefTheftBoardDicePending),
+		thiefTheftBoardDiceInProgress: Boolean(thiefTheftBoardDiceInProgress),
+		foldCount: Number(window.FoldCount) || 0,
+		foldedOnTurnSeat: foldedOnTurnSeat == null || Number.isNaN(Number(foldedOnTurnSeat)) ? null : Number(foldedOnTurnSeat),
+		halflingDoubleSellUsedBySeat: halflingDoubleSellUsedBySeat.map((x) => Boolean(x)),
+		sellTreasuresDelegated: Boolean(sellTreasuresDelegated),
+		warriorFrenzyUsedBySeat: warriorFrenzyUsedBySeat.map((x) => Number(x) || 0),
+		warriorFrenzyBonusBySeat: warriorFrenzyBonusBySeat.map((x) => Number(x) || 0),
+		clericExorcismUsedBySeat: clericExorcismUsedBySeat.map((x) => Number(x) || 0),
+		clericExorcismBonusBySeat: clericExorcismBonusBySeat.map((x) => Number(x) || 0),
+		victimThiefTrimUsedBySeat: victimThiefTrimUsedBySeat.map((x) => Number(x) || 0),
+		thiefBackstabDebuffBySeat: thiefBackstabDebuffBySeat.map((x) => Number(x) || 0),
+	};
+}
+
+function applyTurnPhaseFromServer(tp) {
+	if (!tp || typeof tp !== "object" || Number(tp.v) !== 1) {
+		return;
+	}
+	if (Number.isFinite(Number(tp.currentTurnSeat))) {
+		currentTurnSeat = Number(tp.currentTurnSeat);
+	}
+	battleActive = Boolean(tp.battleActive);
+	battleTurnSeat = tp.battleTurnSeat == null || tp.battleTurnSeat === "" || Number.isNaN(Number(tp.battleTurnSeat)) ? null : Number(tp.battleTurnSeat);
+	turnAwaitingManualEnd = Boolean(tp.turnAwaitingManualEnd);
+	pendingHelpSeats = new Set(Array.isArray(tp.pendingHelpSeats) ? tp.pendingHelpSeats.filter((x) => Number.isFinite(Number(x))).map(Number) : []);
+	acceptedHelperSeat = tp.acceptedHelperSeat == null || tp.acceptedHelperSeat === "" || Number.isNaN(Number(tp.acceptedHelperSeat)) ? null : Number(tp.acceptedHelperSeat);
+	escapeActive = Boolean(tp.escapeActive);
+	escapeQueue = Array.isArray(tp.escapeQueue) ? tp.escapeQueue.map(Number).filter((x) => !Number.isNaN(x)) : [];
+	escapeQueueIndex = Number.isFinite(Number(tp.escapeQueueIndex)) ? Number(tp.escapeQueueIndex) : -1;
+	escapeMonsterRemover = Number(tp.escapeMonsterRemover) || 0;
+	escapeMonsterBadStaff = tp.escapeMonsterBadStaff == null ? null : normalizeBadStaff(tp.escapeMonsterBadStaff);
+	escapeMonsterQueue = Array.isArray(tp.escapeMonsterQueue) ? tp.escapeMonsterQueue.slice() : [];
+	escapeMonsterInitialCount = Number(tp.escapeMonsterInitialCount) || 0;
+	escapeMonsterTemplateQueue = Array.isArray(tp.escapeMonsterTemplateQueue) ? tp.escapeMonsterTemplateQueue.slice() : [];
+	escapeCurrentMonsterCardId = tp.escapeCurrentMonsterCardId == null || tp.escapeCurrentMonsterCardId === "" ? null : String(tp.escapeCurrentMonsterCardId);
+	escapeCurrentSeat = tp.escapeCurrentSeat == null || tp.escapeCurrentSeat === "" || Number.isNaN(Number(tp.escapeCurrentSeat)) ? null : Number(tp.escapeCurrentSeat);
+	escapeWaitingForRoll = Boolean(tp.escapeWaitingForRoll);
+	escapeOwnerSeat = tp.escapeOwnerSeat == null || tp.escapeOwnerSeat === "" || Number.isNaN(Number(tp.escapeOwnerSeat)) ? null : Number(tp.escapeOwnerSeat);
+	escapeRollInProgress = Boolean(tp.escapeRollInProgress);
+	escapeAttemptNumber = Number(tp.escapeAttemptNumber) || 0;
+	escapeHalflingRetryUsedForCurrentAttempt = Boolean(tp.escapeHalflingRetryUsedForCurrentAttempt);
+	escapeHalflingRetryPending = cloneTurnStateJson(tp.escapeHalflingRetryPending);
+	escapeWizardFlightPending = cloneTurnStateJson(tp.escapeWizardFlightPending);
+	escapeMonsterPickSession =
+		tp.escapeMonsterPickSession && typeof tp.escapeMonsterPickSession === "object" && tp.escapeMonsterPickSession.seat != null && tp.escapeMonsterPickSession.seat !== ""
+			? cloneTurnStateJson(tp.escapeMonsterPickSession)
+			: null;
+	if (escapeMonsterPickSession && (escapeWaitingForRoll || escapeCurrentMonsterCardId != null)) {
+		clearEscapeMonsterPickSession();
+	}
+	deathLootActive = Boolean(tp.deathLootActive);
+	deathLootState = cloneTurnStateJson(tp.deathLootState);
+	resumeEscapeAfterLoot = Boolean(tp.resumeEscapeAfterLoot);
+	deathLootAwaitingEscapeFinish = Boolean(tp.deathLootAwaitingEscapeFinish);
+	thiefTheftBoardDicePending = Boolean(tp.thiefTheftBoardDicePending);
+	thiefTheftBoardDiceInProgress = Boolean(tp.thiefTheftBoardDiceInProgress);
+	window.FoldCount = Number(tp.foldCount) || 0;
+	foldedOnTurnSeat = tp.foldedOnTurnSeat == null || tp.foldedOnTurnSeat === "" || Number.isNaN(Number(tp.foldedOnTurnSeat)) ? null : Number(tp.foldedOnTurnSeat);
+	if (Array.isArray(tp.halflingDoubleSellUsedBySeat)) {
+		tp.halflingDoubleSellUsedBySeat.forEach((v, i) => {
+			if (i < halflingDoubleSellUsedBySeat.length) {
+				halflingDoubleSellUsedBySeat[i] = Boolean(v);
+			}
+		});
+	}
+	if (typeof tp.sellTreasuresDelegated === "boolean") {
+		sellTreasuresDelegated = tp.sellTreasuresDelegated;
+	}
+	if (Array.isArray(tp.warriorFrenzyUsedBySeat)) {
+		tp.warriorFrenzyUsedBySeat.forEach((v, i) => {
+			if (i < warriorFrenzyUsedBySeat.length) {
+				warriorFrenzyUsedBySeat[i] = Number(v) || 0;
+			}
+		});
+	}
+	if (Array.isArray(tp.warriorFrenzyBonusBySeat)) {
+		tp.warriorFrenzyBonusBySeat.forEach((v, i) => {
+			if (i < warriorFrenzyBonusBySeat.length) {
+				warriorFrenzyBonusBySeat[i] = Number(v) || 0;
+			}
+		});
+	}
+	if (Array.isArray(tp.clericExorcismUsedBySeat)) {
+		tp.clericExorcismUsedBySeat.forEach((v, i) => {
+			if (i < clericExorcismUsedBySeat.length) {
+				clericExorcismUsedBySeat[i] = Number(v) || 0;
+			}
+		});
+	}
+	if (Array.isArray(tp.clericExorcismBonusBySeat)) {
+		tp.clericExorcismBonusBySeat.forEach((v, i) => {
+			if (i < clericExorcismBonusBySeat.length) {
+				clericExorcismBonusBySeat[i] = Number(v) || 0;
+			}
+		});
+	}
+	if (Array.isArray(tp.victimThiefTrimUsedBySeat)) {
+		tp.victimThiefTrimUsedBySeat.forEach((v, i) => {
+			if (i < victimThiefTrimUsedBySeat.length) {
+				victimThiefTrimUsedBySeat[i] = Number(v) || 0;
+			}
+		});
+	}
+	if (Array.isArray(tp.thiefBackstabDebuffBySeat)) {
+		tp.thiefBackstabDebuffBySeat.forEach((v, i) => {
+			if (i < thiefBackstabDebuffBySeat.length) {
+				thiefBackstabDebuffBySeat[i] = Number(v) || 0;
+			}
+		});
+	}
+	applyTurnHighlight();
+	updateHelpUi();
+	updateThiefTheftUi();
+	updateWizardFlightUi();
+	updateThiefTrimUi();
+	updateWarriorFrenzyUi();
+	updateClericExorcismUi();
+	updateWizardTamingUi();
+}
+
+let turnStateSyncTimer = null;
+let lastTurnStateSyncJson = "";
+function scheduleTurnStateSync() {
+	if (!gameStarted) {
+		return;
+	}
+	if (turnStateSyncTimer) {
+		clearTimeout(turnStateSyncTimer);
+	}
+	turnStateSyncTimer = setTimeout(() => {
+		turnStateSyncTimer = null;
+		const turnPhase = serializeTurnPhaseForServer();
+		const json = JSON.stringify(turnPhase);
+		if (json === lastTurnStateSyncJson) {
+			return;
+		}
+		lastTurnStateSyncJson = json;
+		socket.emit("message", { method: "TurnStateSync", turnPhase });
+	}, 380);
+}
+
+/** Немедленная отправка turnPhase (смывка/выбор монстра), чтобы до F5 не «зависал» устаревший escapeMonsterPickSession в debounce. */
+function flushTurnStateSyncToServer() {
+	if (!gameStarted) {
+		return;
+	}
+	if (turnStateSyncTimer) {
+		clearTimeout(turnStateSyncTimer);
+		turnStateSyncTimer = null;
+	}
+	const turnPhase = serializeTurnPhaseForServer();
+	const json = JSON.stringify(turnPhase);
+	lastTurnStateSyncJson = json;
+	if (typeof socket !== "undefined" && socket && typeof socket.emit === "function") {
+		socket.emit("message", { method: "TurnStateSync", turnPhase });
+	}
 }
 
 function getMonsterCardsInBattleZone() {
@@ -5949,6 +6652,12 @@ function openCheatAttachModal(cheatCardId, seat) {
 			|| (selected.from === "equip" && selected.fromZoneId && side?.id && selected.fromZoneId === side.id);
 		const cheatEl = document.getElementById(cheatCardId);
 		if (needsMoveToMain) {
+			// ВАЖНО: пока Cheat ещё не привязан, перемещение шмотки в main может вызвать модалку наёмничка.
+			// Помечаем шмотку как "Cheat pending", чтобы не предлагать отдать её наёмничку.
+			const trEl = document.getElementById(selected.cardId);
+			if (trEl) {
+				trEl.dataset.cheatPendingIncoming = "1";
+			}
 			if (cheatEl) {
 				cheatEl.dataset.cheatPendingTreasureId = selected.cardId;
 			}
@@ -6180,8 +6889,7 @@ function updateCharacterStatesFromBoard() {
 			}
 			if (doorCard.race) {
 				const r = String(doorCard.race);
-				// Запрет на 2 одинаковые расы при Half-breed: не сбрасываем автоматически,
-				// а откатываем карту обратно в руку игрока.
+				// Запрет на 2 одинаковые расы при Half-breed: откат в руку игрока.
 				if (hasHalfBreed) {
 					if (raceCardElByRace.has(r)) {
 						appendCardToSeatHand(cardEl.id, seat);
@@ -6193,7 +6901,7 @@ function updateCharacterStatesFromBoard() {
 			}
 			if (doorCard.kind) {
 				const k = String(doorCard.kind);
-				// Запрет на 2 одинаковых класса при Super Munchkin: откат в руку.
+				// Запрет на 2 одинаковых класса при Super Munchkin: откат в руку игрока.
 				if (hasSuperMunchkin) {
 					if (kindCardElByKind.has(k)) {
 						appendCardToSeatHand(cardEl.id, seat);
@@ -6221,7 +6929,6 @@ function updateCharacterStatesFromBoard() {
 		// Пока Half-breed НЕ экипирована — нельзя иметь больше одной расы.
 		// Если кто-то попытался экипировать вторую расу, откатываем лишние карты обратно в руку.
 		if (!hasHalfBreed) {
-			// Находим все карты рас в main, оставляем последнюю, остальные возвращаем в руку.
 			const raceEls = [];
 			mainCards.forEach((cardEl) => {
 				const doorCard = window.doors?.find(d => d.name === cardEl.id);
@@ -6230,7 +6937,6 @@ function updateCharacterStatesFromBoard() {
 				}
 			});
 			if (raceEls.length > 1) {
-				// Оставляем последнюю по DOM-порядку.
 				for (let i = 0; i < raceEls.length - 1; i++) {
 					appendCardToSeatHand(raceEls[i].id, seat);
 				}
@@ -6490,17 +7196,348 @@ export function recalculateAllPowerDisplays() {
 	return characterBySeat[localSeat ?? 0]?.power ?? 0;
 }
 
+/** Клик по кубику вешается только в StartGame; после refresh нужно заново. */
+function setupMunchkinDiceAfterGameStart() {
+	const diceContainer = document.querySelector(".dice-container");
+	if (!diceContainer) {
+		return;
+	}
+	const NUMBER_OF_DICE = 1;
+	if (diceContainer.dataset.munchkinDiceBound === "1") {
+		randomizeDice(diceContainer, NUMBER_OF_DICE);
+		return;
+	}
+	diceContainer.dataset.munchkinDiceBound = "1";
+	diceContainer.dataset.hasDice = "1";
+	randomizeDice(diceContainer, NUMBER_OF_DICE);
+	diceContainer.addEventListener("click", () => {
+		if (thiefTheftBoardDicePending) {
+			if (thiefTheftBoardDiceInProgress) {
+				return;
+			}
+			if (localSeat == null || !isSeatThiefClassActive(localSeat)) {
+				return;
+			}
+			thiefTheftBoardDiceInProgress = true;
+			hideBattleResult();
+			thiefTheftBoardDicePending = false;
+			const interval = setInterval(() => {
+				const preview = Math.floor((Math.random() * 6) + 1);
+				diceContainer.innerHTML = "";
+				diceContainer.appendChild(createDice(preview));
+			}, 50);
+			setTimeout(() => {
+				clearInterval(interval);
+				const rawRoll = Math.floor((Math.random() * 6) + 1);
+				diceContainer.innerHTML = "";
+				diceContainer.appendChild(createDice(rawRoll));
+				socket.emit("message", {
+					method: "ThiefTheftRoll",
+					seat: localSeat,
+					value: rawRoll,
+				});
+			}, 1000);
+			return;
+		}
+		if (escapeActive) {
+			if (!canLocalPlayerRollEscapeNow() || escapeRollInProgress) {
+				return;
+			}
+			escapeRollInProgress = true;
+			const interval = setInterval(() => {
+				const preview = Math.floor((Math.random() * 6) + 1);
+				diceContainer.innerHTML = "";
+				diceContainer.appendChild(createDice(preview));
+			}, 50);
+			setTimeout(() => {
+				clearInterval(interval);
+				const rawRoll = Math.floor((Math.random() * 6) + 1);
+				diceContainer.innerHTML = "";
+				diceContainer.appendChild(createDice(rawRoll));
+				if (localSeat === escapeOwnerSeat) {
+					resolveEscapeRollAndBroadcast(localSeat, rawRoll);
+				} else {
+					socket.emit("message", {
+						method: "EscapeRollSubmit",
+						seat: localSeat,
+						rawRoll,
+					});
+				}
+			}, 1000);
+			return;
+		}
+		const interval = setInterval(() => {
+			randomizeDice(diceContainer, NUMBER_OF_DICE);
+		}, 50);
+
+		setTimeout(() => clearInterval(interval), 1000);
+		window.flag_dice = true;
+	});
+}
+
+/**
+ * Каноническая раскладка стола для 3 игроков (как у хоста seat 0 до сообщения 3Players).
+ * id элементов не меняются — только классы `… cards-zone`.
+ */
+function resetThreePlayerLayoutToSeatZero() {
+	const set = (id, c) => {
+		const el = document.getElementById(id);
+		if (el) {
+			el.className = `${c} cards-zone`;
+		}
+	};
+	set("myhand", "myhand");
+	set("opponent2hand", "opponent2hand");
+	set("opponent3hand", "opponent3hand");
+	set("zone2", "zone2");
+	set("zone5", "zone5");
+	set("zone_opponent2", "zone_opponent2");
+	set("zone_opponent2_side", "zone_opponent2_side");
+	set("zone_opponent3", "zone_opponent3");
+	set("zone_opponent3_side", "zone_opponent3_side");
+}
+
+/** Дублирует перестановки из 3Players при fl=="2player" (локальный seat 1). Нужна стартовая каноническая раскладка. */
+function applyThreePlayerLayoutSeat1AsInJoinMessage() {
+	const opponent2hand = document.getElementById("opponent2hand");
+	const opponent3hand = document.getElementById("opponent3hand");
+	const myhand = document.getElementById("myhand");
+	const zone_opponent2 = document.getElementById("zone_opponent2");
+	const zone_opponent3 = document.getElementById("zone_opponent3");
+	const zone2 = document.getElementById("zone2");
+	const zone_opponent2_side = document.getElementById("zone_opponent2_side");
+	const zone5 = document.getElementById("zone5");
+	const zone_opponent3_side = document.getElementById("zone_opponent3_side");
+	if (!opponent2hand || !opponent3hand || !myhand || !zone_opponent2 || !zone_opponent3 || !zone2 || !zone_opponent2_side || !zone5 || !zone_opponent3_side) {
+		return;
+	}
+	opponent3hand.classList.remove("opponent3hand");
+	opponent3hand.classList.add("myhand");
+	myhand.classList.remove("myhand");
+	myhand.classList.add("opponent3hand");
+
+	zone_opponent3.classList.remove("zone_opponent3");
+	zone_opponent3.classList.add("zone2");
+	zone2.classList.remove("zone2");
+	zone2.classList.add("zone_opponent3");
+
+	zone_opponent3_side.classList.remove("zone_opponent3_side");
+	zone_opponent3_side.classList.add("zone5");
+	zone5.classList.remove("zone5");
+	zone5.classList.add("zone_opponent3_side");
+
+	opponent2hand.classList.remove("opponent2hand");
+	opponent2hand.classList.add("myhand");
+	opponent3hand.classList.remove("myhand");
+	opponent3hand.classList.add("opponent2hand");
+
+	zone_opponent2.classList.remove("zone_opponent2");
+	zone_opponent2.classList.add("zone2");
+	zone_opponent3.classList.remove("zone2");
+	zone_opponent3.classList.add("zone_opponent2");
+
+	zone_opponent2_side.classList.remove("zone_opponent2_side");
+	zone_opponent2_side.classList.add("zone5");
+	zone_opponent3_side.classList.remove("zone5");
+	zone_opponent3_side.classList.add("zone_opponent2_side");
+}
+
+/** Дублирует перестановки из 3Players при fl=="3player" (локальный seat 2). Нужна стартовая каноническая раскладка. */
+function applyThreePlayerLayoutSeat2AsInJoinMessage() {
+	const opponent2hand = document.getElementById("opponent2hand");
+	const opponent3hand = document.getElementById("opponent3hand");
+	const myhand = document.getElementById("myhand");
+	const zone_opponent2 = document.getElementById("zone_opponent2");
+	const zone_opponent3 = document.getElementById("zone_opponent3");
+	const zone2 = document.getElementById("zone2");
+	const zone_opponent2_side = document.getElementById("zone_opponent2_side");
+	const zone5 = document.getElementById("zone5");
+	const zone_opponent3_side = document.getElementById("zone_opponent3_side");
+	if (!opponent2hand || !opponent3hand || !myhand || !zone_opponent2 || !zone_opponent3 || !zone2 || !zone_opponent2_side || !zone5 || !zone_opponent3_side) {
+		return;
+	}
+	opponent3hand.classList.remove("opponent3hand");
+	opponent3hand.classList.add("opponent2hand");
+	opponent2hand.classList.remove("opponent2hand");
+	opponent2hand.classList.add("opponent3hand");
+
+	zone_opponent3.classList.remove("zone_opponent3");
+	zone_opponent3.classList.add("zone_opponent2");
+	zone_opponent2.classList.remove("zone_opponent2");
+	zone_opponent2.classList.add("zone_opponent3");
+
+	zone_opponent3_side.classList.remove("zone_opponent3_side");
+	zone_opponent3_side.classList.add("zone_opponent2_side");
+	zone_opponent2_side.classList.remove("zone_opponent2_side");
+	zone_opponent2_side.classList.add("zone_opponent3_side");
+
+	myhand.classList.remove("myhand");
+	myhand.classList.add("opponent2hand");
+	opponent3hand.classList.remove("opponent2hand");
+	opponent3hand.classList.add("myhand");
+
+	zone2.classList.remove("zone2");
+	zone2.classList.add("zone_opponent2");
+	zone_opponent3.classList.remove("zone_opponent2");
+	zone_opponent3.classList.add("zone2");
+
+	zone5.classList.remove("zone5");
+	zone5.classList.add("zone_opponent2_side");
+	zone_opponent3_side.classList.remove("zone_opponent2_side");
+	zone_opponent3_side.classList.add("zone5");
+}
+
 let gameStarted = false;
 // mercTestDealt removed (no test deal)
 socket.on("message", response => {
-	
-	num = response.num;
+
+	function applySeatLayoutForRestore(seat, players) {
+		if (!players || players < 2) return;
+		const setZoneClass = (id, zoneClass) => {
+			const el = document.getElementById(id);
+			if (!el) return;
+			el.className = `${zoneClass} cards-zone`;
+		};
+
+		if (players === 2) {
+			// seat 0: default, seat 1: зеркалим "my" и "opponent" по классам.
+			if (seat === 0) {
+				setZoneClass("myhand", "myhand");
+				setZoneClass("opponenthand", "opponenthand");
+				setZoneClass("zone2", "zone2");
+				setZoneClass("zone_opponent", "zone_opponent");
+				setZoneClass("zone5", "zone5");
+				setZoneClass("zone_opponent_side", "zone_opponent_side");
+			} else if (seat === 1) {
+				setZoneClass("myhand", "opponenthand");
+				setZoneClass("opponenthand", "myhand");
+				setZoneClass("zone2", "zone_opponent");
+				setZoneClass("zone_opponent", "zone2");
+				setZoneClass("zone5", "zone_opponent_side");
+				setZoneClass("zone_opponent_side", "zone5");
+			}
+			return;
+		}
+
+		if (players === 3) {
+			// Должно совпадать с сообщением 3Players: там другая последовательность swap, чем у простой перестановки пар.
+			resetThreePlayerLayoutToSeatZero();
+			if (seat === 0) {
+				return;
+			}
+			if (seat === 1) {
+				applyThreePlayerLayoutSeat1AsInJoinMessage();
+				return;
+			}
+			if (seat === 2) {
+				applyThreePlayerLayoutSeat2AsInJoinMessage();
+			}
+		}
+	}
+
+	// Восстановление seat после refresh (без побочных эффектов "1"/"2Players"/"3Players").
+	if (response.method === "RestoreSeat") {
+		const seat = parseInt(response.seat, 10);
+		const n = parseInt(response.num, 10);
+		if (Number.isNaN(seat) || seat < 0) {
+			return;
+		}
+		console.log("[restore] RestoreSeat received", { seat, num: n });
+		localSeat = seat;
+		if (!Number.isNaN(n) && n > 0) {
+			num = n;
+			window.num = n;
+		}
+		applySeatLayoutForRestore(seat, num);
+		// После смены классов зон нужно заново привязать drag&drop к текущим DOM-элементам.
+		try { window.dispatchEvent(new Event("munchkin:zonesChanged")); } catch {}
+		console.log("[restore] layout applied", {
+			seat,
+			players: num,
+			myhand: document.getElementById("myhand")?.className,
+			opponent2hand: document.getElementById("opponent2hand")?.className,
+			opponent3hand: document.getElementById("opponent3hand")?.className,
+			zone2: document.getElementById("zone2")?.className,
+			zone5: document.getElementById("zone5")?.className,
+			zone_opponent2: document.getElementById("zone_opponent2")?.className,
+			zone_opponent3: document.getElementById("zone_opponent3")?.className,
+		});
+		ensureLocalPlayerProfileChosen();
+		updatePlayersUiVisibility(num);
+		recalculateAllPowerDisplays();
+		applyTurnHighlight();
+	}
+
+	// Восстановление состояния комнаты с сервера (сервер-авторитет).
+	if (response.method === "RoomState") {
+		const state = response.state;
+		if (!state || typeof state !== "object") {
+			return;
+		}
+		// RoomState может прийти раньше RestoreSeat — берём seat прямо из сообщения.
+		const seatFromMsg = parseInt(response.seat, 10);
+		if ((localSeat === null || localSeat === undefined) && !Number.isNaN(seatFromMsg) && seatFromMsg >= 0) {
+			localSeat = seatFromMsg;
+		}
+		// num мог быть ещё не проставлен — берём из state.
+		const nPlayers = Number(state?.num) || window.num || num || 0;
+		if (nPlayers > 0) {
+			num = nPlayers;
+			window.num = nPlayers;
+		}
+		console.log("[restore] RoomState received", { num: state.num, cards: Object.keys(state.cards || {}).length, hasGame: Boolean(state.game) });
+		// На случай, если RoomState придёт раньше RestoreSeat — всё равно пытаемся применить раскладку.
+		if (localSeat !== null && localSeat !== undefined) {
+			applySeatLayoutForRestore(localSeat, window.num || num || state?.num);
+			// После смены классов зон нужно заново привязать drag&drop к текущим DOM-элементам.
+			try { window.dispatchEvent(new Event("munchkin:zonesChanged")); } catch {}
+		}
+		console.log("[restore] before applyRoomStateFromServer", {
+			localSeat,
+			myhand: document.getElementById("myhand")?.className,
+			opponent2hand: document.getElementById("opponent2hand")?.className,
+			opponent3hand: document.getElementById("opponent3hand")?.className,
+			zone2: document.getElementById("zone2")?.className,
+			zone5: document.getElementById("zone5")?.className,
+		});
+		applyRoomStateFromServer(state);
+		console.log("[restore] after applyRoomStateFromServer", {
+			localSeat,
+			myhand: document.getElementById("myhand")?.className,
+			opponent2hand: document.getElementById("opponent2hand")?.className,
+			opponent3hand: document.getElementById("opponent3hand")?.className,
+			zone2: document.getElementById("zone2")?.className,
+			zone5: document.getElementById("zone5")?.className,
+		});
+		return;
+	}
+
+	const maybeNum = parseInt(response.num, 10);
+	if (!Number.isNaN(maybeNum) && maybeNum > 0) {
+		num = maybeNum;
+		window.num = maybeNum;
+	}
 	//console.log(response);
 	
   if (response.method === "moveCard") {
     const card = document.getElementById(response.cardId);
     const target = response.targetId ? document.getElementById(response.targetId) : null;
-    const zone = document.getElementById(response.zoneId);
+	let zone = null;
+	if (response.zoneId) {
+		const z = String(response.zoneId);
+		const handMatch = z.match(/^hand(\d)$/);
+		const mainMatch = z.match(/^main(\d)$/);
+		const sideMatch = z.match(/^side(\d)$/);
+		if (handMatch) {
+			zone = getHandElementForPlayerSeat(parseInt(handMatch[1], 10));
+		} else if (mainMatch) {
+			zone = getMainAndSideZoneElementsForSeat(parseInt(mainMatch[1], 10))?.main || null;
+		} else if (sideMatch) {
+			zone = getMainAndSideZoneElementsForSeat(parseInt(sideMatch[1], 10))?.side || null;
+		} else {
+			zone = document.getElementById(z);
+		}
+	}
 	// Важно: отправитель двигает карту локально ещё до прихода этого сообщения.
 	// Поэтому для корректной логики "вышло из экипировки" используем fromZoneId, если он есть.
 	const fromZone = response.fromZoneId ? document.getElementById(response.fromZoneId) : null;
@@ -6729,7 +7766,7 @@ socket.on("message", response => {
 					return;
 				}
 				const tr = window.treasures?.find((t) => t.name === card.id);
-				const alreadyBound = Boolean(card.dataset?.hirelingCardId) || Boolean(card.dataset?.cheatCardId);
+				const alreadyBound = Boolean(card.dataset?.hirelingCardId) || Boolean(card.dataset?.cheatCardId) || Boolean(card.dataset?.cheatPendingIncoming);
 				const isHireling = isTreasureSpecial(card.id, "Hireling");
 				if (tr && !tr.oneTime && !alreadyBound && !isHireling) {
 					const hEl = getHirelingCardInMainForSeat(seat);
@@ -6795,6 +7832,8 @@ socket.on("message", response => {
 			}
 		}
 
+		pushMonsterBonusAttachmentsToServer();
+
 		// Все пост-эффекты отработали — теперь безопасно пересчитать силы/инварианты.
 		recalculateAllPowerDisplays();
 		UpdateZones();
@@ -6826,6 +7865,10 @@ socket.on("message", response => {
 			return;
 		}
 		setCheatAttachment(cheatCardId, treasureCardId);
+		const trEl = document.getElementById(treasureCardId);
+		if (trEl) {
+			trEl.dataset.cheatPendingIncoming = "";
+		}
 	}
 	if (response.method === "MercenaryAttach") {
 		const seat = parseInt(response.seat, 10);
@@ -7298,6 +8341,15 @@ socket.on("message", response => {
 		const seat = parseInt(response.seat, 10);
 		const monsters = Array.isArray(response.monsters) ? response.monsters : [];
 		hideEscapeMonsterPicker();
+		if (!Number.isNaN(seat) && monsters.length > 0) {
+			escapeMonsterPickSession = {
+				seat,
+				monsters: cloneTurnStateJson(monsters) || [],
+			};
+			flushTurnStateSyncToServer();
+		} else {
+			clearEscapeMonsterPickSession();
+		}
 		if (!Number.isNaN(seat) && localSeat === seat) {
 			showBattleResult("Выбери монстра, от которого будешь смываться.");
 			showEscapeMonsterPicker(monsters, (cardId) => {
@@ -7313,10 +8365,14 @@ socket.on("message", response => {
 		}
 	}
 	if (response.method === "EscapeMonsterChosen") {
+		clearEscapeMonsterPickSession();
 		hideEscapeMonsterPicker();
 		const chosenSeat = parseInt(response.seat, 10);
+		const pickedId = response.cardId ? String(response.cardId) : "";
+		if (!Number.isNaN(chosenSeat) && pickedId) {
+			setCurrentEscapeMonsterById(pickedId);
+		}
 		if (localSeat === escapeOwnerSeat && !Number.isNaN(chosenSeat) && chosenSeat === escapeQueue[escapeQueueIndex]) {
-			setCurrentEscapeMonsterById(response.cardId);
 			socket.emit("message", {
 				method: "EscapeTurnStart",
 				seat: chosenSeat,
@@ -7324,8 +8380,10 @@ socket.on("message", response => {
 				isRetry: false,
 			});
 		}
+		flushTurnStateSyncToServer();
 	}
 	if (response.method === "EscapeTurnStart") {
+		clearEscapeMonsterPickSession();
 		const seat = parseInt(response.seat, 10);
 		const isRetry = Boolean(response.isRetry);
 		if (!Number.isNaN(seat)) {
@@ -7340,6 +8398,7 @@ socket.on("message", response => {
 			hideEscapeHalflingRetryModal();
 			showEscapeTurnText(seat);
 		}
+		flushTurnStateSyncToServer();
 	}
 	if (response.method === "EscapeHalflingRetryPrompt") {
 		const seat = parseInt(response.seat, 10);
@@ -7487,6 +8546,7 @@ socket.on("message", response => {
 		}
 	}
 	if (response.method === "EscapeSequenceFinished") {
+		clearEscapeMonsterPickSession();
 		escapeActive = false;
 		escapeQueue = [];
 		escapeQueueIndex = -1;
@@ -7642,12 +8702,7 @@ socket.on("message", response => {
 		// console.log('перемешиваем')
 		window.doors = response.deckDoors;
 		window.treasures = response.deckTreasure;
-		
-		const StartGameMethod = {
-			method: "StartGame",
-		};
-		socket.emit("message", StartGameMethod);
-
+		// Старт игры теперь инициирует сервер (сервер-авторитет).
   }
 	if (response.method === "1") {
 		//console.log("первый")
@@ -7721,103 +8776,22 @@ socket.on("message", response => {
   }
 	if (response.method === "3Players") {
 		//console.log("второй или третий ")
-    fl = response.fl;
+		fl = response.fl;
 		localSeat = fl === "3player" ? 2 : 1;
 		ensureLocalPlayerProfileChosen();
 		num = 3;
 		window.num = num;
-		const opponent2hand = document.getElementById("opponent2hand");
-		const opponent3hand = document.getElementById("opponent3hand");
-		const myhand = document.getElementById("myhand");
-		const zone_opponent2 = document.getElementById("zone_opponent2");
-		const zone_opponent3 = document.getElementById("zone_opponent3");
-		const zone2 = document.getElementById("zone2");
-		const zone_opponent2_side = document.getElementById("zone_opponent2_side");
-		const zone5 = document.getElementById("zone5");
-		const zone_opponent3_side = document.getElementById("zone_opponent3_side");
-
-		// Определяем, является ли пользователь вторым игроком
-		if (fl=="2player") {
-			//console.log(myhand);
-			// Если пользователь второй игрок, меняем классы элементов
-			opponent3hand.classList.remove("opponent3hand");
-			opponent3hand.classList.add("myhand");
-			myhand.classList.remove("myhand");
-			myhand.classList.add("opponent3hand");
-
-			zone_opponent3.classList.remove("zone_opponent3");
-			zone_opponent3.classList.add("zone2");
-			zone2.classList.remove("zone2");
-			zone2.classList.add("zone_opponent3");
-			
-			zone_opponent3_side.classList.remove("zone_opponent3_side");
-			zone_opponent3_side.classList.add("zone5");
-			zone5.classList.remove("zone5");
-			zone5.classList.add("zone_opponent3_side");
-
-
-			
-			//console.log(myhand);
-			opponent2hand.classList.remove("opponent2hand");
-			opponent2hand.classList.add("myhand");
-			opponent3hand.classList.remove("myhand");
-			opponent3hand.classList.add("opponent2hand");
-
-			zone_opponent2.classList.remove("zone_opponent2");
-			zone_opponent2.classList.add("zone2");
-			zone_opponent3.classList.remove("zone2");
-			zone_opponent3.classList.add("zone_opponent2");
-			
-			zone_opponent2_side.classList.remove("zone_opponent2_side");
-			zone_opponent2_side.classList.add("zone5");
-			zone_opponent3_side.classList.remove("zone5");
-			zone_opponent3_side.classList.add("zone_opponent2_side");
-			
-		}
-		
-		
-		if (fl=="3player") {
-			//console.log(myhand);
-			// Если пользователь второй игрок, меняем классы элементов
-			opponent3hand.classList.remove("opponent3hand");
-			opponent3hand.classList.add("opponent2hand");
-			opponent2hand.classList.remove("opponent2hand");
-			opponent2hand.classList.add("opponent3hand");
-
-			zone_opponent3.classList.remove("zone_opponent3");
-			zone_opponent3.classList.add("zone_opponent2");
-			zone_opponent2.classList.remove("zone_opponent2");
-			zone_opponent2.classList.add("zone_opponent3");
-			
-			zone_opponent3_side.classList.remove("zone_opponent3_side");
-			zone_opponent3_side.classList.add("zone_opponent2_side");
-			zone_opponent2_side.classList.remove("zone_opponent2_side");
-			zone_opponent2_side.classList.add("zone_opponent3_side");
-
-
-			myhand.classList.remove("myhand");
-			myhand.classList.add("opponent2hand");
-			opponent3hand.classList.remove("opponent2hand");
-			opponent3hand.classList.add("myhand");
-
-			zone2.classList.remove("zone2");
-			zone2.classList.add("zone_opponent2");
-			zone_opponent3.classList.remove("zone_opponent2");
-			zone_opponent3.classList.add("zone2");
-			
-			zone5.classList.remove("zone5");
-			zone5.classList.add("zone_opponent2_side");
-			zone_opponent3_side.classList.remove("zone_opponent2_side");
-			zone_opponent3_side.classList.add("zone5");
-
-
+		// Та же раскладка, что после refresh (RestoreSeat / RoomState), иначе оппоненты «меняются местами».
+		resetThreePlayerLayoutToSeatZero();
+		if (localSeat === 1) {
+			applyThreePlayerLayoutSeat1AsInJoinMessage();
+		} else if (localSeat === 2) {
+			applyThreePlayerLayoutSeat2AsInJoinMessage();
 		}
 		updatePlayersUiVisibility(num);
 		recalculateAllPowerDisplays();
 		applyTurnHighlight();
-
-
-  }
+	}
 	if (response.method === "RandDice"){
 		const rand = response.digit;
 		const NUMBER_OF_DICE = 1;
@@ -7837,13 +8811,31 @@ socket.on("message", response => {
 	}
 
 	if (response.method === "StartGame" && gameStarted == false) {
+		// Сервер-авторитет присылает колоды: по ним создаём DOM карт.
+		if (Array.isArray(response.deckDoors)) {
+			window.doors = response.deckDoors;
+		}
+		if (Array.isArray(response.deckTreasure)) {
+			window.treasures = response.deckTreasure;
+		}
 		num = response.num;
 		window.num = num;
 		//console.log(`${num} игроков`);
 		updatePlayersUiVisibility(num);
 		recalculateAllPowerDisplays();
 		applyTurnHighlight();
-		Start_game(num);
+		// Раздачу/перемещения теперь делает сервер через moveCard.
+		// Здесь только создаём карты колод в DOM.
+		window.zonedoor = document.querySelector('.zone_doors');
+		window.zoneTreasure = document.querySelector('.zone_treasure');
+		if (window.zonedoor && window.zoneTreasure) {
+			Deck_filling(window.doors, window.zonedoor);
+			UpdatebackImgDoor();
+			Deck_filling(window.treasures, window.zoneTreasure);
+			UpdatebackImgTreasure();
+			UpdateZones();
+			window.allCards = document.querySelectorAll('.card');
+		}
 		// Тестовую раздачу наёмничка убрали.
 		recalculateAllPowerDisplays();
 		applyTurnHighlight();
@@ -7876,83 +8868,12 @@ socket.on("message", response => {
 		updateThiefTheftUi();
 		updateThiefTrimUi();
 		gameStarted = true;
+		ensureRoomOpenModalsMutationObserver();
 		if (localSeat === 0) {
 			setRandomFirstTurn();
 		}
 
-		
-		const NUMBER_OF_DICE = 1;
-		const diceContainer = document.querySelector(".dice-container");
-
-		randomizeDice(diceContainer, NUMBER_OF_DICE);
-		
-		diceContainer.addEventListener("click", () => {
-			if (thiefTheftBoardDicePending) {
-				if (thiefTheftBoardDiceInProgress) {
-					return;
-				}
-				if (localSeat == null || !isSeatThiefClassActive(localSeat)) {
-					return;
-				}
-				thiefTheftBoardDiceInProgress = true;
-				hideBattleResult();
-				thiefTheftBoardDicePending = false;
-				const interval = setInterval(() => {
-					const preview = Math.floor((Math.random() * 6) + 1);
-					diceContainer.innerHTML = "";
-					diceContainer.appendChild(createDice(preview));
-				}, 50);
-				setTimeout(() => {
-					clearInterval(interval);
-					const rawRoll = Math.floor((Math.random() * 6) + 1);
-					diceContainer.innerHTML = "";
-					diceContainer.appendChild(createDice(rawRoll));
-					socket.emit("message", {
-						method: "ThiefTheftRoll",
-						seat: localSeat,
-						value: rawRoll,
-					});
-				}, 1000);
-				return;
-			}
-			if (escapeActive) {
-				if (!canLocalPlayerRollEscapeNow() || escapeRollInProgress) {
-					return;
-				}
-				escapeRollInProgress = true;
-				const interval = setInterval(() => {
-					const preview = Math.floor((Math.random() * 6) + 1);
-					diceContainer.innerHTML = "";
-					diceContainer.appendChild(createDice(preview));
-				}, 50);
-				setTimeout(() => {
-					clearInterval(interval);
-					const rawRoll = Math.floor((Math.random() * 6) + 1);
-					diceContainer.innerHTML = "";
-					diceContainer.appendChild(createDice(rawRoll));
-					// Владелец смывки считает результат сразу локально.
-					// Через сервер потом синхронизируются RandDice + EscapeRollResult.
-					if (localSeat === escapeOwnerSeat) {
-						resolveEscapeRollAndBroadcast(localSeat, rawRoll);
-					} else {
-						socket.emit("message", {
-							method: "EscapeRollSubmit",
-							seat: localSeat,
-							rawRoll,
-						});
-					}
-				}, 1000);
-				return;
-			}
-			const interval = setInterval(() => {
-				randomizeDice(diceContainer, NUMBER_OF_DICE);
-			}, 50);
-
-			setTimeout(() => clearInterval(interval), 1000);
-			window.flag_dice = true;
-		});
-
-
+		setupMunchkinDiceAfterGameStart();
 
 	}
 	if (response.method === "MateTestDeal") {
@@ -7979,7 +8900,8 @@ socket.on("message", response => {
 			window.FoldCount++;
 		}
 	}
-	
+
+	scheduleTurnStateSync();
 });
 
 
@@ -8432,13 +9354,22 @@ function Start_game(num_players){
 }
 document.addEventListener('DOMContentLoaded', function() {
   function initialize() {
+	// Если игра уже восстановлена/запущена — не трогаем интерактивность зон и не запускаем ретраи.
+	// Иначе при refresh можно попасть в цикл, где initialize() каждые 1с снова вызывает
+	// setZoneInteractivityByPlayers(0) (особенно если кнопка старта удалена при restore).
+	if (gameStarted) {
+		return;
+	}
 	// Получаем элемент кнопки по классу
 	window.button = document.querySelector('.button_start_game');
 	window.zonedoor = document.querySelector('.zone_doors');
 	window.zoneTreasure = document.querySelector('.zone_treasure');
+	// До старта игры отключаем лишние зоны.
 	setZoneInteractivityByPlayers(0);
 	if (!window.button) { // Проверка наличия элемента
-		setTimeout(initialize, 1000); 
+		// Если кнопки нет, но игра ещё не стартовала, попробуем позже.
+		// (Если игра восстановится через RoomState, gameStarted станет true и ретраи прекратятся.)
+		setTimeout(initialize, 1000);
 
 	} else {
 		// Добавляем обработчик события 'click' на кнопку
@@ -8464,7 +9395,9 @@ let flag = false;
 window.FoldCount = 0;
 let foldedOnTurnSeat = null;
 let battleTurnSeat = null;
-export function timer() {
+let timerSecondsRemaining = 0;
+let timerRunning = false;
+export function timer(initialSeconds = 30, restoring = false) {
   const timerElement = document.getElementById('timer');
   const foldButton = document.getElementById('fold'); 
   const endTurnButton = document.getElementById('end-turn');
@@ -8479,7 +9412,8 @@ export function timer() {
 
 	// Если по какой-то причине осталась активной смывка с прошлого боя,
 	// сбрасываем её: иначе UI способностей классов скрывается из-за escapeActive.
-	if (escapeActive) {
+	// При восстановлении таймера после refresh не трогаем смывку — иначе теряется RoomState.turnPhase.
+	if (escapeActive && !restoring) {
 		resetEscapeStateNow();
 	}
 
@@ -8488,14 +9422,20 @@ export function timer() {
     return; 
   }
 
-  let secondsRemaining = 30;
+  let secondsRemaining = Math.max(1, parseInt(initialSeconds, 10) || 30);
+  timerSecondsRemaining = secondsRemaining;
+  timerRunning = true;
   flag = true;
-  // Старт нового боевого таймера всегда возвращает фазу "Пас".
-  turnAwaitingManualEnd = false;
+  // Старт нового боевого таймера всегда возвращает фазу "Пас" (кроме восстановления из RoomState.turnPhase).
+  if (!restoring) {
+		turnAwaitingManualEnd = false;
+	}
   const isSameBattleTurn = battleActive && battleTurnSeat === currentTurnSeat;
-  battleActive = true;
-  battleTurnSeat = currentTurnSeat;
-  if (!isSameBattleTurn) {
+  if (!restoring) {
+		battleActive = true;
+		battleTurnSeat = currentTurnSeat;
+	}
+  if (!restoring && !isSameBattleTurn) {
     window.FoldCount = 0;
     foldedOnTurnSeat = null;
     pendingHelpSeats.clear();
@@ -8555,25 +9495,7 @@ export function timer() {
   }
 
   function handleEndTurnClick() {
-	if (Number(localSeat) !== Number(currentTurnSeat)) {
-		return;
-	}
-	if (!turnAwaitingManualEnd) {
-		return;
-	}
-	const handCount = getLocalHandCardCount();
-	const handLimit = isSeatDwarfRaceActive(localSeat) ? 6 : 5;
-	if (handCount > handLimit) {
-		showBattleResult(`Сбрось лишние карты с руки (максимум ${handLimit}).`);
-		setTimeout(() => {
-			hideBattleResult();
-		}, 1500);
-		return;
-	}
-	hideBattleResult();
-	turnAwaitingManualEnd = false;
-	updateTurnActionButtons(false);
-	advanceTurnClockwise();
+	tryCompleteManualTurnEnd();
   }
 
   function handleOfferHelpClick() {
@@ -8624,6 +9546,8 @@ export function timer() {
 
 		turnResolved = true;
 		clearInterval(countdownInterval);
+		timerRunning = false;
+		timerSecondsRemaining = 0;
 		timerElement.textContent = "";
 		window.FoldCount = 0;
 		foldedOnTurnSeat = null;
@@ -8640,6 +9564,7 @@ export function timer() {
   // Запускаем интервал
   countdownInterval = setInterval(() => {
     secondsRemaining--;
+	timerSecondsRemaining = secondsRemaining;
     timerElement.textContent = formatTime(secondsRemaining);
 	if (window.FoldCount >= window.num) {
 		secondsRemaining = 0;
@@ -8669,15 +9594,29 @@ function MoveMonstersToDrop() {
 
 	if (monsterZone && BonusZone && zone_doors_drop && zone_treasure_drop) {
 		// Объединяем карты из monsterZone и BonusZone
-	  let cards = [...monsterZone.querySelectorAll(".card"), ...BonusZone.querySelectorAll(".card")];
-	  cards.forEach((card) => {
-		if (card.id.includes("door")){
-			zone_doors_drop.appendChild(card); // Перемещаем карту в zone3
-		}
-		if (card.id.includes("treasure")){
-			zone_treasure_drop.appendChild(card); // Перемещаем карту в zone3
-		}
-	  });
+		const cards = [...monsterZone.querySelectorAll(".card"), ...BonusZone.querySelectorAll(".card")];
+		cards.forEach((card) => {
+			const fromZoneId = card.parentElement?.id || null;
+			if (card.id.includes("door")) {
+				zone_doors_drop.appendChild(card);
+				socket.emit("message", {
+					method: "moveCard",
+					cardId: card.id,
+					targetId: null,
+					zoneId: "zone_doors_drop",
+					fromZoneId,
+				});
+			} else if (card.id.includes("treasure")) {
+				zone_treasure_drop.appendChild(card);
+				socket.emit("message", {
+					method: "moveCard",
+					cardId: card.id,
+					targetId: null,
+					zoneId: "zone_treasure_drop",
+					fromZoneId,
+				});
+			}
+		});
 	}
 	const MonsterBonus = document.querySelector('.MonsterBonus');
 	if (MonsterBonus) {

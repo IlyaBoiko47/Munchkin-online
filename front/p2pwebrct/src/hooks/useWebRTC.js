@@ -10,6 +10,27 @@ export const LOCAL_AUDIO = 'LOCAL_AUDIO';
 export default function useWebRTC(roomID) {
   const [clients, updateClients] = useStateWithCallback([]);
 
+  function getOrCreatePlayerToken() {
+    // ВАЖНО: токен должен быть уникален для ВКЛАДКИ, иначе при игре "в 2-3 вкладки"
+    // localStorage будет общий и все игроки получат один token => один seat после refresh.
+    // sessionStorage сохраняется при refresh, но не шарится между вкладками.
+    const key = `munchkin_player_token:${roomID || 'global'}`;
+    try {
+      const existing = sessionStorage.getItem(key);
+      if (existing) return existing;
+      const created = (window.crypto && typeof window.crypto.randomUUID === 'function')
+        ? window.crypto.randomUUID()
+        : String(Date.now()) + '-' + String(Math.random()).slice(2);
+      sessionStorage.setItem(key, created);
+      return created;
+    } catch {
+      // Если sessionStorage недоступен — создаём “на лету” (без сохранения между обновлениями).
+      return (window.crypto && typeof window.crypto.randomUUID === 'function')
+        ? window.crypto.randomUUID()
+        : String(Date.now()) + '-' + String(Math.random()).slice(2);
+    }
+  }
+
   const addNewClient = useCallback((newClient, cb) => {
     updateClients(list => {
       if (!list.includes(newClient)) {
@@ -25,6 +46,8 @@ export default function useWebRTC(roomID) {
   const makingOffer = useRef({});
   const ignoreOffer = useRef({});
   const politePeer = useRef({});
+  // ICE кандидаты могут прийти до SDP (remoteDescription ещё null) — накапливаем и применяем позже.
+  const pendingIceCandidates = useRef({});
   const localMediaStream = useRef(null);
   const peerMediaElements = useRef({
     [LOCAL_AUDIO]: null,
@@ -64,6 +87,7 @@ export default function useWebRTC(roomID) {
       politePeer.current[peerID] = String(socket.id) < String(peerID);
       makingOffer.current[peerID] = false;
       ignoreOffer.current[peerID] = false;
+      pendingIceCandidates.current[peerID] = [];
 
       peerConnections.current[peerID].onicecandidate = event => {
         if (event.candidate) {
@@ -163,6 +187,20 @@ export default function useWebRTC(roomID) {
 
         await pc.setRemoteDescription(desc);
 
+        // Если до SDP уже пришли ICE кандидаты — применяем их после remoteDescription.
+        const queued = pendingIceCandidates.current[peerID];
+        if (Array.isArray(queued) && queued.length > 0 && pc.remoteDescription) {
+          pendingIceCandidates.current[peerID] = [];
+          for (const c of queued) {
+            try {
+              // eslint-disable-next-line no-await-in-loop
+              await pc.addIceCandidate(new RTCIceCandidate(c));
+            } catch (e) {
+              console.warn('ICE candidate (queued) add failed:', e);
+            }
+          }
+        }
+
         if (desc.type === 'offer') {
           await pc.setLocalDescription(await pc.createAnswer());
           socket.emit(ACTIONS.RELAY_SDP, {
@@ -184,9 +222,21 @@ export default function useWebRTC(roomID) {
 
   useEffect(() => {
     socket.on(ACTIONS.ICE_CANDIDATE, ({peerID, iceCandidate}) => {
-      peerConnections.current[peerID]?.addIceCandidate(
-        new RTCIceCandidate(iceCandidate)
-      );
+      const pc = peerConnections.current[peerID];
+      if (!pc) {
+        return;
+      }
+      // Если remoteDescription ещё нет — кладём в очередь.
+      if (!pc.remoteDescription) {
+        if (!pendingIceCandidates.current[peerID]) {
+          pendingIceCandidates.current[peerID] = [];
+        }
+        pendingIceCandidates.current[peerID].push(iceCandidate);
+        return;
+      }
+      pc.addIceCandidate(new RTCIceCandidate(iceCandidate)).catch((e) => {
+        console.warn('ICE candidate add failed:', e);
+      });
     });
 
     return () => {
@@ -202,6 +252,7 @@ export default function useWebRTC(roomID) {
 
       delete peerConnections.current[peerID];
       delete peerMediaElements.current[peerID];
+      delete pendingIceCandidates.current[peerID];
 
       updateClients(list => list.filter(c => c !== peerID));
     };
@@ -241,7 +292,8 @@ export default function useWebRTC(roomID) {
 
     // Важно: на http (не localhost) браузеры часто блокируют getUserMedia.
     // Но комната и игра должны работать и без микрофона — поэтому JOIN выполняем всегда.
-    socket.emit(ACTIONS.JOIN, {room: roomID});
+    const token = getOrCreatePlayerToken();
+    socket.emit(ACTIONS.JOIN, {room: roomID, token});
     startCapture().catch((e) => console.error('Error getting userMedia:', e));
 
     return () => {

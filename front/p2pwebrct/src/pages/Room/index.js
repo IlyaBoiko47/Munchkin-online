@@ -181,7 +181,7 @@ export default function Room() {
 							<img  src="../img/svg/sword_icon-icons 2.svg" alt="картинка"/>
 						</div>
 
-						<div class="dice-container"></div>
+						<div className="dice-container"></div>
 					</div>
 				</main>
 			</div>

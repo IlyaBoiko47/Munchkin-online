@@ -9,6 +9,11 @@ let currentDrag;
 let dragStartedFromZone2 = false;
 /** @type {{ parent: HTMLElement, next: ChildNode | null } | null} */
 let dragFromSnapshot = null;
+/** @type {HTMLElement | null} */
+let lastHoverZone = null;
+/** @type {HTMLElement | null} */
+let lastHoverTargetCard = null;
+let dropHandled = false;
 // Бежевая подложка → насыщенный красный: сначала sepia (единая тоновая основа), затем сдвиг в красные и сильный saturate
 const INVALID_TREASURE_EQUIPMENT_FILTER =
 	'sepia(1) saturate(10) hue-rotate(300deg) contrast(1.2) brightness(0.85)';
@@ -88,6 +93,83 @@ function dragend_handler(e) {
 	if (c) {
 		c.style.filter = '';
 	}
+	// Если drop не сработал (мышь отпустили вне зоны), но во время dragover карта уже "заехала" в последнюю зону —
+	// считаем это валидным переносом и отправляем moveCard так же, как в drop_handler.
+	if (currentDrag && !dropHandled && lastHoverZone && dragFromSnapshot?.parent) {
+		const zone = lastHoverZone;
+		const target = lastHoverTargetCard;
+
+		const invalidTreasureEquip = currentDrag && zone && !canPlaceTreasureInPlayerEquipment(currentDrag, zone);
+		const invalidDoorEquip = currentDrag && zone && !canPlaceDoorInPlayerEquipment(currentDrag, zone);
+		const invalidMonsterToBattle = currentDrag && zone && !canPlaceCardIntoMonsterBattleZone(currentDrag, zone);
+		const invalidMagicLampToBattle = currentDrag && zone && !canPlaceMagicLampIntoBattleZone(currentDrag, zone);
+
+		// Если перенос в последнюю зону был невалиден — откатываем.
+		if (invalidTreasureEquip || invalidDoorEquip || invalidMonsterToBattle || invalidMagicLampToBattle) {
+			dragFromSnapshot.parent.insertBefore(currentDrag, dragFromSnapshot.next);
+			currentDrag.style.filter = '';
+		} else {
+			// Убедимся, что элемент лежит в нужной зоне и после нужной карты.
+			if (target && zone.contains(target)) {
+				const next = target.nextSibling;
+				if (next && zone.contains(next)) {
+					zone.insertBefore(currentDrag, next);
+				} else {
+					zone.appendChild(currentDrag);
+				}
+			} else {
+				zone.appendChild(currentDrag);
+			}
+		}
+
+		// Обновления и синхронизация с другими клиентами.
+		adjustCardWidth('.myhand');
+		adjustCardWidth('.zone2');
+		adjustCardWidth('.zone5');
+		adjustCardHeight('.zone3');
+		adjustCardHeight('.zone_monster');
+		adjustCardWidth('.opponenthand');
+		adjustCardWidth('.zone_opponent');
+		adjustCardWidth('.zone_opponent_side');
+		adjustCardWidth('.opponent2hand');
+		adjustCardWidth('.zone_opponent2');
+		adjustCardWidth('.zone_opponent2_side');
+		adjustCardWidth('.opponent3hand');
+		adjustCardWidth('.zone_opponent3');
+		adjustCardWidth('.zone_opponent3_side');
+		UpdatebackImgTreasure();
+		UpdatebackImgDoor();
+		recalculateAllPowerDisplays();
+
+		const moveData = {
+			method: "moveCard",
+			cardId: currentDrag.id,
+			targetId: currentDrag.previousElementSibling ? currentDrag.previousElementSibling.id : null,
+			zoneId: currentDrag.parentElement ? currentDrag.parentElement.id : null,
+			fromZoneId: dragFromSnapshot?.parent?.id || null,
+		};
+		socket.emit("message", moveData);
+
+		const parentZone = currentDrag.parentElement;
+		if (parentZone) {
+			scheduleBadStaffIfNeeded(currentDrag.id, parentZone);
+			scheduleTreasureLevelIfNeeded(currentDrag.id, parentZone);
+			scheduleTreasure65IfNeeded(currentDrag.id, parentZone);
+			scheduleMonsterBonusAttachIfNeeded(currentDrag.id, parentZone);
+			scheduleWanderingMonsterIfNeeded(currentDrag.id, parentZone);
+			scheduleCheatIfNeeded(currentDrag.id, parentZone);
+			scheduleMagicLampIfNeeded(currentDrag.id, parentZone);
+			schedulePollymorthPotionIfNeeded(currentDrag.id, parentZone);
+			scheduleIllusionIfNeeded(currentDrag.id, parentZone);
+			scheduleMateIfNeeded(currentDrag.id, parentZone);
+		}
+	}
+
+	dropHandled = false;
+	lastHoverZone = null;
+	lastHoverTargetCard = null;
+	dragFromSnapshot = null;
+	currentDrag = null;
 }
 
 function recalculateMyPower(shouldSync = true) {
@@ -117,6 +199,9 @@ function dragstart_handler(e) {
 		dragFromSnapshot = null;
 	}
 	dragStartedFromZone2 = Boolean(zone?.classList.contains('zone2'));
+	lastHoverZone = null;
+	lastHoverTargetCard = null;
+	dropHandled = false;
 	// console.log(zone);
 
 	if (zone.classList.contains('zone3')) {
@@ -180,6 +265,12 @@ function dragstart_handler(e) {
 }
 function dragover_handler(e) {
 	e.preventDefault();
+
+	// Иногда dragover может прилететь без корректного dragstart (особенно после refresh/мобильных жестов).
+	// Тогда currentDrag ещё не задан — просто игнорируем событие.
+	if (!currentDrag) {
+		return;
+	}
   
 	const target = e.target.closest('.card');
 	const zone = e.target.closest('.cards-zone');
@@ -188,18 +279,25 @@ function dragover_handler(e) {
 	if (target && target !== currentDrag && target.parentElement === currentDrag.parentElement) {
 	  currentDrag.parentElement.insertBefore(currentDrag, target.nextSibling);
 	}
-	// Смена зоны: вставка относительно карты под курсором (как в drop), иначе всегда appendChild — карта в конец стопки
+	// Смена зоны: вставка относительно карты под курсором (как в drop), иначе appendChild в конец.
+	// При переносе ИЗ другой зоны всегда кладём в конец зоны, а не insertBefore относительно карты под курсором —
+	// иначе под курсором оказывается уже экипированная карта (например второй класс), ломается порядок и drag.
 	else if (zone) {
-	  currentDrag.remove();
-	  if (target && target !== currentDrag && zone.contains(target)) {
-	    if (target.nextSibling && zone.contains(target.nextSibling)) {
-	      zone.insertBefore(currentDrag, target.nextSibling);
-	    } else {
-	      zone.appendChild(currentDrag);
-	    }
-	  } else {
-	    zone.appendChild(currentDrag);
-	  }
+		const crossZone = currentDrag.parentElement !== zone;
+		currentDrag.remove();
+		if (crossZone) {
+			zone.appendChild(currentDrag);
+		} else if (target && target !== currentDrag && zone.contains(target)) {
+			if (target.nextSibling && zone.contains(target.nextSibling)) {
+				zone.insertBefore(currentDrag, target.nextSibling);
+			} else {
+				zone.appendChild(currentDrag);
+			}
+		} else {
+			zone.appendChild(currentDrag);
+		}
+		lastHoverZone = zone;
+		lastHoverTargetCard = crossZone ? null : (target && target !== currentDrag ? target : null);
 	}
 	// dropEffect = 'none' в большинстве браузеров отменяет drop — откат в drop_handler не сработает.
 	// Сила «запрета» передаётся красным filter; dropEffect оставляем 'move', чтобы сработал drop.
@@ -222,6 +320,7 @@ function dragover_handler(e) {
 
 function drop_handler(e) {
   e.preventDefault();
+  dropHandled = true;
   const target = e.target.closest('.card');
   const zone = e.target.closest('.cards-zone');
   const invalidTreasureEquip = currentDrag && zone && !canPlaceTreasureInPlayerEquipment(currentDrag, zone);
@@ -485,6 +584,32 @@ document.addEventListener('DOMContentLoaded', function() {
   // Вызов функциb инициализации сразу после загрузки DOM
   initialize();
 });
+
+// После refresh мы можем поменять классы зон (myhand/zone2/zone5 и т.д.).
+// В таком случае пере-привязываем обработчики drag&drop к актуальным DOM-элементам.
+function bindZonesNow() {
+	try {
+		const zones = Array.from(document.querySelectorAll('.cards-zone')).filter(Boolean);
+		zones.forEach((zone) => {
+			// На всякий случай снимаем "задизейбленные" стили, которые могли залипнуть после restore.
+			zone.style.pointerEvents = '';
+			zone.style.opacity = '';
+			zone.removeEventListener('dragover', dragover_handler);
+			zone.removeEventListener('drop', drop_handler);
+			zone.addEventListener('dragover', dragover_handler);
+			zone.addEventListener('drop', drop_handler);
+		});
+		// И обработчики на сами карты.
+		window.allCards = document.querySelectorAll('.card');
+		checkAllCards();
+		// Сбрасываем фильтры/прозрачность, которые могли "залипнуть".
+		document.querySelectorAll('.card').forEach((c) => {
+			c.style.filter = '';
+			c.style.opacity = '';
+		});
+	} catch {}
+}
+window.addEventListener('munchkin:zonesChanged', bindZonesNow);
 
 let prevWidth = {};
 let prevcardsCount = {};
