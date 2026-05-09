@@ -21,6 +21,10 @@ export default function useWebRTC(roomID) {
   }, [clients, updateClients]);
 
   const peerConnections = useRef({});
+  // Perfect Negotiation flags
+  const makingOffer = useRef({});
+  const ignoreOffer = useRef({});
+  const politePeer = useRef({});
   const localMediaStream = useRef(null);
   const peerMediaElements = useRef({
     [LOCAL_AUDIO]: null,
@@ -48,12 +52,18 @@ export default function useWebRTC(roomID) {
         console.warn(
           `useWebRTC: нет локального потока для пира ${peerID} (микрофон не выдан или ещё не готов)`,
         );
-        return;
+        // Комната/сигналинг должны работать даже без микрофона.
+        // Просто создаём peerConnection без треков.
       }
 
       peerConnections.current[peerID] = new RTCPeerConnection({
         iceServers: freeice(),
       });
+      // "Вежливый" пир: детерминированно выбираем по id сокета,
+      // чтобы при одновременных offer избежать glare.
+      politePeer.current[peerID] = String(socket.id) < String(peerID);
+      makingOffer.current[peerID] = false;
+      ignoreOffer.current[peerID] = false;
 
       peerConnections.current[peerID].onicecandidate = event => {
         if (event.candidate) {
@@ -91,19 +101,29 @@ export default function useWebRTC(roomID) {
         }
       }
 
-      stream.getTracks().forEach(track => {
-        peerConnections.current[peerID].addTrack(track, stream);
-      });
+      if (stream && stream.getTracks) {
+        stream.getTracks().forEach(track => {
+          peerConnections.current[peerID].addTrack(track, stream);
+        });
+      }
 
       if (createOffer) {
-        const offer = await peerConnections.current[peerID].createOffer();
-
-        await peerConnections.current[peerID].setLocalDescription(offer);
-
-        socket.emit(ACTIONS.RELAY_SDP, {
-          peerID,
-          sessionDescription: offer,
-        });
+        const pc = peerConnections.current[peerID];
+        if (!pc) {
+          return;
+        }
+        try {
+          makingOffer.current[peerID] = true;
+          await pc.setLocalDescription(await pc.createOffer());
+          socket.emit(ACTIONS.RELAY_SDP, {
+            peerID,
+            sessionDescription: pc.localDescription,
+          });
+        } catch (e) {
+          console.error('WebRTC offer failed:', e);
+        } finally {
+          makingOffer.current[peerID] = false;
+        }
       }
     }
 
@@ -116,19 +136,42 @@ export default function useWebRTC(roomID) {
 
   useEffect(() => {
     async function setRemoteMedia({peerID, sessionDescription: remoteDescription}) {
-      await peerConnections.current[peerID]?.setRemoteDescription(
-        new RTCSessionDescription(remoteDescription)
-      );
+      const pc = peerConnections.current[peerID];
+      if (!pc) {
+        return;
+      }
+      const desc = new RTCSessionDescription(remoteDescription);
 
-      if (remoteDescription.type === 'offer') {
-        const answer = await peerConnections.current[peerID].createAnswer();
+      const offerCollision = desc.type === 'offer'
+        && (makingOffer.current[peerID] || pc.signalingState !== 'stable');
 
-        await peerConnections.current[peerID].setLocalDescription(answer);
+      ignoreOffer.current[peerID] = !politePeer.current[peerID] && offerCollision;
+      if (ignoreOffer.current[peerID]) {
+        return;
+      }
 
-        socket.emit(ACTIONS.RELAY_SDP, {
-          peerID,
-          sessionDescription: answer,
-        });
+      try {
+        if (desc.type === 'answer' && pc.signalingState !== 'have-local-offer') {
+          // Поздний/дубликат answer — игнорируем.
+          return;
+        }
+
+        if (desc.type === 'offer' && pc.signalingState !== 'stable') {
+          // Вежливый пир откатывает своё состояние.
+          await pc.setLocalDescription({ type: 'rollback' });
+        }
+
+        await pc.setRemoteDescription(desc);
+
+        if (desc.type === 'offer') {
+          await pc.setLocalDescription(await pc.createAnswer());
+          socket.emit(ACTIONS.RELAY_SDP, {
+            peerID,
+            sessionDescription: pc.localDescription,
+          });
+        }
+      } catch (e) {
+        console.error('WebRTC setRemoteMedia failed:', e);
       }
     }
 

@@ -8080,10 +8080,10 @@ class Card_treasure {
 // Создание экземпляров класса "сокровища"
 
 const treasure1 = new Card_treasure("treasure1", "", "../img/treasure1/card0096.png", "../img/treasure1/cardBack_Treasure.png", 3, 400, 0, 0, 0, 1, 0, 0, "", 0, [{ mode: "only", race: ["Human"] }]);
-const treasure3 = new Card_treasure("treasure3", "",  "../img/treasure1/card0098.png", "../img/treasure1/cardBack_Treasure.png", 1, 200, 0, 0, 0, 1);
+const treasure3 = new Card_treasure("treasure3", "",  "../img/treasure1/card0098.png", "../img/treasure1/cardBack_Treasure.png", 1, 600, 0, 0, 0, 1);
 // card0098: эльф получает +3, остальные +1
 treasure3.powerByRace = { Elf: 3 };
-const treasure2 = new Card_treasure("treasure2", "",  "../img/treasure1/card0097.png", "../img/treasure1/cardBack_Treasure.png", 1, 600, 0, 0, 0, 1);
+const treasure2 = new Card_treasure("treasure2", "",  "../img/treasure1/card0097.png", "../img/treasure1/cardBack_Treasure.png", 1, 200, 0, 0, 0, 1);
 const treasure4 = new Card_treasure("treasure4", "",  "../img/treasure1/card0099.png", "../img/treasure1/cardBack_Treasure.png", 3, 400, 0, 0, 0, 1, 0, 0, "", 0, [{ mode: "only", kind: ["Wizard"] }]);
 const treasure5 = new Card_treasure("treasure5", "",  "../img/treasure1/card0100.png", "../img/treasure1/cardBack_Treasure.png", 2, 400, 1, 0, 0, 0);
 const treasure6 = new Card_treasure("treasure6", "",  "../img/treasure1/card0101.png", "../img/treasure1/cardBack_Treasure.png", 1, 200, 1, 0, 0, 0);

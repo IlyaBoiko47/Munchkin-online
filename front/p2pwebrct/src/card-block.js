@@ -40,11 +40,22 @@ function canPlaceCardIntoMonsterBattleZone(cardEl, zoneEl) {
 	if (!isMonsterZone) {
 		return true;
 	}
-	// Монстров нельзя класть в бой прямо из руки обычным перетаскиванием.
+	// Монстров нельзя класть в бой прямо из руки, если на поле боя уже есть монстр.
+	// Разрешаем класть монстра из руки, только когда зона боя пуста по монстрам.
 	// Исключение: сама карта Wandering Monster (её можно класть в эту зону, она запускает эффект).
 	const fromHand = Boolean(dragFromSnapshot?.parent?.classList?.contains("myhand"));
 	if (fromHand && isMonsterDoorCard(cardEl) && !isWanderingMonsterCard(cardEl)) {
-		return false;
+		const hasAnyMonsterAlready = Array.from(zoneEl.querySelectorAll?.('.card') || []).some((el) => {
+			// Во время dragover карта уже может быть вставлена в зону — не считаем её "уже лежащим" монстром.
+			if (el && el.id === cardEl.id) {
+				return false;
+			}
+			const door = window.doors?.find((d) => d.name === el.id);
+			return Boolean(door && String(door.race || "") === "monster");
+		});
+		if (hasAnyMonsterAlready) {
+			return false;
+		}
 	}
 	return true;
 }
