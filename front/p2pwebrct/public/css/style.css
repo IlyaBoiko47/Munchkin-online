@@ -1274,8 +1274,9 @@ a{
 	z-index: 100002;
 }
 
-/* Плашка «соперник решает по тюбику клея» — держим поверх стола, пока не придёт EscapeGlueClose */
-.escape-glue-waiting-banner {
+/* Плашки вверху по центру: клей/стенка + сообщения showBattleResult/showLootStatus — как у «решает по стенке» */
+.escape-glue-waiting-banner,
+.battle-result {
 	position: fixed;
 	left: 50%;
 	transform: translateX(-50%);
@@ -1292,6 +1293,12 @@ a{
 	border-radius: 12px;
 	box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
 	pointer-events: none;
+}
+
+.battle-result {
+	display: none;
+	font-family: 'Munchkin', sans-serif;
+	overflow-wrap: break-word;
 }
 
 .wizard-taming-panel,
@@ -2169,20 +2176,6 @@ button:hover {
   align-items: center; /* выравниваем элемент по вертикали по центру */
 	width: auto;
 	height: auto;
-}
-
-.battle-result{
-	position: fixed;
-	left: 50%;
-	top: 20px;
-	transform: translateX(-50%);
-	display: none;
-	font-family: 'Munchkin';
-	font-size: 64px;
-	color: #ffffff;
-	z-index: 20;
-	text-shadow: 0 2px 6px rgba(0, 0, 0, 0.8);
-	pointer-events: none;
 }
 
 .fold{

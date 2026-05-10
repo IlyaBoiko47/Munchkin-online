@@ -1012,6 +1012,244 @@ function applyBadStaffToSeat(seat, badStaff) {
 	recalculateAllPowerDisplays();
 }
 
+/** Карта класса для экипировки (kind), не монстр. */
+function isDoorEquippedClassKindCard(door) {
+	if (!door || String(door.race || "") === "monster") {
+		return false;
+	}
+	return Boolean(String(door.kind || "").trim());
+}
+
+/** Верх сброса дверей = последняя сброшенная карта (конец DOM). Ищем сверху вниз первый класс. */
+function findTopDoorDiscardClassCardId() {
+	const z = document.getElementById("zone_doors_drop");
+	if (!z) {
+		return null;
+	}
+	const els = Array.from(z.querySelectorAll(".card"));
+	for (let i = els.length - 1; i >= 0; i--) {
+		const id = els[i]?.id;
+		if (!id || !String(id).includes("door")) {
+			continue;
+		}
+		const door = window.doors?.find((d) => d.name === id);
+		if (isDoorEquippedClassKindCard(door)) {
+			return id;
+		}
+	}
+	return null;
+}
+
+function collectEquippedClassDoorIdsForSeat(seat) {
+	const out = [];
+	const { main, side } = getMainAndSideZoneElementsForSeat(seat) || {};
+	[main, side].forEach((zone) => {
+		if (!zone) {
+			return;
+		}
+		zone.querySelectorAll(".card").forEach((el) => {
+			const id = el?.id;
+			if (!id || !String(id).includes("door")) {
+				return;
+			}
+			const door = window.doors?.find((d) => d.name === id);
+			if (isDoorEquippedClassKindCard(door) && !out.includes(id)) {
+				out.push(id);
+			}
+		});
+	});
+	return out;
+}
+
+function collectEquippedSuperMunchkinDoorIdsForSeat(seat) {
+	const out = [];
+	const { main, side } = getMainAndSideZoneElementsForSeat(seat) || {};
+	[main, side].forEach((zone) => {
+		if (!zone) {
+			return;
+		}
+		zone.querySelectorAll(".card").forEach((el) => {
+			const id = el?.id;
+			if (!id) {
+				return;
+			}
+			const door = window.doors?.find((d) => d.name === id);
+			if (isSuperMunchkinDoorCard(door) && !out.includes(id)) {
+				out.push(id);
+			}
+		});
+	});
+	return out;
+}
+
+function syncDoorCardMoveToZone(cardId, zoneId, targetId = null) {
+	const id = String(cardId || "").trim();
+	const zid = String(zoneId || "").trim();
+	if (!id || !zid || !document.getElementById(id)) {
+		return;
+	}
+	applyMoveCardLocally({
+		method: "moveCard",
+		cardId: id,
+		zoneId: zid,
+		targetId: targetId || null,
+	});
+	socket.emit("message", {
+		method: "moveCard",
+		cardId: id,
+		zoneId: zid,
+		targetId: targetId || null,
+	});
+}
+
+/**
+ * Проклятие change class: сначала запоминаем верхний класс в сбросе дверей, затем сбрасываем все классы
+ * (и Super Munchkin при наличии классов), затем экипируем запомнённый класс в основную зону.
+ * Без экипированных классов — только сброс самой карты проклятия.
+ */
+function applyChangeClassCurseToSeat(seat, curseCardId) {
+	const s = Number(seat);
+	if (Number.isNaN(s) || s < 0) {
+		return;
+	}
+	const curseId = String(curseCardId || "").trim();
+	const equippedClassIds = collectEquippedClassDoorIdsForSeat(s);
+	if (equippedClassIds.length === 0) {
+		if (curseId) {
+			moveBadStaffCardToDiscard(curseId);
+		}
+		recalculateAllPowerDisplays();
+		return;
+	}
+	const replacementId = findTopDoorDiscardClassCardId();
+	const superIds = collectEquippedSuperMunchkinDoorIdsForSeat(s);
+	const stripIds = [...equippedClassIds, ...superIds.filter((id) => !equippedClassIds.includes(id))];
+	stripIds.forEach((id) => {
+		syncDoorCardMoveToZone(id, "zone_doors_drop", null);
+	});
+	if (replacementId && document.getElementById(replacementId)) {
+		const { main } = getMainAndSideZoneElementsForSeat(s) || {};
+		if (main && main.id) {
+			syncDoorCardMoveToZone(replacementId, main.id, null);
+		}
+	}
+	if (curseId) {
+		moveBadStaffCardToDiscard(curseId);
+	}
+	recalculateAllPowerDisplays();
+}
+
+/** Карта расы для экипировки: есть race, не монстр, не класс (kind). */
+function isDoorEquippedRaceCard(door) {
+	if (!door || String(door.race || "") === "monster") {
+		return false;
+	}
+	if (!String(door.race || "").trim()) {
+		return false;
+	}
+	if (String(door.kind || "").trim()) {
+		return false;
+	}
+	return true;
+}
+
+function findTopDoorDiscardRaceCardId() {
+	const z = document.getElementById("zone_doors_drop");
+	if (!z) {
+		return null;
+	}
+	const els = Array.from(z.querySelectorAll(".card"));
+	for (let i = els.length - 1; i >= 0; i--) {
+		const id = els[i]?.id;
+		if (!id || !String(id).includes("door")) {
+			continue;
+		}
+		const door = window.doors?.find((d) => d.name === id);
+		if (isDoorEquippedRaceCard(door)) {
+			return id;
+		}
+	}
+	return null;
+}
+
+function collectEquippedRaceDoorIdsForSeat(seat) {
+	const out = [];
+	const { main, side } = getMainAndSideZoneElementsForSeat(seat) || {};
+	[main, side].forEach((zone) => {
+		if (!zone) {
+			return;
+		}
+		zone.querySelectorAll(".card").forEach((el) => {
+			const id = el?.id;
+			if (!id || !String(id).includes("door")) {
+				return;
+			}
+			const door = window.doors?.find((d) => d.name === id);
+			if (isDoorEquippedRaceCard(door) && !out.includes(id)) {
+				out.push(id);
+			}
+		});
+	});
+	return out;
+}
+
+function collectEquippedHalfBreedDoorIdsForSeat(seat) {
+	const out = [];
+	const { main, side } = getMainAndSideZoneElementsForSeat(seat) || {};
+	[main, side].forEach((zone) => {
+		if (!zone) {
+			return;
+		}
+		zone.querySelectorAll(".card").forEach((el) => {
+			const id = el?.id;
+			if (!id) {
+				return;
+			}
+			const door = window.doors?.find((d) => d.name === id);
+			if (isHalfBreedDoorCard(door) && !out.includes(id)) {
+				out.push(id);
+			}
+		});
+	});
+	return out;
+}
+
+/**
+ * Проклятие change race: верхняя раса в сбросе дверей → сброс всех рас (и Half-breed при наличии рас)
+ * → экипировка запомнённой расы в основную зону. Без экипированных рас — только сброс проклятия.
+ */
+function applyChangeRaceCurseToSeat(seat, curseCardId) {
+	const s = Number(seat);
+	if (Number.isNaN(s) || s < 0) {
+		return;
+	}
+	const curseId = String(curseCardId || "").trim();
+	const equippedRaceIds = collectEquippedRaceDoorIdsForSeat(s);
+	if (equippedRaceIds.length === 0) {
+		if (curseId) {
+			moveBadStaffCardToDiscard(curseId);
+		}
+		recalculateAllPowerDisplays();
+		return;
+	}
+	const replacementId = findTopDoorDiscardRaceCardId();
+	const halfBreedIds = collectEquippedHalfBreedDoorIdsForSeat(s);
+	const stripIds = [...equippedRaceIds, ...halfBreedIds.filter((id) => !equippedRaceIds.includes(id))];
+	stripIds.forEach((id) => {
+		syncDoorCardMoveToZone(id, "zone_doors_drop", null);
+	});
+	if (replacementId && document.getElementById(replacementId)) {
+		const { main } = getMainAndSideZoneElementsForSeat(s) || {};
+		if (main && main.id) {
+			syncDoorCardMoveToZone(replacementId, main.id, null);
+		}
+	}
+	if (curseId) {
+		moveBadStaffCardToDiscard(curseId);
+	}
+	recalculateAllPowerDisplays();
+}
+
 function moveBadStaffCardToDiscard(cardId) {
 	const card = document.getElementById(cardId);
 	const dropZone = document.getElementById('zone_doors_drop');
@@ -2369,7 +2607,7 @@ export function scheduleBadStaffIfNeeded(cardId, zoneEl) {
 			bad_staff: badStaff,
 			cardId,
 		});
-	}, 5000);
+	}, 1000);
 }
 
 function applyTreasureLevelToSeat(seat, levelGain) {
@@ -3232,6 +3470,11 @@ function removeSeatFromEscapeQueue(seat) {
 }
 
 function showEscapeTurnText(seat) {
+	// Одна верхняя плашка: текст смывки заменяет статусные баннеры клея/стенки.
+	removeEscapeGlueWaitingBanner();
+	escapeGlueWaitingKey = null;
+	removeInstantWallWaitingBanners();
+	removeInstantWallSoloAidWaitingBanner();
 	const firstSeat = escapeQueue.length > 0 ? escapeQueue[0] : null;
 	if (firstSeat !== null && Number(seat) !== Number(firstSeat)) {
 		showBattleResult(`Помощник ${getSeatLabel(seat)}, кинь кубик, чтобы попробовать смыться от монстра.`);
@@ -5243,7 +5486,7 @@ function hideEscapeMonsterPicker() {
 	}
 }
 
-function hideEscapeAidOptionsModal() {
+function hideEscapeAidOptionsModal(skipResumeMonsterPick) {
 	const had = Boolean(document.getElementById("escape-aid-options-modal"));
 	const soloClose = had && instantWallSoloAidWaitingEmitted;
 	instantWallSoloAidWaitingEmitted = false;
@@ -5254,6 +5497,9 @@ function hideEscapeAidOptionsModal() {
 	}
 	if (soloClose && typeof socket !== "undefined" && socket && typeof socket.emit === "function") {
 		socket.emit("message", { method: "InstantWallSoloAidClose" });
+	}
+	if (!skipResumeMonsterPick) {
+		maybeResumeEscapeMonsterPickAfterAidClosed();
 	}
 }
 
@@ -5309,9 +5555,84 @@ function localSeatMatchesSeat(seat) {
 	return Number(localSeat) === Number(seat);
 }
 
+function isLocalInstantWallPickModalOpen() {
+	const m = document.getElementById("instant-wall-modal");
+	return Boolean(m && m.isConnected);
+}
+
+function isEscapeAidOptionsModalOpenForLocal() {
+	const m = document.getElementById("escape-aid-options-modal");
+	return Boolean(m && m.isConnected);
+}
+
+/** После закрытия aid-модалки снова показать выбор монстра, если фаза выбора ещё актуальна. */
+function maybeResumeEscapeMonsterPickAfterAidClosed() {
+	if (!escapeActive || !escapeMonsterPickSession || typeof escapeMonsterPickSession !== "object") {
+		return;
+	}
+	const pickSeat = Number(escapeMonsterPickSession.seat);
+	if (!localSeatMatchesSeat(pickSeat)) {
+		return;
+	}
+	if (document.getElementById("escape-aid-options-modal") || document.getElementById("escape-rat-monster-modal")) {
+		return;
+	}
+	if (document.getElementById("instant-wall-modal") || document.getElementById("flask-glue-modal")) {
+		return;
+	}
+	if (shouldSuppressEscapeMonsterPickBannerForSeat(pickSeat)) {
+		return;
+	}
+	const queueIdSet = new Set((escapeMonsterQueue || []).map((m) => String(m?.cardId || "")));
+	const raw = escapeMonsterPickSession.monsters || [];
+	const monstersForPicker = raw.filter((m) => queueIdSet.has(String(m?.cardId || "")));
+	if (monstersForPicker.length <= 0) {
+		return;
+	}
+	showBattleResult("Выбери монстра, от которого будешь смываться.");
+	showEscapeMonsterPicker(monstersForPicker, (cardId) => {
+		hideEscapeMonsterPicker();
+		socket.emit("message", {
+			method: "EscapeMonsterChosen",
+			seat: localSeat,
+			cardId,
+		});
+	});
+}
+
+/** Не показывать плашку «выбор монстра», пока открыта стенка/aid/клей или ждём решение помощника / лидера по стенке до выбора монстра. */
+function shouldSuppressEscapeMonsterPickBannerForSeat(seat) {
+	const s = Number(seat);
+	if (!Number.isFinite(s)) {
+		return false;
+	}
+	if (localSeatMatchesSeat(s) && isLocalInstantWallPickModalOpen()) {
+		return true;
+	}
+	if (localSeatMatchesSeat(s) && isEscapeAidOptionsModalOpenForLocal()) {
+		return true;
+	}
+	if (
+		escapeInstantWallGate
+		&& Number.isFinite(Number(escapeInstantWallGate.helperSeat))
+		&& Number(escapeInstantWallGate.helperSeat) === s
+	) {
+		return true;
+	}
+	if (
+		escapeInstantWallGate
+		&& Number.isFinite(Number(escapeInstantWallGate.loserSeat))
+		&& Number(escapeInstantWallGate.loserSeat) === s
+	) {
+		return true;
+	}
+	return false;
+}
+
 /** Союзник решает, воспользоваться ли стенкой для авто-смывки (модалка у toSeat). */
 function showInstantWallOfferWaitingBanner(fromSeat, toSeat) {
 	removeInstantWallHelperWaitingBanner();
+	hideBattleResult();
 	const fs = Number(fromSeat);
 	const ts = Number(toSeat);
 	if (!Number.isFinite(fs) || !Number.isFinite(ts)) {
@@ -5328,6 +5649,7 @@ function showInstantWallOfferWaitingBanner(fromSeat, toSeat) {
 /** Помощник решает, применять ли стенку до начала смывки лидера. */
 function showInstantWallHelperWaitingBanner(helperSeat) {
 	removeInstantWallOfferWaitingBanner();
+	hideBattleResult();
 	const hs = Number(helperSeat);
 	if (!Number.isFinite(hs)) {
 		return;
@@ -5342,6 +5664,7 @@ function showInstantWallHelperWaitingBanner(helperSeat) {
 
 function showInstantWallSoloAidWaitingBanner(deciderSeat) {
 	removeInstantWallSoloAidWaitingBanner();
+	hideBattleResult();
 	const ds = Number(deciderSeat);
 	if (!Number.isFinite(ds)) {
 		return;
@@ -5414,6 +5737,7 @@ function showEscapeGlueWaitingBanner(key, actingSeat) {
 		return;
 	}
 	removeEscapeGlueWaitingBanner();
+	hideBattleResult();
 	escapeGlueWaitingKey = k;
 	const bar = document.createElement("div");
 	bar.id = ESCAPE_GLUE_WAITING_BANNER_ID;
@@ -5468,6 +5792,7 @@ function openFlaskOfGlueConfirmModal({ promptKey, escapedSeat, monsterCardId, vi
 	if (!ids.length) {
 		return;
 	}
+	hideBattleResult();
 	hideFlaskOfGlueModal();
 	const glueId = ids[0];
 	const tr = window.treasures?.find((t) => t.name === glueId);
@@ -5676,6 +6001,7 @@ function getInstantWallCardIdsForSeat(seat) {
 
 function openInstantWallPickModal({ title, seat, onPick, onSkip }) {
 	removeInstantWallWaitingBanners();
+	hideBattleResult();
 	hideInstantWallModal();
 	const ids = getInstantWallCardIdsForSeat(seat);
 	if (!ids.length) {
@@ -5750,6 +6076,7 @@ function openInstantWallPickModal({ title, seat, onPick, onSkip }) {
 
 function openInstantWallOfferModal({ fromSeat, toSeat }) {
 	removeInstantWallWaitingBanners();
+	hideBattleResult();
 	hideInstantWallModal();
 	const modal = document.createElement("div");
 	modal.id = "instant-wall-modal";
@@ -5797,7 +6124,7 @@ function openInstantWallOfferModal({ fromSeat, toSeat }) {
 }
 
 function openHalflingRetryModalNow(seat) {
-	hideEscapeAidOptionsModal();
+	hideEscapeAidOptionsModal(true);
 	hideEscapeRatMonsterPickModal();
 	hideEscapeFailAidModal();
 	const s = parseInt(seat, 10);
@@ -6374,7 +6701,8 @@ function openEscapeRatMonsterPickModal({ ratCardId, onCancel }) {
 }
 
 function openEscapeAidOptionsModal() {
-	hideEscapeAidOptionsModal();
+	hideEscapeAidOptionsModal(true);
+	hideBattleResult();
 	const fleeSeat = getFleeingSeatForEscapeAid();
 	if (fleeSeat == null || Number.isNaN(Number(fleeSeat)) || Number(localSeat) !== Number(fleeSeat)) {
 		return;
@@ -6447,7 +6775,7 @@ function openEscapeAidOptionsModal() {
 			if (!document.getElementById(ratId)) {
 				return;
 			}
-			hideEscapeAidOptionsModal();
+			hideEscapeAidOptionsModal(true);
 			openEscapeRatMonsterPickModal({
 				ratCardId: ratId,
 				onCancel: () => {
@@ -6465,7 +6793,7 @@ function openEscapeAidOptionsModal() {
 			if (!cid) {
 				return;
 			}
-			hideEscapeAidOptionsModal();
+			hideEscapeAidOptionsModal(true);
 			socket.emit("message", { method: "InstantWallUse", cardId: cid, actingSeat: Number(fleeSeat) });
 		}
 	});
@@ -6548,7 +6876,7 @@ function applyEscapeRatOnStickFromNetwork({ ratCardId, monsterCardId, actingSeat
 	}
 	// Сброс крысы: всегда по месту actingSeat (рука/экип соперника), не только когда локальная очередь смывки совпала.
 	moveTreasureCardToDiscard(rat, { ownerSeat: act });
-	hideEscapeAidOptionsModal();
+	hideEscapeAidOptionsModal(true);
 	hideEscapeRatMonsterPickModal();
 	adjustCardWidth(".myhand");
 	adjustCardWidth(".zone2");
@@ -7721,19 +8049,29 @@ function reopenEphemeralUiAfterTurnPhaseRestore() {
 		&& monstersForPicker.length > 0
 		&& Number(localSeat) === Number(escapeMonsterPickSession.seat)
 	) {
-		maybeTryOpenEscapeAidOptionsModal();
-		showBattleResult("Выбери монстра, от которого будешь смываться.");
-		showEscapeMonsterPicker(monstersForPicker, (cardId) => {
-			hideEscapeMonsterPicker();
-			socket.emit("message", {
-				method: "EscapeMonsterChosen",
-				seat: localSeat,
-				cardId,
+		const pickSeat = Number(escapeMonsterPickSession.seat);
+		const aidEntries = collectEscapeAidCardEntriesForSeat(pickSeat);
+		const hasAid = aidEntries.length > 0;
+		if (hasAid) {
+			openEscapeAidOptionsModal();
+		} else {
+			maybeTryOpenEscapeAidOptionsModal();
+		}
+		if (!hasAid && !shouldSuppressEscapeMonsterPickBannerForSeat(pickSeat)) {
+			showBattleResult("Выбери монстра, от которого будешь смываться.");
+			showEscapeMonsterPicker(monstersForPicker, (cardId) => {
+				hideEscapeMonsterPicker();
+				socket.emit("message", {
+					method: "EscapeMonsterChosen",
+					seat: localSeat,
+					cardId,
+				});
 			});
-		});
+		}
 	} else if (escapeMonsterPickSession && Number(localSeat) !== Number(escapeMonsterPickSession.seat)) {
 		hideEscapeMonsterPicker();
-		if (monstersForPicker.length > 0) {
+		const pickSeat = Number(escapeMonsterPickSession.seat);
+		if (monstersForPicker.length > 0 && !shouldSuppressEscapeMonsterPickBannerForSeat(pickSeat)) {
 			showBattleResult(`${getSeatLabel(escapeMonsterPickSession.seat)} выбирает монстра для смывки...`);
 		}
 	} else {
@@ -10448,7 +10786,7 @@ socket.on("message", response => {
 	}
 	if (response.method === "EscapeSequenceStart") {
 		const incomingOwnerSeat = parseInt(response.ownerSeat, 10);
-		hideEscapeAidOptionsModal();
+		hideEscapeAidOptionsModal(true);
 		hideEscapeRatMonsterPickModal();
 		// Владелец смывки уже инициализировал очередь локально.
 		// Если повторно применить этот же старт из сети, индекс сбросится и первый игрок получит второй бросок.
@@ -10470,6 +10808,15 @@ socket.on("message", response => {
 		escapeWizardFlightPending = null;
 		hideWizardFlightModal();
 		hideEscapeHalflingRetryModal();
+		// Очередь смывки при 2 участниках: [лидер, помощник] — тот же гейт, что при старте у владельца (для UI «не монстр, а стенка»).
+		escapeInstantWallGate = null;
+		if (Array.isArray(escapeQueue) && escapeQueue.length === 2) {
+			const a = Number(escapeQueue[0]);
+			const b = Number(escapeQueue[1]);
+			if (Number.isFinite(a) && Number.isFinite(b) && a !== b) {
+				escapeInstantWallGate = { loserSeat: a, helperSeat: b };
+			}
+		}
 		recalculateAllPowerDisplays();
 	}
 	if (response.method === "EscapeMonsterPickStart") {
@@ -10487,17 +10834,25 @@ socket.on("message", response => {
 			clearEscapeMonsterPickSession();
 		}
 		if (!Number.isNaN(seat) && localSeat === seat) {
-			maybeTryOpenEscapeAidOptionsModal();
-			showBattleResult("Выбери монстра, от которого будешь смываться.");
-			showEscapeMonsterPicker(monsters, (cardId) => {
-				hideEscapeMonsterPicker();
-				socket.emit("message", {
-					method: "EscapeMonsterChosen",
-					seat: localSeat,
-					cardId,
+			const aidEntries = collectEscapeAidCardEntriesForSeat(seat);
+			const hasAid = aidEntries.length > 0;
+			if (hasAid) {
+				openEscapeAidOptionsModal();
+			} else {
+				maybeTryOpenEscapeAidOptionsModal();
+			}
+			if (!hasAid && !shouldSuppressEscapeMonsterPickBannerForSeat(seat)) {
+				showBattleResult("Выбери монстра, от которого будешь смываться.");
+				showEscapeMonsterPicker(monsters, (cardId) => {
+					hideEscapeMonsterPicker();
+					socket.emit("message", {
+						method: "EscapeMonsterChosen",
+						seat: localSeat,
+						cardId,
+					});
 				});
-			});
-		} else if (!Number.isNaN(seat)) {
+			}
+		} else if (!Number.isNaN(seat) && !shouldSuppressEscapeMonsterPickBannerForSeat(seat)) {
 			showBattleResult(`${getSeatLabel(seat)} выбирает монстра для смывки...`);
 		}
 	}
@@ -10539,7 +10894,7 @@ socket.on("message", response => {
 		maybeTryOpenEscapeAidOptionsModal();
 	}
 	if (response.method === "EscapeCloseAidModals") {
-		hideEscapeAidOptionsModal();
+		hideEscapeAidOptionsModal(true);
 		hideEscapeRatMonsterPickModal();
 	}
 	if (response.method === "EscapeFailAidPrompt") {
@@ -10712,7 +11067,7 @@ socket.on("message", response => {
 		if (key && escapeGlueWaitingKey && key === escapeGlueWaitingKey) {
 			escapeGlueWaitingKey = null;
 			removeEscapeGlueWaitingBanner();
-			hideBattleResult();
+			// Не вызываем hideBattleResult — иначе сотрём подсказку «кинь кубик», пришедшую сразу после EscapeTurnStart.
 		}
 	}
 	if (response.method === "EscapeGlueDecision") {
@@ -10763,7 +11118,7 @@ socket.on("message", response => {
 						? `Тюбик клея! ${lab} снова смываются.`
 						: `Тюбик клея! ${lab || getSeatLabel(targetSeat)} смывается снова.`,
 				);
-				setTimeout(() => hideBattleResult(), 1600);
+				// Не скрываем через таймер: на владельце очереди таймер стирал бы плашку «кинь кубик» после EscapeTurnStart.
 			}
 			// Перезапуск смывки. Если смывка была по Instant wall — нужно смываться от ВСЕХ монстров.
 			escapeAttemptNumber = 0;
@@ -10894,7 +11249,7 @@ socket.on("message", response => {
 		}
 	}
 	if (response.method === "EscapeRollResult") {
-		hideEscapeAidOptionsModal();
+		hideEscapeAidOptionsModal(true);
 		hideEscapeRatMonsterPickModal();
 		escapeWizardFlightPending = null;
 		hideWizardFlightModal();
@@ -10918,7 +11273,7 @@ socket.on("message", response => {
 		// Flask of glue обрабатывается через EscapeGluePrompt (без таймеров).
 	}
 	if (response.method === "EscapeSequenceFinished") {
-		hideEscapeAidOptionsModal();
+		hideEscapeAidOptionsModal(true);
 		hideEscapeRatMonsterPickModal();
 		removeInstantWallWaitingBanners();
 		removeInstantWallSoloAidWaitingBanner();
@@ -10974,8 +11329,14 @@ socket.on("message", response => {
 		const badStaff = normalizeBadStaff(response.bad_staff);
 		const cardId = response.cardId;
 		if (!Number.isNaN(seat) && badStaff && cardId) {
-			applyBadStaffToSeat(seat, badStaff);
-			moveBadStaffCardToDiscard(cardId);
+			if (badStaff.type === "change class") {
+				applyChangeClassCurseToSeat(seat, cardId);
+			} else if (badStaff.type === "change race") {
+				applyChangeRaceCurseToSeat(seat, cardId);
+			} else {
+				applyBadStaffToSeat(seat, badStaff);
+				moveBadStaffCardToDiscard(cardId);
+			}
 		}
 	}
 	if (response.method === "TreasureLevel") {
@@ -11106,6 +11467,16 @@ socket.on("message", response => {
 		}
 		shuffle(window.doors);
 		shuffle(window.treasures);
+		// Тест: «Смена класса» (door21) и «Смена расы» (door22) — в начало колоды дверей для стартовой раздачи.
+		const promoteTestDoorToFront = (name) => {
+			const idx = window.doors.findIndex((d) => d && d.name === name);
+			if (idx > 0) {
+				const [c] = window.doors.splice(idx, 1);
+				window.doors.unshift(c);
+			}
+		};
+		promoteTestDoorToFront("door21");
+		promoteTestDoorToFront("door22");
 
 		const shuffleDeck = {
 			method: "shuffleDeck",
@@ -11664,25 +12035,25 @@ const door17 = new Card_door("door17", "",  "../img/doors1/card0017.png", "../im
 const door18 = new Card_door("door18", "",  "../img/doors1/card0018.png", "../img/doors1/cardBack_Doors.png", 0, "Halfling");
 const door19 = new Card_door("door19", "",  "../img/doors1/card0019.png", "../img/doors1/cardBack_Doors.png", 0, "Halfling");
 const door20 = new Card_door("door20", "",  "../img/doors1/card0020.png", "../img/doors1/cardBack_Doors.png", 0, "Halfling");
-const door21 = new Card_door("door21", "",  "../img/doors1/card0021.png", "../img/doors1/cardBack_Doors.png",0);
-const door22 = new Card_door("door22", "",  "../img/doors1/card0022.png", "../img/doors1/cardBack_Doors.png",0);
-const door23 = new Card_door("door23", "",  "../img/doors1/card0023.png", "../img/doors1/cardBack_Doors.png",-5);
-const door24 = new Card_door("door24", "",  "../img/doors1/card0024.png", "../img/doors1/cardBack_Doors.png",0);
-const door25 = new Card_door("door25", "",  "../img/doors1/card0025.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "", 0, { type: "lose_levels", levels: 2 });
-const door26 = new Card_door("door26", "",  "../img/doors1/card0026.png", "../img/doors1/cardBack_Doors.png",0);
-const door27 = new Card_door("door27", "",  "../img/doors1/card0027.png", "../img/doors1/cardBack_Doors.png",0);
-const door28 = new Card_door("door28", "",  "../img/doors1/card0028.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "", 0, { type: "lose_levels", levels: 1 });
-const door29 = new Card_door("door29", "",  "../img/doors1/card0029.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "", 0, { type: "lose_levels", levels: 1 });
-const door30 = new Card_door("door30", "",  "../img/doors1/card0030.png", "../img/doors1/cardBack_Doors.png",0);
-const door31 = new Card_door("door31", "",  "../img/doors1/card0031.png", "../img/doors1/cardBack_Doors.png",0);
-const door32 = new Card_door("door32", "",  "../img/doors1/card0032.png", "../img/doors1/cardBack_Doors.png",0);
-const door33 = new Card_door("door33", "",  "../img/doors1/card0033.png", "../img/doors1/cardBack_Doors.png",0);
-const door34 = new Card_door("door34", "",  "../img/doors1/card0034.png", "../img/doors1/cardBack_Doors.png",0);
-const door35 = new Card_door("door35", "",  "../img/doors1/card0035.png", "../img/doors1/cardBack_Doors.png",0);
-const door36 = new Card_door("door36", "",  "../img/doors1/card0036.png", "../img/doors1/cardBack_Doors.png",0);
-const door37 = new Card_door("door37", "",  "../img/doors1/card0037.png", "../img/doors1/cardBack_Doors.png",0);
-const door38 = new Card_door("door38", "",  "../img/doors1/card0038.png", "../img/doors1/cardBack_Doors.png",0);
-const door39 = new Card_door("door39", "",  "../img/doors1/card0039.png", "../img/doors1/cardBack_Doors.png",0);
+const door21 = new Card_door("door21", "",  "../img/doors1/card0021.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Curse", 0, { type: "change class" });
+const door22 = new Card_door("door22", "",  "../img/doors1/card0022.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Curse", 0, { type: "change race" });
+const door23 = new Card_door("door23", "",  "../img/doors1/card0023.png", "../img/doors1/cardBack_Doors.png", -5, "", "", "Curse", 0, { type: "change sex" });
+const door24 = new Card_door("door24", "",  "../img/doors1/card0024.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Curse", 0, { type: "chicken on your head" });
+const door25 = new Card_door("door25", "",  "../img/doors1/card0025.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Curse", 0, { type: "lose_levels", levels: 2 });
+const door26 = new Card_door("door26", "",  "../img/doors1/card0026.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Curse", 0, { type: "income tax" });
+const door27 = new Card_door("door27", "",  "../img/doors1/card0027.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Curse");
+const door28 = new Card_door("door28", "",  "../img/doors1/card0028.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Curse", 0, { type: "lose_levels", levels: 1 });
+const door29 = new Card_door("door29", "",  "../img/doors1/card0029.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Curse", 0, { type: "lose_levels", levels: 1 });
+const door30 = new Card_door("door30", "",  "../img/doors1/card0030.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Curse");
+const door31 = new Card_door("door31", "",  "../img/doors1/card0031.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Curse");
+const door32 = new Card_door("door32", "",  "../img/doors1/card0032.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Curse");
+const door33 = new Card_door("door33", "",  "../img/doors1/card0033.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Curse");
+const door34 = new Card_door("door34", "",  "../img/doors1/card0034.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Curse");
+const door35 = new Card_door("door35", "",  "../img/doors1/card0035.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Curse");
+const door36 = new Card_door("door36", "",  "../img/doors1/card0036.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Curse", 0, { type: "lose your class" });
+const door37 = new Card_door("door37", "",  "../img/doors1/card0037.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Curse", 0, { type: "lose your race" });
+const door38 = new Card_door("door38", "",  "../img/doors1/card0038.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Curse", 0, { type: "malign mirrror" });
+const door39 = new Card_door("door39", "",  "../img/doors1/card0039.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Curse");
 const door40 = new Card_door("door40", "",  "../img/doors1/card0040.png", "../img/doors1/cardBack_Doors.png", 10, "", "", "bonus_power_monster");
 const door41 = new Card_door("door41", "",  "../img/doors1/card0041.png", "../img/doors1/cardBack_Doors.png", -5, "", "", "bonus_power_monster");
 const door42 = new Card_door("door42", "",  "../img/doors1/card0042.png", "../img/doors1/cardBack_Doors.png", 5, "", "", "bonus_power_monster");
