@@ -221,32 +221,25 @@ io.on('connection', socket => {
           io.to(roomID).emit("message", { method: "moveCard", cardId, targetId: null, zoneId, fromZoneId: "zone_treasure" });
         }
 
-        // Тестовая раздача: Doppleganger (treasure47 / card0142) в руку игрока на месте 0.
-        const doppleCardId = "treasure47";
-        const doppleHand = handZoneIdForSeatInRoom(roomID, 0);
-        const prevDop = state.cards[doppleCardId];
-        const dopFrom = prevDop?.zoneId ? String(prevDop.zoneId) : "zone_treasure";
-        state.cards[doppleCardId] = { zoneId: doppleHand, targetId: null };
-        io.to(roomID).emit("message", {
-          method: "moveCard",
-          cardId: doppleCardId,
-          targetId: null,
-          zoneId: doppleHand,
-          fromZoneId: dopFrom,
-        });
-
-        // Тестовая раздача: Transferral potion (treasure58 / card0153) в руку игрока на месте 0.
-        const transferCardId = "treasure58";
-        const transferHand = handZoneIdForSeatInRoom(roomID, 0);
-        const prevTransfer = state.cards[transferCardId];
-        const transferFrom = prevTransfer?.zoneId ? String(prevTransfer.zoneId) : "zone_treasure";
-        state.cards[transferCardId] = { zoneId: transferHand, targetId: null };
-        io.to(roomID).emit("message", {
-          method: "moveCard",
-          cardId: transferCardId,
-          targetId: null,
-          zoneId: transferHand,
-          fromZoneId: transferFrom,
+        // Тестовая раздача: Loaded die в руку игроку на месте 0.
+        const testSeat = 0;
+        const testHand = handZoneIdForSeatInRoom(roomID, testSeat);
+        const testCards = [
+          { id: "treasure44", from: "zone_treasure" },
+        ];
+        testCards.forEach(({ id, from }) => {
+          const cid = String(id || "");
+          if (!cid) return;
+          const prev = state.cards[cid];
+          const fromZoneId = prev?.zoneId ? String(prev.zoneId) : from;
+          state.cards[cid] = { zoneId: testHand, targetId: null };
+          io.to(roomID).emit("message", {
+            method: "moveCard",
+            cardId: cid,
+            targetId: null,
+            zoneId: testHand,
+            fromZoneId: fromZoneId,
+          });
         });
 
         roomStates.set(roomID, state);
@@ -296,6 +289,17 @@ io.on('connection', socket => {
       "EscapeMonsterPickStart",
       "EscapeMonsterChosen",
       "EscapeTurnStart",
+      "EscapeCloseAidModals",
+      "EscapeRatOnStickApply",
+      "EscapeInvisibilityPotionApply",
+      "EscapeMagicLampBanish",
+      "EscapeFailAidPrompt",
+      "EscapeFailAidSkip",
+      "InstantWallHelperPrompt",
+      "InstantWallHelperDecision",
+      "InstantWallUse",
+      "InstantWallOffer",
+      "InstantWallOfferDecision",
       "EscapeRollResult",
       "EscapeOwnerTransfer",
       "EscapeHalflingRetryPrompt",
@@ -308,6 +312,7 @@ io.on('connection', socket => {
       "ThiefTrimApply",
       "ThiefTheftStart",
       "ThiefTheftRoll",
+      "LoadedDieDiscard",
       "ThiefTheftTake",
       "EscapeSequenceFinished",
       "SellTreasures",
@@ -517,6 +522,38 @@ io.on('connection', socket => {
     }
 
     if (moveData.method === "HalflingEscapeDiscard") {
+      const cid = String(moveData.cardId || '').trim();
+      if (cid) patchRoomDiscards(roomID, [cid]);
+    }
+
+    if (moveData.method === "EscapeRatOnStickApply") {
+      const ratId = String(moveData.ratCardId || '').trim();
+      if (ratId) patchRoomDiscards(roomID, [ratId]);
+    }
+
+    if (moveData.method === "EscapeInvisibilityPotionApply") {
+      const cid = String(moveData.cardId || '').trim();
+      if (cid) patchRoomDiscards(roomID, [cid]);
+    }
+    
+    if (moveData.method === "EscapeMagicLampBanish") {
+      const cid = String(moveData.cardId || '').trim();
+      const mon = String(moveData.monsterCardId || '').trim();
+      patchRoomDiscards(roomID, [cid, mon].filter(Boolean));
+    }
+
+    if (moveData.method === "LoadedDieDiscard") {
+      const cid = String(moveData.cardId || '').trim();
+      if (cid) patchRoomDiscards(roomID, [cid]);
+    }
+
+    if (moveData.method === "InstantWallHelperDecision") {
+      const used = Boolean(moveData.used);
+      const cid = String(moveData.cardId || '').trim();
+      if (used && cid) patchRoomDiscards(roomID, [cid]);
+    }
+
+    if (moveData.method === "InstantWallUse") {
       const cid = String(moveData.cardId || '').trim();
       if (cid) patchRoomDiscards(roomID, [cid]);
     }

@@ -189,6 +189,11 @@ let escapeAttemptNumber = 0;
 let escapeHalflingRetryUsedForCurrentAttempt = false;
 let escapeHalflingRetryPending = null;
 let escapeWizardFlightPending = null;
+// Instant wall: приоритет помощника и предложение лидеру.
+let escapeInstantWallGate = null; // { helperSeat, loserSeat } пока ждём решения помощника перед стартом смывки
+let escapeInstantWallOfferPending = null; // { helperSeat, loserSeat } пока ждём ответа лидера (принять стенку или нет)
+let escapeInstantWallAutoSeats = new Set(); // места, которые будут смываться автоматически (без кубика) от всех монстров
+let escapeFailAidPending = null; // { seat, payload, attemptNumber } ждём решения игрока по помощи после провала смывки
 /** Пока ждём выбор монстра для смывки (EscapeMonsterPickStart); нужен для restore после F5. */
 let escapeMonsterPickSession = null;
 let sellTreasuresDelegated = false;
@@ -2262,17 +2267,46 @@ export function scheduleMateIfNeeded(cardId, zoneEl) {
 	}, 30);
 }
 
-function moveTreasureCardToDiscard(cardId) {
-	const card = document.getElementById(cardId);
+/** Карта сокровища в руке/main/side указанного места (надёжнее getElementById при дубликатах id в DOM). */
+function findTreasureCardInSeatZones(cardId, seat) {
+	const id = String(cardId || "").trim();
+	if (!id || !id.includes("treasure")) {
+		return null;
+	}
+	const s = Number(seat);
+	if (!Number.isFinite(s) || s < 0) {
+		return null;
+	}
+	const { main, side } = getMainAndSideZoneElementsForSeat(s) || {};
+	const zones = [getHandElementForPlayerSeat(s), main, side].filter(Boolean);
+	for (const z of zones) {
+		const found = Array.from(z.querySelectorAll(".card")).find((c) => c && c.id === id);
+		if (found) {
+			return found;
+		}
+	}
+	return null;
+}
+
+function moveTreasureCardToDiscard(cardId, opts) {
+	const id = String(cardId || "").trim();
+	let card = null;
+	const ownerSeat = opts && opts.ownerSeat != null ? Number(opts.ownerSeat) : NaN;
+	if (Number.isFinite(ownerSeat)) {
+		card = findTreasureCardInSeatZones(id, ownerSeat);
+	}
+	if (!card) {
+		card = document.getElementById(id);
+	}
 	const dropZone = document.getElementById('zone_treasure_drop');
 	if (!card || !dropZone) {
 		return;
 	}
-	if (!cardId.includes('treasure')) {
+	if (!id.includes('treasure')) {
 		return;
 	}
 	// Если сбрасываем Наёмничка — его шмотка должна уйти вместе с ним.
-	if (isTreasureSpecial(cardId, "Hireling")) {
+	if (isTreasureSpecial(id, "Hireling")) {
 		const attachedId = String(card.dataset?.hirelingAttachedTreasureId || "");
 		if (attachedId) {
 			const attachedEl = document.getElementById(attachedId);
@@ -2287,7 +2321,7 @@ function moveTreasureCardToDiscard(cardId) {
 	const attachedCheatId = String(card.dataset?.cheatCardId || "");
 	if (attachedCheatId) {
 		card.dataset.cheatCardId = "";
-		clearCheatVisualPlacement(attachedCheatId, cardId);
+		clearCheatVisualPlacement(attachedCheatId, id);
 		const cheatEl = document.getElementById(attachedCheatId);
 		if (cheatEl && cheatEl.parentElement?.id !== "zone_doors_drop") {
 			moveBadStaffCardToDiscard(attachedCheatId);
@@ -3180,6 +3214,9 @@ function removeSeatFromEscapeQueue(seat) {
 		return;
 	}
 	escapeQueue.splice(removedIndex, 1);
+	try {
+		escapeInstantWallAutoSeats?.delete?.(s);
+	} catch {}
 	// Корректируем индекс очереди:
 	// - если убрали элемент ДО текущего индекса — индекс сдвигается влево;
 	// - если убрали ТЕКУЩИЙ элемент — оставляем индекс как есть, чтобы указывать на "следующего" после удаления.
@@ -3368,14 +3405,15 @@ function applyWizardFlightDiscardAndResolve(seat, cardIds) {
 		moveCardToDiscardById(id);
 	});
 	recalculateAllPowerDisplays();
-	if (Number(localSeat) !== Number(parsedSeat)) {
+	// Финальный пересчёт и продвижение очереди делает только владелец смывки.
+	if (Number(localSeat) !== Number(escapeOwnerSeat)) {
 		return;
 	}
-	if (!escapeWizardFlightPending) {
+	if (!escapeFailAidPending || Number(escapeFailAidPending.seat) !== Number(parsedSeat) || !escapeFailAidPending.payload) {
 		return;
 	}
-	const pending = { ...escapeWizardFlightPending };
-	escapeWizardFlightPending = null;
+	const pending = { ...escapeFailAidPending.payload };
+	escapeFailAidPending = null;
 	const bonus = Math.min(WIZARD_FLIGHT_MAX_DISCARD, ids.length);
 	const totalRoll = (Number(pending.totalRoll) || 0) + bonus;
 	const escaped = totalRoll >= ESCAPE_TARGET_ROLL;
@@ -3436,6 +3474,10 @@ function applyWizardTaming(seat, handCardIds, monsterCardId) {
 }
 
 function emitEscapeRollResultAndAdvance(payload) {
+	// Важно: продвигать очередь смывки и публиковать результат должен только владелец очереди.
+	if (Number(localSeat) !== Number(escapeOwnerSeat)) {
+		return;
+	}
 	socket.emit("message", payload);
 	// Смерть: если смывка не удалась и bad stuff = death, то смывка обрывается,
 	// после смерти начинается грабёж; смывка помощника (если есть) начнётся после грабежа.
@@ -3443,7 +3485,11 @@ function emitEscapeRollResultAndAdvance(payload) {
 	if (!payload?.escaped && bad && String(bad.type || "") === "death") {
 		// Важно: смывку по текущей реализации считает только владелец очереди (escapeOwnerSeat),
 		// и он же должен запускать смерть/грабёж, даже если умер помощник.
-		const deadSeat = parseInt(payload.seat, 10);
+		// Иногда payload.seat может быть не тем (например, при рассинхроне/ручном вызове) —
+		// а текущий смывающийся seat у владельца очереди уже известен точно.
+		const deadSeat = (escapeCurrentSeat != null && !Number.isNaN(Number(escapeCurrentSeat)))
+			? Number(escapeCurrentSeat)
+			: parseInt(payload.seat, 10);
 		const ownerSeat = escapeOwnerSeat;
 		if (!Number.isNaN(deadSeat) && deadSeat >= 0 && ownerSeat != null && Number(localSeat) === Number(ownerSeat)) {
 			// Удаляем умершего из очереди смывки.
@@ -4275,12 +4321,9 @@ function openWizardFlightModal() {
 	skipBtn.textContent = "Не использовать заклинание";
 	skipBtn.addEventListener("click", () => {
 		hideWizardFlightModal();
-		const pendingPayload = escapeWizardFlightPending ? { ...escapeWizardFlightPending } : null;
 		escapeWizardFlightPending = null;
 		updateWizardFlightUi();
-		if (pendingPayload) {
-			emitEscapeRollResultAndAdvance(pendingPayload);
-		}
+		socket.emit("message", { method: "EscapeFailAidSkip", seat: localSeat });
 	});
 
 	applyBtn.addEventListener("click", () => {
@@ -5107,6 +5150,1138 @@ function hideEscapeMonsterPicker() {
 	}
 }
 
+function hideEscapeAidOptionsModal() {
+	const a = document.getElementById("escape-aid-options-modal");
+	if (a) {
+		a.remove();
+	}
+}
+
+function hideEscapeFailAidModal() {
+	const a = document.getElementById("escape-fail-aid-modal");
+	if (a) {
+		a.remove();
+	}
+}
+
+function hideEscapeRatMonsterPickModal() {
+	const m = document.getElementById("escape-rat-monster-modal");
+	if (m) {
+		m.remove();
+	}
+}
+
+function hideInstantWallModal() {
+	const m = document.getElementById("instant-wall-modal");
+	if (m) {
+		m.remove();
+	}
+}
+
+function hideLoadedDieModals() {
+	const a = document.getElementById("loaded-die-confirm-modal");
+	if (a) a.remove();
+	const b = document.getElementById("loaded-die-pick-modal");
+	if (b) b.remove();
+}
+
+function getLoadedDieTreasureCardIdsForSeat(seat) {
+	const s = Number(seat);
+	if (!Number.isFinite(s) || s < 0) {
+		return [];
+	}
+	const out = [];
+	const seen = new Set();
+	const hand = getHandElementForPlayerSeat(s);
+	const { main, side } = getMainAndSideZoneElementsForSeat(s);
+	[hand, main, side].forEach((zoneEl) => {
+		if (!zoneEl) return;
+		zoneEl.querySelectorAll(".card").forEach((cardEl) => {
+			const cid = String(cardEl?.id || "");
+			if (!cid || !cid.includes("treasure") || seen.has(cid)) return;
+			if (!isTreasureSpecial(cid, "Loaded die")) return;
+			seen.add(cid);
+			out.push(cid);
+		});
+	});
+	return out;
+}
+
+function promptLoadedDieAfterRoll({ seat, rawRoll, onFinalize }) {
+	const s = Number(seat);
+	const r = Number(rawRoll);
+	if (!Number.isFinite(s) || !Number.isFinite(r) || r < 1 || r > 6) {
+		onFinalize?.(rawRoll);
+		return;
+	}
+	const ids = getLoadedDieTreasureCardIdsForSeat(s);
+	if (!ids.length) {
+		onFinalize?.(rawRoll);
+		return;
+	}
+	hideLoadedDieModals();
+	const dieCardId = ids[0];
+
+	const confirm = document.createElement("div");
+	confirm.id = "loaded-die-confirm-modal";
+	confirm.className = "wizard-taming-pick-modal";
+	const panel = document.createElement("div");
+	panel.className = "wizard-taming-pick-panel";
+	const title = document.createElement("div");
+	title.className = "wizard-taming-pick-title";
+	title.textContent = `Выпало: ${r}. Хочешь сбросить читерский кубик и выбрать другое значение?`;
+	const tr = window.treasures?.find((t) => t.name === dieCardId);
+	const cardImg = document.createElement("img");
+	cardImg.className = "wizard-taming-pick-card-img";
+	cardImg.src = tr?.img || "";
+	cardImg.alt = dieCardId;
+	cardImg.style.display = "block";
+	cardImg.style.margin = "0 auto";
+	cardImg.style.maxWidth = "160px";
+	const yesBtn = document.createElement("button");
+	yesBtn.type = "button";
+	yesBtn.className = "wizard-taming-pick-apply-btn";
+	yesBtn.textContent = "Да, изменить";
+	const noBtn = document.createElement("button");
+	noBtn.type = "button";
+	noBtn.className = "wizard-taming-pick-apply-btn";
+	noBtn.textContent = "Нет";
+
+	const openPick = () => {
+		confirm.remove();
+		const pick = document.createElement("div");
+		pick.id = "loaded-die-pick-modal";
+		pick.className = "wizard-taming-pick-modal";
+		const pPanel = document.createElement("div");
+		pPanel.className = "wizard-taming-pick-panel";
+		const pTitle = document.createElement("div");
+		pTitle.className = "wizard-taming-pick-title";
+		pTitle.textContent = "Loaded die: выбери значение";
+		const pCards = document.createElement("div");
+		pCards.className = "wizard-taming-pick-cards";
+		const applyBtn = document.createElement("button");
+		applyBtn.type = "button";
+		applyBtn.className = "wizard-taming-pick-apply-btn";
+		applyBtn.textContent = "Подтвердить";
+		applyBtn.disabled = true;
+		let picked = null;
+		for (let v = 1; v <= 6; v += 1) {
+			const btn = document.createElement("button");
+			btn.type = "button";
+			btn.className = "wizard-taming-pick-card";
+			btn.dataset.value = String(v);
+			const dieEl = createDice(v);
+			dieEl.style.margin = "10px auto";
+			btn.appendChild(dieEl);
+			btn.addEventListener("click", () => {
+				pCards.querySelectorAll(".wizard-taming-pick-card").forEach((x) => x.classList.remove("is-selected"));
+				btn.classList.add("is-selected");
+				picked = v;
+				applyBtn.disabled = false;
+			});
+			pCards.appendChild(btn);
+		}
+		applyBtn.addEventListener("click", () => {
+			if (!picked) return;
+			hideLoadedDieModals();
+			socket.emit("message", { method: "LoadedDieDiscard", seat: s, cardId: dieCardId });
+			onFinalize?.(picked);
+			// Если это "обычный" бросок (не смывка/не кража), синхронизируем отображение кубика у остальных игроков.
+			if (!escapeActive && !thiefTheftBoardDicePending && Number(picked) !== Number(rawRoll)) {
+				socket.emit("message", { method: "RandDice", digit: Number(picked) });
+			}
+		});
+		pPanel.appendChild(pTitle);
+		pPanel.appendChild(pCards);
+		pPanel.appendChild(applyBtn);
+		pick.appendChild(pPanel);
+		document.body.appendChild(pick);
+		pick.addEventListener("click", (e) => {
+			if (e.target === pick) {
+				hideLoadedDieModals();
+				onFinalize?.(rawRoll);
+			}
+		});
+		pushOpenModalsToServerDebounced();
+	};
+
+	yesBtn.addEventListener("click", openPick);
+	noBtn.addEventListener("click", () => {
+		hideLoadedDieModals();
+		onFinalize?.(rawRoll);
+	});
+	panel.appendChild(title);
+	panel.appendChild(cardImg);
+	panel.appendChild(yesBtn);
+	panel.appendChild(noBtn);
+	confirm.appendChild(panel);
+	document.body.appendChild(confirm);
+	confirm.addEventListener("click", (e) => {
+		if (e.target === confirm) {
+			hideLoadedDieModals();
+			onFinalize?.(rawRoll);
+		}
+	});
+	pushOpenModalsToServerDebounced();
+}
+
+function getInstantWallCardIdsForSeat(seat) {
+	const s = Number(seat);
+	if (!Number.isFinite(s) || s < 0) {
+		return [];
+	}
+	const out = [];
+	const seen = new Set();
+	const hand = getHandElementForPlayerSeat(s);
+	const { main, side } = getMainAndSideZoneElementsForSeat(s);
+	[hand, main, side].forEach((zoneEl) => {
+		if (!zoneEl) return;
+		zoneEl.querySelectorAll(".card").forEach((cardEl) => {
+			const cid = String(cardEl?.id || "");
+			if (!cid || !cid.includes("treasure") || seen.has(cid)) return;
+			if (!isTreasureSpecial(cid, "Instant wall")) return;
+			seen.add(cid);
+			out.push(cid);
+		});
+	});
+	return out;
+}
+
+function openInstantWallPickModal({ title, seat, onPick, onSkip }) {
+	hideInstantWallModal();
+	const ids = getInstantWallCardIdsForSeat(seat);
+	if (!ids.length) {
+		if (typeof onSkip === "function") onSkip();
+		return;
+	}
+	const modal = document.createElement("div");
+	modal.id = "instant-wall-modal";
+	modal.className = "wizard-taming-pick-modal";
+	const panel = document.createElement("div");
+	panel.className = "wizard-taming-pick-panel";
+	const titleEl = document.createElement("div");
+	titleEl.className = "wizard-taming-pick-title";
+	titleEl.textContent = title || "Instant wall";
+	const cardsWrap = document.createElement("div");
+	cardsWrap.className = "wizard-taming-pick-cards";
+	const applyBtn = document.createElement("button");
+	applyBtn.type = "button";
+	applyBtn.className = "wizard-taming-pick-apply-btn";
+	applyBtn.textContent = "Применить";
+	applyBtn.disabled = true;
+	const skipBtn = document.createElement("button");
+	skipBtn.type = "button";
+	skipBtn.className = "wizard-taming-pick-apply-btn";
+	skipBtn.textContent = "Не применять";
+
+	let selected = null;
+	ids.forEach((cid) => {
+		const tr = window.treasures?.find((t) => t.name === cid);
+		const btn = document.createElement("button");
+		btn.type = "button";
+		btn.className = "wizard-taming-pick-card";
+		btn.dataset.cardId = cid;
+		const img = document.createElement("img");
+		img.className = "wizard-taming-pick-card-img";
+		img.src = tr?.img || "";
+		img.alt = cid;
+		btn.appendChild(img);
+		btn.addEventListener("click", () => {
+			cardsWrap.querySelectorAll(".wizard-taming-pick-card").forEach((x) => x.classList.remove("is-selected"));
+			btn.classList.add("is-selected");
+			selected = cid;
+			applyBtn.disabled = !selected;
+		});
+		cardsWrap.appendChild(btn);
+	});
+
+	applyBtn.addEventListener("click", () => {
+		if (!selected) return;
+		hideInstantWallModal();
+		if (typeof onPick === "function") onPick(selected);
+	});
+	skipBtn.addEventListener("click", () => {
+		hideInstantWallModal();
+		if (typeof onSkip === "function") onSkip();
+	});
+
+	panel.appendChild(titleEl);
+	panel.appendChild(cardsWrap);
+	panel.appendChild(applyBtn);
+	panel.appendChild(skipBtn);
+	modal.appendChild(panel);
+	document.body.appendChild(modal);
+	modal.addEventListener("click", (e) => {
+		if (e.target === modal) {
+			hideInstantWallModal();
+			if (typeof onSkip === "function") onSkip();
+		}
+	});
+	pushOpenModalsToServerDebounced();
+}
+
+function openInstantWallOfferModal({ fromSeat, toSeat }) {
+	hideInstantWallModal();
+	const modal = document.createElement("div");
+	modal.id = "instant-wall-modal";
+	modal.className = "wizard-taming-pick-modal";
+	const panel = document.createElement("div");
+	panel.className = "wizard-taming-pick-panel";
+	const titleEl = document.createElement("div");
+	titleEl.className = "wizard-taming-pick-title";
+	titleEl.textContent = `Instant wall: воспользоваться стенкой от игрока ${getSeatLabel(fromSeat)}?`;
+	const yesBtn = document.createElement("button");
+	yesBtn.type = "button";
+	yesBtn.className = "wizard-taming-pick-apply-btn";
+	yesBtn.textContent = "Да, смыться автоматически";
+	const noBtn = document.createElement("button");
+	noBtn.type = "button";
+	noBtn.className = "wizard-taming-pick-apply-btn";
+	noBtn.textContent = "Нет, смываться как обычно";
+
+	yesBtn.addEventListener("click", () => {
+		hideInstantWallModal();
+		socket.emit("message", { method: "InstantWallOfferDecision", fromSeat, toSeat, accept: true });
+	});
+	noBtn.addEventListener("click", () => {
+		hideInstantWallModal();
+		socket.emit("message", { method: "InstantWallOfferDecision", fromSeat, toSeat, accept: false });
+	});
+
+	panel.appendChild(titleEl);
+	panel.appendChild(yesBtn);
+	panel.appendChild(noBtn);
+	modal.appendChild(panel);
+	document.body.appendChild(modal);
+	modal.addEventListener("click", (e) => {
+		if (e.target === modal) {
+			hideInstantWallModal();
+			socket.emit("message", { method: "InstantWallOfferDecision", fromSeat, toSeat, accept: false });
+		}
+	});
+	pushOpenModalsToServerDebounced();
+}
+
+function openHalflingRetryModalNow(seat) {
+	hideEscapeAidOptionsModal();
+	hideEscapeRatMonsterPickModal();
+	hideEscapeFailAidModal();
+	const s = parseInt(seat, 10);
+	if (Number.isNaN(s)) {
+		return;
+	}
+	hideEscapeHalflingRetryModal();
+	if (localSeat !== s) {
+		showBattleResult(`${getSeatLabel(s)} решает, использовать ли способность халфлинга...`);
+		return;
+	}
+
+	const cards = getLocalPlayerAllCardsForHalflingDiscard();
+	const modal = document.createElement("div");
+	modal.id = "escape-halfling-retry-modal";
+	modal.className = "escape-halfling-retry-modal";
+
+	const panel = document.createElement("div");
+	panel.className = "escape-halfling-retry-panel";
+
+	const title = document.createElement("div");
+	title.className = "escape-halfling-retry-title";
+	title.textContent = "Халфлинг может сбросить карту, чтобы попытаться смыться повторно. Выбери карту и нажми «Подтвердить», либо откажись от способности.";
+
+	const cardsWrap = document.createElement("div");
+	cardsWrap.className = "escape-halfling-retry-cards";
+
+	const applyBtn = document.createElement("button");
+	applyBtn.type = "button";
+	applyBtn.className = "escape-halfling-retry-skip-btn";
+	applyBtn.textContent = "Подтвердить сброс";
+	applyBtn.disabled = true;
+
+	const skipBtn = document.createElement("button");
+	skipBtn.type = "button";
+	skipBtn.className = "escape-halfling-retry-skip-btn";
+	skipBtn.textContent = "Не использовать способность";
+
+	let selectedCardId = "";
+
+	const markHalflingAttemptConsumed = () => {
+		escapeHalflingRetryUsedForCurrentAttempt = true;
+	};
+
+	const sendDecision = (useAbility, cardId = "") => {
+		markHalflingAttemptConsumed();
+		socket.emit("message", {
+			method: "EscapeHalflingRetryDecision",
+			seat: localSeat,
+			useAbility,
+			cardId,
+		});
+		hideEscapeHalflingRetryModal();
+	};
+
+	if (!cards.length) {
+		const empty = document.createElement("div");
+		empty.className = "escape-halfling-retry-empty";
+		empty.textContent = "Нет карт для сброса";
+		cardsWrap.appendChild(empty);
+	} else {
+		cards.forEach((card) => {
+			const cardBtn = document.createElement("button");
+			cardBtn.type = "button";
+			cardBtn.className = "escape-halfling-retry-card";
+			const img = document.createElement("img");
+			img.src = card.img;
+			img.alt = card.cardId;
+			img.className = "escape-halfling-retry-card-img";
+			cardBtn.appendChild(img);
+			cardBtn.addEventListener("click", () => {
+				cardsWrap.querySelectorAll(".escape-halfling-retry-card").forEach((x) => x.classList.remove("is-selected"));
+				cardBtn.classList.add("is-selected");
+				selectedCardId = String(card.cardId || "");
+				applyBtn.disabled = !selectedCardId;
+			});
+			cardsWrap.appendChild(cardBtn);
+		});
+	}
+
+	applyBtn.addEventListener("click", () => {
+		if (!selectedCardId) {
+			return;
+		}
+		sendDecision(true, selectedCardId);
+	});
+
+	skipBtn.addEventListener("click", () => sendDecision(false));
+
+	panel.appendChild(title);
+	panel.appendChild(cardsWrap);
+	panel.appendChild(applyBtn);
+	panel.appendChild(skipBtn);
+	modal.appendChild(panel);
+	document.body.appendChild(modal);
+
+	modal.addEventListener("click", (event) => {
+		if (event.target === modal) {
+			sendDecision(false);
+		}
+	});
+	pushOpenModalsToServerDebounced();
+}
+
+/** Карты «Invisibility potion» в руке/main/side места (для модалки помощи после провала смывки). */
+function getInvisibilityPotionTreasureCardIdsForSeat(seat) {
+	const s = Number(seat);
+	if (!Number.isFinite(s) || s < 0) {
+		return [];
+	}
+	const out = [];
+	const seen = new Set();
+	const hand = getHandElementForPlayerSeat(s);
+	const { main, side } = getMainAndSideZoneElementsForSeat(s);
+	[hand, main, side].forEach((zoneEl) => {
+		if (!zoneEl) {
+			return;
+		}
+		zoneEl.querySelectorAll(".card").forEach((cardEl) => {
+			const cid = String(cardEl?.id || "");
+			if (!cid || !cid.includes("treasure") || seen.has(cid)) {
+				return;
+			}
+			if (!isTreasureSpecial(cid, "Invisibility potion")) {
+				return;
+			}
+			seen.add(cid);
+			out.push(cid);
+		});
+	});
+	return out;
+}
+
+function getMagicLampTreasureCardIdsForSeat(seat) {
+	const s = Number(seat);
+	if (!Number.isFinite(s) || s < 0) {
+		return [];
+	}
+	const out = [];
+	const seen = new Set();
+	const hand = getHandElementForPlayerSeat(s);
+	const { main, side } = getMainAndSideZoneElementsForSeat(s);
+	[hand, main, side].forEach((zoneEl) => {
+		if (!zoneEl) {
+			return;
+		}
+		zoneEl.querySelectorAll(".card").forEach((cardEl) => {
+			const cid = String(cardEl?.id || "");
+			if (!cid || !cid.includes("treasure") || seen.has(cid)) {
+				return;
+			}
+			if (!isTreasureSpecial(cid, "Magic lamp")) {
+				return;
+			}
+			seen.add(cid);
+			out.push(cid);
+		});
+	});
+	return out;
+}
+
+function openEscapeFailAidModal({ seat, attemptNumber }) {
+	hideEscapeFailAidModal();
+	const s = Number(seat);
+	if (!Number.isFinite(s) || Number(localSeat) !== Number(s)) {
+		return;
+	}
+	const monId = String(escapeFailAidPending?.payload?.monsterCardId || "");
+	const isWizard = String(characterBySeat?.[s]?.kind || "") === "Wizard";
+	const wizardCards = getLocalPlayerAllCardsForWizardFlightDiscard();
+	const canWizard = isWizard && wizardCards.length > 0;
+	const canHalfling =
+		Number(attemptNumber) === 1
+		&& seatHasRace(s, "Halfling")
+		&& !escapeHalflingRetryUsedForCurrentAttempt
+		&& getLocalPlayerAllCardsForHalflingDiscard().length > 0;
+	const invIds = getInvisibilityPotionTreasureCardIdsForSeat(s);
+	const canInvis = invIds.length > 0 && Boolean(monId);
+	const invTreasure = invIds.length ? window.treasures?.find((t) => t.name === invIds[0]) : null;
+	const lampIds = getMagicLampTreasureCardIdsForSeat(s);
+	const canLamp = lampIds.length > 0 && Boolean(monId) && Number(currentTurnSeat) === Number(s);
+	const lampTreasure = lampIds.length ? window.treasures?.find((t) => t.name === lampIds[0]) : null;
+
+	const entries = [];
+	if (canInvis) {
+		entries.push({
+			key: "invis",
+			cardId: invIds[0],
+			img: invTreasure?.img || "",
+			imageOnly: true,
+			desc: "Сбрось зелье невидимости: автоматически смываешься от монстра, от которого только что не смог смыться. Карта уходит в сброс.",
+		});
+	}
+	if (canLamp) {
+		entries.push({
+			key: "lamp",
+			cardId: lampIds[0],
+			img: lampTreasure?.img || "",
+			imageOnly: true,
+			desc: "Прогоняет одного выбранного монстра.",
+		});
+	}
+	if (canWizard) {
+		entries.push({
+			key: "wizard",
+			title: "Волшебник: Заклинание полета",
+			desc: `Заклинание Полёта: сбрось до 3 карт - каждая даёт +1 к смывке (сейчас доступно карт: ${wizardCards.length})`,
+		});
+	}
+	if (canHalfling) {
+		entries.push({
+			key: "halfling",
+			title: "Халфлинг",
+			desc: "Сбрось одну карту, чтобы бросить кубик на смывку ещё раз.",
+		});
+	}
+
+	const modal = document.createElement("div");
+	modal.id = "escape-fail-aid-modal";
+	modal.className = "wizard-taming-pick-modal";
+	const panel = document.createElement("div");
+	panel.className = "wizard-taming-pick-panel";
+	const title = document.createElement("div");
+	title.className = "wizard-taming-pick-title";
+	title.textContent = "Смывка не удалась: помощь";
+	const desc = document.createElement("div");
+	desc.id = "escape-fail-aid-desc";
+	desc.className = "wizard-taming-desc";
+	desc.textContent = entries.length
+		? "Выбери карту или способность ниже, затем нажми «Подтвердить»."
+		: "Нет доступных карт и способностей для этой ситуации.";
+	const wrap = document.createElement("div");
+	wrap.className = "wizard-taming-pick-cards";
+
+	let selected = null;
+	const applyPick = () => {
+		if (!selected) {
+			return;
+		}
+		hideEscapeFailAidModal();
+		if (selected.key === "invis") {
+			const cardId = selected.cardId;
+			if (!cardId || !monId) {
+				return;
+			}
+			socket.emit("message", {
+				method: "EscapeInvisibilityPotionApply",
+				cardId,
+				actingSeat: s,
+				monsterCardId: monId,
+			});
+			return;
+		}
+		if (selected.key === "lamp") {
+			const cardId = selected.cardId;
+			if (!cardId || !monId) {
+				return;
+			}
+			socket.emit("message", {
+				method: "EscapeMagicLampBanish",
+				cardId,
+				actingSeat: s,
+				monsterCardId: monId,
+			});
+			return;
+		}
+		if (selected.key === "wizard") {
+			escapeWizardFlightPending = escapeFailAidPending?.payload ? { ...escapeFailAidPending.payload } : null;
+			openWizardFlightModal();
+			return;
+		}
+		if (selected.key === "halfling") {
+			openHalflingRetryModalNow(s);
+		}
+	};
+
+	const applyBtn = document.createElement("button");
+	applyBtn.type = "button";
+	applyBtn.className = "wizard-taming-pick-apply-btn";
+	applyBtn.textContent = "Подтвердить";
+	applyBtn.disabled = true;
+
+	const cont = document.createElement("button");
+	cont.type = "button";
+	cont.className = "wizard-taming-pick-apply-btn";
+	cont.textContent = "Продолжить без помощи";
+	cont.addEventListener("click", () => {
+		hideEscapeFailAidModal();
+		socket.emit("message", { method: "EscapeFailAidSkip", seat: localSeat });
+	});
+
+	entries.forEach((ent) => {
+		const btn = document.createElement("button");
+		btn.type = "button";
+		btn.className = "wizard-taming-pick-card";
+		btn.dataset.pickKey = ent.key;
+		if (ent.imageOnly && ent.img) {
+			const img = document.createElement("img");
+			img.className = "wizard-taming-pick-card-img";
+			img.src = ent.img;
+			img.alt = "Invisibility potion";
+			btn.appendChild(img);
+		} else {
+			const label = document.createElement("div");
+			label.className = "wizard-taming-pick-sum";
+			label.textContent = ent.title || ent.key;
+			label.style.textAlign = "center";
+			label.style.fontSize = "16px";
+			label.style.color = "#e6e6e6";
+			label.style.padding = "10px 8px";
+			label.style.lineHeight = "1.25";
+			btn.appendChild(label);
+		}
+		btn.addEventListener("click", () => {
+			wrap.querySelectorAll(".wizard-taming-pick-card").forEach((x) => x.classList.remove("is-selected"));
+			btn.classList.add("is-selected");
+			selected = ent;
+			desc.textContent = ent.desc || "";
+			applyBtn.disabled = false;
+		});
+		wrap.appendChild(btn);
+	});
+
+	applyBtn.addEventListener("click", () => {
+		if (applyBtn.disabled || !selected) {
+			return;
+		}
+		applyPick();
+	});
+
+	panel.appendChild(title);
+	panel.appendChild(desc);
+	panel.appendChild(wrap);
+	panel.appendChild(applyBtn);
+	panel.appendChild(cont);
+	modal.appendChild(panel);
+	document.body.appendChild(modal);
+	modal.addEventListener("click", (e) => {
+		if (e.target === modal) {
+			cont.click();
+		}
+	});
+	pushOpenModalsToServerDebounced();
+}
+
+/** Игрок, который сейчас смывается (очередь смывки), в т.ч. до выбора монстра. */
+function getFleeingSeatForEscapeAid() {
+	if (!escapeActive) {
+		return null;
+	}
+	if (Array.isArray(escapeQueue) && escapeQueueIndex >= 0 && escapeQueueIndex < escapeQueue.length) {
+		const s = escapeQueue[escapeQueueIndex];
+		if (s != null && !Number.isNaN(Number(s))) {
+			return Number(s);
+		}
+	}
+	return null;
+}
+
+/**
+ * «Уровень» монстра для правил вроде Rat on a stick (≤8): в данных это сила на карте (`power`),
+ * а не `level` у Card_door (там часто число уровней/награды за победу).
+ */
+function getMonsterRatingForRatOnStick(cardId) {
+	const id = String(cardId || "");
+	if (!id) {
+		return null;
+	}
+	const el = document.getElementById(id);
+	const door = window.doors?.find((d) => d.name === id);
+	if (!door) {
+		return null;
+	}
+	const ratingFromDoor = (d) => {
+		if (!d) {
+			return null;
+		}
+		const p = Number(d.power);
+		const l = Number(d.level);
+		const pow = Number.isFinite(p) ? p : 0;
+		const lvl = Number.isFinite(l) ? l : 0;
+		const r = Math.max(pow, lvl);
+		return r > 0 ? r : null;
+	};
+	if (String(door.special || "") === "Mate") {
+		const srcId = String(el?.dataset?.mateSourceMonsterId || "");
+		const srcDoor = srcId ? window.doors?.find((d) => d.name === srcId) : null;
+		if (!srcDoor || String(srcDoor.race || "") !== "monster") {
+			return null;
+		}
+		return ratingFromDoor(srcDoor);
+	}
+	if (String(door.race || "") !== "monster") {
+		return null;
+	}
+	return ratingFromDoor(door);
+}
+
+function getPendingEscapeMonsterIdsForRat() {
+	const ids = new Set();
+	if (escapeCurrentMonsterCardId) {
+		ids.add(String(escapeCurrentMonsterCardId));
+	}
+	(escapeMonsterQueue || []).forEach((m) => {
+		if (m?.cardId) {
+			ids.add(String(m.cardId));
+		}
+	});
+	return ids;
+}
+
+/** Монстры 1–8 ур., от которых ещё предстоит смывка (текущий + очередь). */
+function getRatOnStickEligibleMonstersForEscape() {
+	const out = [];
+	const monsterZone = document.getElementById("zone_monster") || document.querySelector(".zone_monster");
+	getPendingEscapeMonsterIdsForRat().forEach((id) => {
+		const el = document.getElementById(id);
+		if (!el || !monsterZone || el.parentElement?.id !== "zone_monster") {
+			return;
+		}
+		const rating = getMonsterRatingForRatOnStick(id);
+		if (rating == null || rating < 1 || rating > 8) {
+			return;
+		}
+		const door = window.doors?.find((d) => d.name === id);
+		out.push({
+			cardId: id,
+			level: rating,
+			img: door?.img || "",
+		});
+	});
+	return out;
+}
+
+function removeMonsterIdFromEscapeQueues(monsterCardId) {
+	const id = String(monsterCardId || "");
+	if (!id) {
+		return;
+	}
+	const strip = (arr) => {
+		if (!Array.isArray(arr)) {
+			return;
+		}
+		for (let i = arr.length - 1; i >= 0; i--) {
+			if (String(arr[i]?.cardId || "") === id) {
+				arr.splice(i, 1);
+			}
+		}
+	};
+	strip(escapeMonsterQueue);
+	strip(escapeMonsterTemplateQueue);
+}
+
+function collectEscapeAidCardEntriesForSeat(seat) {
+	const s = Number(seat);
+	if (!Number.isFinite(s) || s < 0) {
+		return [];
+	}
+	const canUseRat = getRatOnStickEligibleMonstersForEscape().length > 0;
+	const out = [];
+	const seen = new Set();
+	const hand = getHandElementForPlayerSeat(s);
+	const { main, side } = getMainAndSideZoneElementsForSeat(s);
+	[hand, main, side].forEach((zoneEl) => {
+		if (!zoneEl) {
+			return;
+		}
+		zoneEl.querySelectorAll(".card").forEach((cardEl) => {
+			const cid = cardEl?.id;
+			if (!cid || !String(cid).includes("treasure") || seen.has(cid)) {
+				return;
+			}
+			const tr = window.treasures?.find((t) => t.name === cid);
+			if (canUseRat && isTreasureSpecial(cid, "Rat on a stick")) {
+				seen.add(cid);
+				out.push({
+					cardId: cid,
+					img: tr?.img || "",
+					title: tr?.card_name || "Rat on a stick",
+					aidKind: "rat_on_stick",
+					desc: "Сбрось карту: автоматически смываешься без броска кубика от выбранного монстра 8 уровня или ниже. После активации карта уходит в сброс.",
+				});
+				return;
+			}
+			if (isTreasureSpecial(cid, "Instant wall")) {
+				seen.add(cid);
+				out.push({
+					cardId: cid,
+					img: tr?.img || "",
+					title: tr?.card_name || "Instant wall",
+					aidKind: "instant_wall",
+					desc: "Сбрось карту: автоматически смываешься от ВСЕХ монстров в этом бою. Может сработать для одного или двух игроков (второму игроку придёт запрос принять стенку).",
+				});
+			}
+		});
+	});
+	return out;
+}
+
+function openEscapeRatMonsterPickModal({ ratCardId, onCancel }) {
+	hideEscapeRatMonsterPickModal();
+	const monsters = getRatOnStickEligibleMonstersForEscape();
+	if (!ratCardId || monsters.length <= 0) {
+		return;
+	}
+	const modal = document.createElement("div");
+	modal.id = "escape-rat-monster-modal";
+	modal.className = "wizard-taming-pick-modal";
+	const panel = document.createElement("div");
+	panel.className = "wizard-taming-pick-panel";
+	const title = document.createElement("div");
+	title.className = "wizard-taming-pick-title";
+	title.textContent = "Крыса на палочке: выбери монстра (ур. 8 или ниже)";
+	const cardsWrap = document.createElement("div");
+	cardsWrap.className = "wizard-taming-pick-cards";
+	const applyBtn = document.createElement("button");
+	applyBtn.type = "button";
+	applyBtn.className = "wizard-taming-pick-apply-btn";
+	applyBtn.textContent = "Смыться от выбранного";
+	applyBtn.disabled = true;
+	let selectedMonster = null;
+	monsters.forEach((m) => {
+		const btn = document.createElement("button");
+		btn.type = "button";
+		btn.className = "wizard-taming-pick-card";
+		btn.dataset.cardId = m.cardId;
+		const img = document.createElement("img");
+		img.className = "wizard-taming-pick-card-img";
+		img.src = m.img || "";
+		img.alt = m.cardId;
+		btn.appendChild(img);
+		const sumEl = document.createElement("div");
+		sumEl.className = "wizard-taming-pick-sum";
+		sumEl.textContent = `Уровень: ${m.level}`;
+		sumEl.style.marginTop = "4px";
+		sumEl.style.fontSize = "16px";
+		sumEl.style.color = "#ffd37a";
+		sumEl.style.textAlign = "center";
+		btn.appendChild(sumEl);
+		btn.addEventListener("click", () => {
+			cardsWrap.querySelectorAll(".wizard-taming-pick-card").forEach((x) => x.classList.remove("is-selected"));
+			btn.classList.add("is-selected");
+			selectedMonster = m.cardId;
+			applyBtn.disabled = !selectedMonster;
+		});
+		cardsWrap.appendChild(btn);
+	});
+	applyBtn.addEventListener("click", () => {
+		if (!selectedMonster) {
+			return;
+		}
+		socket.emit("message", {
+			method: "EscapeRatOnStickApply",
+			ratCardId: String(ratCardId),
+			monsterCardId: String(selectedMonster),
+			actingSeat: Number(getFleeingSeatForEscapeAid()),
+		});
+		hideEscapeRatMonsterPickModal();
+	});
+	panel.appendChild(title);
+	panel.appendChild(cardsWrap);
+	panel.appendChild(applyBtn);
+	modal.appendChild(panel);
+	document.body.appendChild(modal);
+	modal.addEventListener("click", (e) => {
+		if (e.target === modal) {
+			hideEscapeRatMonsterPickModal();
+			if (typeof onCancel === "function") {
+				onCancel();
+			}
+		}
+	});
+	pushOpenModalsToServerDebounced();
+}
+
+function openEscapeAidOptionsModal() {
+	hideEscapeAidOptionsModal();
+	const fleeSeat = getFleeingSeatForEscapeAid();
+	if (fleeSeat == null || Number.isNaN(Number(fleeSeat)) || Number(localSeat) !== Number(fleeSeat)) {
+		return;
+	}
+	if (!escapeActive) {
+		return;
+	}
+	const inDicePhase = Boolean(escapeWaitingForRoll && escapeCurrentSeat != null && Number(escapeCurrentSeat) === fleeSeat);
+	const inPickPhase = Boolean(!escapeWaitingForRoll && escapeMonsterPickSession && Number(escapeMonsterPickSession.seat) === fleeSeat);
+	if (!inDicePhase && !inPickPhase) {
+		return;
+	}
+	const entries = collectEscapeAidCardEntriesForSeat(fleeSeat);
+	if (!entries.length) {
+		return;
+	}
+	const modal = document.createElement("div");
+	modal.id = "escape-aid-options-modal";
+	modal.className = "wizard-taming-pick-modal";
+	const panel = document.createElement("div");
+	panel.className = "wizard-taming-pick-panel";
+	const title = document.createElement("div");
+	title.className = "wizard-taming-pick-title";
+	title.textContent = "Смывка: особые способы";
+	const desc = document.createElement("div");
+	desc.id = "escape-aid-options-desc";
+	desc.className = "wizard-taming-desc";
+	desc.textContent = "Выдели карту или способ, чтобы увидеть описание.";
+	const cardsWrap = document.createElement("div");
+	cardsWrap.className = "wizard-taming-pick-cards";
+	const applyBtn = document.createElement("button");
+	applyBtn.type = "button";
+	applyBtn.className = "wizard-taming-pick-apply-btn";
+	applyBtn.textContent = "Подтвердить выбор";
+	applyBtn.disabled = true;
+	let selected = null;
+	entries.forEach((ent) => {
+		const btn = document.createElement("button");
+		btn.type = "button";
+		btn.className = "wizard-taming-pick-card";
+		btn.dataset.cardId = ent.cardId;
+		const img = document.createElement("img");
+		img.className = "wizard-taming-pick-card-img";
+		img.src = ent.img || "";
+		img.alt = ent.cardId;
+		btn.appendChild(img);
+		const cap = document.createElement("div");
+		cap.className = "wizard-taming-pick-sum";
+		cap.textContent = ent.title || ent.cardId;
+		cap.style.marginTop = "4px";
+		cap.style.fontSize = "15px";
+		cap.style.color = "#e6e6e6";
+		cap.style.textAlign = "center";
+		btn.appendChild(cap);
+		btn.addEventListener("click", () => {
+			cardsWrap.querySelectorAll(".wizard-taming-pick-card").forEach((x) => x.classList.remove("is-selected"));
+			btn.classList.add("is-selected");
+			selected = ent;
+			desc.textContent = ent.desc || "";
+			applyBtn.disabled = !selected;
+		});
+		cardsWrap.appendChild(btn);
+	});
+	applyBtn.addEventListener("click", () => {
+		if (!selected) {
+			return;
+		}
+		if (selected.aidKind === "rat_on_stick") {
+			const ratId = String(selected.cardId || "");
+			if (!document.getElementById(ratId)) {
+				return;
+			}
+			hideEscapeAidOptionsModal();
+			openEscapeRatMonsterPickModal({
+				ratCardId: ratId,
+				onCancel: () => {
+					maybeTryOpenEscapeAidOptionsModal();
+				},
+			});
+			return;
+		}
+		if (selected.aidKind === "instant_wall") {
+			const fleeSeat = getFleeingSeatForEscapeAid();
+			if (fleeSeat == null) {
+				return;
+			}
+			const cid = String(selected.cardId || "");
+			if (!cid) {
+				return;
+			}
+			hideEscapeAidOptionsModal();
+			socket.emit("message", { method: "InstantWallUse", cardId: cid, actingSeat: Number(fleeSeat) });
+		}
+	});
+	panel.appendChild(title);
+	panel.appendChild(desc);
+	panel.appendChild(cardsWrap);
+	panel.appendChild(applyBtn);
+	modal.appendChild(panel);
+	document.body.appendChild(modal);
+	modal.addEventListener("click", (e) => {
+		if (e.target === modal) {
+			hideEscapeAidOptionsModal();
+		}
+	});
+	pushOpenModalsToServerDebounced();
+}
+
+function maybeTryOpenEscapeAidOptionsModal() {
+	if (!escapeActive) {
+		return;
+	}
+	const fleeSeat = getFleeingSeatForEscapeAid();
+	if (fleeSeat == null || Number(localSeat) !== fleeSeat) {
+		return;
+	}
+	const inDicePhase = Boolean(escapeWaitingForRoll && escapeCurrentSeat != null && Number(escapeCurrentSeat) === fleeSeat);
+	const inPickPhase = Boolean(!escapeWaitingForRoll && escapeMonsterPickSession && Number(escapeMonsterPickSession.seat) === fleeSeat);
+	if (!inDicePhase && !inPickPhase) {
+		return;
+	}
+	if (inDicePhase && escapeRollInProgress) {
+		return;
+	}
+	if (document.getElementById("escape-aid-options-modal") || document.getElementById("escape-rat-monster-modal")) {
+		return;
+	}
+	const entries = collectEscapeAidCardEntriesForSeat(fleeSeat);
+	if (entries.length <= 0) {
+		return;
+	}
+	setTimeout(() => {
+		if (!escapeActive || Number(localSeat) !== fleeSeat) {
+			return;
+		}
+		const inD = Boolean(escapeWaitingForRoll && escapeCurrentSeat != null && Number(escapeCurrentSeat) === fleeSeat);
+		const inP = Boolean(!escapeWaitingForRoll && escapeMonsterPickSession && Number(escapeMonsterPickSession.seat) === fleeSeat);
+		if (!inD && !inP) {
+			return;
+		}
+		if (document.getElementById("escape-aid-options-modal") || document.getElementById("escape-rat-monster-modal")) {
+			return;
+		}
+		openEscapeAidOptionsModal();
+	}, 80);
+}
+
+function applyEscapeRatOnStickFromNetwork({ ratCardId, monsterCardId, actingSeat }) {
+	const rat = String(ratCardId || "");
+	const mon = String(monsterCardId || "");
+	const act = Number(actingSeat);
+	if (!rat || !mon || !Number.isFinite(act)) {
+		return;
+	}
+	if (!escapeActive) {
+		return;
+	}
+	const rating = getMonsterRatingForRatOnStick(mon);
+	if (rating == null || rating < 1 || rating > 8) {
+		return;
+	}
+	const pending = getPendingEscapeMonsterIdsForRat();
+	if (!pending.has(mon)) {
+		return;
+	}
+	// Сброс крысы: всегда по месту actingSeat (рука/экип соперника), не только когда локальная очередь смывки совпала.
+	moveTreasureCardToDiscard(rat, { ownerSeat: act });
+	hideEscapeAidOptionsModal();
+	hideEscapeRatMonsterPickModal();
+	adjustCardWidth(".myhand");
+	adjustCardWidth(".zone2");
+	adjustCardWidth(".zone5");
+	adjustCardWidth(".opponenthand");
+	adjustCardWidth(".opponent2hand");
+	adjustCardWidth(".opponent3hand");
+	UpdatebackImgTreasure();
+
+	const fleeSeat = getFleeingSeatForEscapeAid();
+	if (fleeSeat == null || Number(act) !== Number(fleeSeat)) {
+		recalculateAllPowerDisplays();
+		pushOpenModalsToServerDebounced();
+		return;
+	}
+
+	if (mon === String(escapeCurrentMonsterCardId)) {
+		escapeWaitingForRoll = false;
+		escapeRollInProgress = false;
+		const payload = {
+			method: "EscapeRollResult",
+			seat: act,
+			rawRoll: 6,
+			equipRemover: getSeatEquipmentRemover(act),
+			monsterRemover: escapeMonsterRemover,
+			totalRoll: ESCAPE_TARGET_ROLL,
+			escaped: true,
+			badStaffPenalty: null,
+			monsterCardId: escapeCurrentMonsterCardId,
+			viaRatOnStick: true,
+		};
+		if (localSeat === escapeOwnerSeat) {
+			emitEscapeRollResultAndAdvance(payload);
+		}
+	} else {
+		removeMonsterIdFromEscapeQueues(mon);
+		showBattleResult("Крыса на палочке: ты сбежал от монстра без броска!");
+		setTimeout(() => hideBattleResult(), 1600);
+		flushTurnStateSyncToServer();
+		const pickSeat = escapeMonsterPickSession != null ? Number(escapeMonsterPickSession.seat) : null;
+		const stillInMonsterPick = !escapeWaitingForRoll && pickSeat != null && Number(act) === pickSeat;
+		if (stillInMonsterPick) {
+			const q = escapeMonsterQueue || [];
+			hideEscapeMonsterPicker();
+			if (q.length === 1 && localSeat === escapeOwnerSeat) {
+				clearEscapeMonsterPickSession();
+				socket.emit("message", {
+					method: "EscapeMonsterChosen",
+					seat: pickSeat,
+					cardId: q[0].cardId,
+				});
+			} else if (q.length > 1 && Number(localSeat) === pickSeat) {
+				showBattleResult("Выбери монстра, от которого будешь смываться.");
+				showEscapeMonsterPicker(q, (cardId) => {
+					hideEscapeMonsterPicker();
+					socket.emit("message", {
+						method: "EscapeMonsterChosen",
+						seat: localSeat,
+						cardId,
+					});
+				});
+				escapeMonsterPickSession = {
+					seat: pickSeat,
+					monsters: cloneTurnStateJson(q) || [],
+				};
+				flushTurnStateSyncToServer();
+			}
+		}
+	}
+	recalculateAllPowerDisplays();
+	pushOpenModalsToServerDebounced();
+}
+
 function clearEscapeMonsterPickSession() {
 	escapeMonsterPickSession = null;
 }
@@ -5226,6 +6401,39 @@ function runNextEscapeAttemptAndBroadcast() {
 		return;
 	}
 
+	// Instant wall: для отмеченных мест смывка всегда успешна и не требует действий игрока.
+	if (escapeInstantWallAutoSeats && escapeInstantWallAutoSeats.has(Number(seat))) {
+		// Автоматически выбираем первого монстра в очереди (нет смысла показывать выбор — стенка работает от всех).
+		const nextMonsterId = escapeMonsterQueue?.[0]?.cardId;
+		if (!nextMonsterId) {
+			// Нет монстров — продвигаем очередь.
+			escapeQueueIndex += 1;
+			escapeMonsterQueue = escapeMonsterTemplateQueue.slice();
+			runNextEscapeAttemptAndBroadcast();
+			return;
+		}
+		selectMonsterAndStartEscapeTurn(nextMonsterId, Number(seat));
+		// После EscapeTurnStart сразу публикуем успех.
+		setTimeout(() => {
+			const payload = {
+				method: "EscapeRollResult",
+				seat: Number(seat),
+				rawRoll: 6,
+				equipRemover: getSeatEquipmentRemover(Number(seat)),
+				monsterRemover: escapeMonsterRemover,
+				totalRoll: ESCAPE_TARGET_ROLL,
+				escaped: true,
+				badStaffPenalty: null,
+				monsterCardId: escapeCurrentMonsterCardId,
+				viaInstantWall: true,
+			};
+			if (Number(localSeat) === Number(escapeOwnerSeat)) {
+				emitEscapeRollResultAndAdvance(payload);
+			}
+		}, 120);
+		return;
+	}
+
 	if (escapeMonsterQueue.length <= 0) {
 		escapeQueueIndex += 1;
 		if (escapeQueueIndex >= escapeQueue.length) {
@@ -5256,6 +6464,11 @@ function startEscapeSequenceAndBroadcast(loserSeat, helperSeat, monsterRemover) 
 	if (Number.isNaN(parsedLoserSeat)) {
 		return;
 	}
+	// Instant wall должен действовать только в рамках одной последовательности смывки (одного боя).
+	escapeInstantWallGate = null;
+	escapeInstantWallOfferPending = null;
+	escapeInstantWallAutoSeats = new Set();
+
 	const queue = [parsedLoserSeat];
 	if (!Number.isNaN(parsedHelperSeat) && parsedHelperSeat !== parsedLoserSeat) {
 		queue.push(parsedHelperSeat);
@@ -5281,6 +6494,12 @@ function startEscapeSequenceAndBroadcast(loserSeat, helperSeat, monsterRemover) 
 		monsterInitialCount: escapeMonsterInitialCount,
 		ownerSeat: escapeOwnerSeat,
 	});
+	// Приоритет Instant wall у помощника: если есть помощник, даём ему шанс решить ДО старта смывки лидера.
+	if (!Number.isNaN(parsedHelperSeat) && parsedHelperSeat !== parsedLoserSeat) {
+		escapeInstantWallGate = { helperSeat: parsedHelperSeat, loserSeat: parsedLoserSeat };
+		socket.emit("message", { method: "InstantWallHelperPrompt", helperSeat: parsedHelperSeat, loserSeat: parsedLoserSeat });
+		return;
+	}
 	runNextEscapeAttemptAndBroadcast();
 }
 
@@ -5326,33 +6545,18 @@ function resolveEscapeRollAndBroadcast(seat, rawRoll) {
 		badStaffPenalty,
 		monsterCardId: escapeCurrentMonsterCardId,
 	};
-	const seatKind = String(characterBySeat[seat]?.kind || "");
-	const canUseWizardFlight = !escaped
-		&& seatKind === "Wizard"
-		&& getLocalPlayerAllCardsForWizardFlightDiscard().length > 0;
-	if (canUseWizardFlight) {
-		escapeWizardFlightPending = resultPayload;
-		setTimeout(() => {
-			if (escapeWizardFlightPending) {
-				openWizardFlightModal();
-			}
-		}, 1000);
-		return;
-	}
-	const canUseHalflingRetry = !escaped
-		&& escapeAttemptNumber === 1
-		&& seatHasRace(seat, "Halfling")
-		&& !escapeHalflingRetryUsedForCurrentAttempt;
-	if (canUseHalflingRetry) {
-		escapeHalflingRetryUsedForCurrentAttempt = true;
-		escapeHalflingRetryPending = resultPayload;
+	// После провала смывки всегда даём игроку окно "помочь смывке" (пока: Волшебник и Халфлинг).
+	if (!escaped) {
+		escapeFailAidPending = { seat, payload: resultPayload, attemptNumber: escapeAttemptNumber };
+		socket.emit("message", { method: "EscapeCloseAidModals" });
 		setTimeout(() => {
 			socket.emit("message", {
-				method: "EscapeHalflingRetryPrompt",
+				method: "EscapeFailAidPrompt",
 				seat,
-				monsterCardId: escapeCurrentMonsterCardId,
+				attemptNumber: escapeAttemptNumber,
+				payload: resultPayload,
 			});
-		}, 1000);
+		}, 300);
 		return;
 	}
 	emitEscapeRollResultAndAdvance(resultPayload);
@@ -6159,6 +7363,7 @@ function reopenEphemeralUiAfterTurnPhaseRestore() {
 		&& monstersForPicker.length > 0
 		&& Number(localSeat) === Number(escapeMonsterPickSession.seat)
 	) {
+		maybeTryOpenEscapeAidOptionsModal();
 		showBattleResult("Выбери монстра, от которого будешь смываться.");
 		showEscapeMonsterPicker(monstersForPicker, (cardId) => {
 			hideEscapeMonsterPicker();
@@ -6181,6 +7386,7 @@ function reopenEphemeralUiAfterTurnPhaseRestore() {
 			clearEscapeMonsterPickSession();
 		}
 	}
+	maybeTryOpenEscapeAidOptionsModal();
 }
 
 function restoreOpenModalsFromServerGameState(g) {
@@ -6224,6 +7430,12 @@ function restoreOpenModalsFromServerGameState(g) {
 					break;
 				case "wizard-taming-modal":
 					openWizardTamingModal();
+					break;
+				case "escape-aid-options-modal":
+					maybeTryOpenEscapeAidOptionsModal();
+					break;
+				case "escape-rat-monster-modal":
+					maybeTryOpenEscapeAidOptionsModal();
 					break;
 				default:
 					break;
@@ -7717,10 +8929,16 @@ function setupMunchkinDiceAfterGameStart() {
 				const rawRoll = Math.floor((Math.random() * 6) + 1);
 				diceContainer.innerHTML = "";
 				diceContainer.appendChild(createDice(rawRoll));
-				socket.emit("message", {
-					method: "ThiefTheftRoll",
+				promptLoadedDieAfterRoll({
 					seat: localSeat,
-					value: rawRoll,
+					rawRoll,
+					onFinalize: (finalRoll) => {
+						socket.emit("message", {
+							method: "ThiefTheftRoll",
+							seat: localSeat,
+							value: Number(finalRoll),
+						});
+					},
 				});
 			}, 1000);
 			return;
@@ -7740,15 +8958,21 @@ function setupMunchkinDiceAfterGameStart() {
 				const rawRoll = Math.floor((Math.random() * 6) + 1);
 				diceContainer.innerHTML = "";
 				diceContainer.appendChild(createDice(rawRoll));
-				if (localSeat === escapeOwnerSeat) {
-					resolveEscapeRollAndBroadcast(localSeat, rawRoll);
-				} else {
-					socket.emit("message", {
-						method: "EscapeRollSubmit",
-						seat: localSeat,
-						rawRoll,
-					});
-				}
+				promptLoadedDieAfterRoll({
+					seat: localSeat,
+					rawRoll,
+					onFinalize: (finalRoll) => {
+						if (localSeat === escapeOwnerSeat) {
+							resolveEscapeRollAndBroadcast(localSeat, Number(finalRoll));
+						} else {
+							socket.emit("message", {
+								method: "EscapeRollSubmit",
+								seat: localSeat,
+								rawRoll: Number(finalRoll),
+							});
+						}
+					},
+				});
 			}, 1000);
 			return;
 		}
@@ -7756,7 +8980,20 @@ function setupMunchkinDiceAfterGameStart() {
 			randomizeDice(diceContainer, NUMBER_OF_DICE);
 		}, 50);
 
-		setTimeout(() => clearInterval(interval), 1000);
+		setTimeout(() => {
+			clearInterval(interval);
+			const rawRoll = Math.floor((Math.random() * 6) + 1);
+			diceContainer.innerHTML = "";
+			diceContainer.appendChild(createDice(rawRoll));
+			promptLoadedDieAfterRoll({
+				seat: localSeat,
+				rawRoll,
+				onFinalize: (finalRoll) => {
+					diceContainer.innerHTML = "";
+					diceContainer.appendChild(createDice(Number(finalRoll)));
+				},
+			});
+		}, 1000);
 		window.flag_dice = true;
 	});
 }
@@ -8836,6 +10073,8 @@ socket.on("message", response => {
 	}
 	if (response.method === "EscapeSequenceStart") {
 		const incomingOwnerSeat = parseInt(response.ownerSeat, 10);
+		hideEscapeAidOptionsModal();
+		hideEscapeRatMonsterPickModal();
 		// Владелец смывки уже инициализировал очередь локально.
 		// Если повторно применить этот же старт из сети, индекс сбросится и первый игрок получит второй бросок.
 		if (escapeActive && escapeQueue.length > 0 && !Number.isNaN(incomingOwnerSeat) && localSeat === incomingOwnerSeat) {
@@ -8861,6 +10100,7 @@ socket.on("message", response => {
 	if (response.method === "EscapeMonsterPickStart") {
 		const seat = parseInt(response.seat, 10);
 		const monsters = Array.isArray(response.monsters) ? response.monsters : [];
+		hideEscapeRatMonsterPickModal();
 		hideEscapeMonsterPicker();
 		if (!Number.isNaN(seat) && monsters.length > 0) {
 			escapeMonsterPickSession = {
@@ -8872,6 +10112,7 @@ socket.on("message", response => {
 			clearEscapeMonsterPickSession();
 		}
 		if (!Number.isNaN(seat) && localSeat === seat) {
+			maybeTryOpenEscapeAidOptionsModal();
 			showBattleResult("Выбери монстра, от которого будешь смываться.");
 			showEscapeMonsterPicker(monsters, (cardId) => {
 				hideEscapeMonsterPicker();
@@ -8920,113 +10161,173 @@ socket.on("message", response => {
 			showEscapeTurnText(seat);
 		}
 		flushTurnStateSyncToServer();
+		maybeTryOpenEscapeAidOptionsModal();
+	}
+	if (response.method === "EscapeCloseAidModals") {
+		hideEscapeAidOptionsModal();
+		hideEscapeRatMonsterPickModal();
+	}
+	if (response.method === "EscapeFailAidPrompt") {
+		const seat = parseInt(response.seat, 10);
+		const attemptNumber = Number(response.attemptNumber) || 0;
+		const payload = response.payload && typeof response.payload === "object" ? response.payload : null;
+		if (Number.isNaN(seat) || !payload) {
+			return;
+		}
+		// Сохраняем pending на всех клиентах, но модалку показываем только тому, кто смывается.
+		escapeFailAidPending = { seat, payload: cloneTurnStateJson(payload) || { ...payload }, attemptNumber };
+		if (Number(localSeat) === Number(seat)) {
+			openEscapeFailAidModal({ seat, attemptNumber });
+		} else {
+			showBattleResult(`${getSeatLabel(seat)} выбирает, как помочь смывке...`);
+		}
+	}
+	if (response.method === "EscapeFailAidSkip") {
+		// Скип обрабатывает владелец очереди смывки.
+		if (Number(localSeat) !== Number(escapeOwnerSeat)) {
+			return;
+		}
+		const seat = parseInt(response.seat, 10);
+		if (Number.isNaN(seat) || !escapeFailAidPending || Number(escapeFailAidPending.seat) !== Number(seat) || !escapeFailAidPending.payload) {
+			return;
+		}
+		const pendingPayload = { ...escapeFailAidPending.payload };
+		escapeFailAidPending = null;
+		emitEscapeRollResultAndAdvance(pendingPayload);
+	}
+	if (response.method === "EscapeInvisibilityPotionApply") {
+		const actingSeat = Number(response.actingSeat);
+		const cardId = String(response.cardId || "");
+		if (escapeFailAidPending && Number(escapeFailAidPending.seat) === Number(actingSeat)) {
+			escapeFailAidPending = null;
+		}
+		hideEscapeFailAidModal();
+		hideWizardFlightModal();
+		updateWizardFlightUi();
+		if (cardId && Number.isFinite(actingSeat)) {
+			moveTreasureCardToDiscard(cardId, { ownerSeat: actingSeat });
+		}
+		adjustCardWidth(".myhand");
+		adjustCardWidth(".zone2");
+		adjustCardWidth(".zone5");
+		adjustCardWidth(".opponenthand");
+		adjustCardWidth(".opponent2hand");
+		adjustCardWidth(".opponent3hand");
+		UpdatebackImgTreasure();
+		if (Number(localSeat) === Number(escapeOwnerSeat) && escapeActive && Number.isFinite(actingSeat) && Number(actingSeat) === Number(escapeCurrentSeat)) {
+			const payload = {
+				method: "EscapeRollResult",
+				seat: actingSeat,
+				rawRoll: 6,
+				equipRemover: getSeatEquipmentRemover(actingSeat),
+				monsterRemover: escapeMonsterRemover,
+				totalRoll: ESCAPE_TARGET_ROLL,
+				escaped: true,
+				badStaffPenalty: null,
+				monsterCardId: escapeCurrentMonsterCardId,
+				viaInvisibilityPotion: true,
+			};
+			emitEscapeRollResultAndAdvance(payload);
+		}
+	}
+	if (response.method === "EscapeMagicLampBanish") {
+		const actingSeat = Number(response.actingSeat);
+		const lampId = String(response.cardId || "");
+		const monsterId = String(response.monsterCardId || "");
+		if (escapeFailAidPending && Number(escapeFailAidPending.seat) === Number(actingSeat)) {
+			escapeFailAidPending = null;
+		}
+		hideEscapeFailAidModal();
+		hideWizardFlightModal();
+		updateWizardFlightUi();
+		if (lampId && Number.isFinite(actingSeat)) {
+			moveTreasureCardToDiscard(lampId, { ownerSeat: actingSeat });
+		}
+		if (monsterId) {
+			moveCardToDiscardById(monsterId);
+			setMonsterBasePower(computeMonsterZoneBasePower());
+		}
+		showBattleResult(`Монстр прогнан волшебной лампой!`);
+		setTimeout(() => hideBattleResult(), 1600);
+
+		// Обновляем очереди смывки (у всех клиентов одинаково).
+		if (monsterId) {
+			removeMonsterIdFromEscapeQueues(monsterId);
+		}
+		if (monsterId && String(escapeCurrentMonsterCardId) === monsterId) {
+			escapeCurrentMonsterCardId = null;
+			escapeWaitingForRoll = false;
+			escapeRollInProgress = false;
+		}
+		recalculateAllPowerDisplays();
+		pushOpenModalsToServerDebounced();
+
+		// Продолжение смывки запускает владелец очереди.
+		if (Number(localSeat) === Number(escapeOwnerSeat) && escapeActive) {
+			setTimeout(() => {
+				runNextEscapeAttemptAndBroadcast();
+			}, 250);
+		}
+	}
+	if (response.method === "LoadedDieDiscard") {
+		const seat = Number(response.seat);
+		const cardId = String(response.cardId || "");
+		hideLoadedDieModals();
+		if (cardId && Number.isFinite(seat) && cardId.includes("treasure")) {
+			moveTreasureCardToDiscard(cardId, { ownerSeat: seat });
+		} else if (cardId) {
+			moveCardToDiscardById(cardId);
+		}
+		recalculateAllPowerDisplays();
 	}
 	if (response.method === "EscapeHalflingRetryPrompt") {
-		const seat = parseInt(response.seat, 10);
-		if (Number.isNaN(seat)) {
-			return;
-		}
-		hideEscapeHalflingRetryModal();
-		if (localSeat !== seat) {
-			showBattleResult(`${getSeatLabel(seat)} решает, использовать ли способность халфлинга...`);
-			return;
-		}
-
-		const cards = getLocalPlayerAllCardsForHalflingDiscard();
-		const modal = document.createElement("div");
-		modal.id = "escape-halfling-retry-modal";
-		modal.className = "escape-halfling-retry-modal";
-
-		const panel = document.createElement("div");
-		panel.className = "escape-halfling-retry-panel";
-
-		const title = document.createElement("div");
-		title.className = "escape-halfling-retry-title";
-		title.textContent = "Халфлинг может сбросить карту, чтобы попытаться смыться повторно. Выбери карту для сброса или закрой окно, если не хочешь использовать способность.";
-
-		const cardsWrap = document.createElement("div");
-		cardsWrap.className = "escape-halfling-retry-cards";
-
-		const skipBtn = document.createElement("button");
-		skipBtn.className = "escape-halfling-retry-skip-btn";
-		skipBtn.textContent = "Не использовать способность";
-
-		const sendDecision = (useAbility, cardId = "") => {
-			socket.emit("message", {
-				method: "EscapeHalflingRetryDecision",
-				seat: localSeat,
-				useAbility,
-				cardId,
-			});
-			hideEscapeHalflingRetryModal();
-		};
-
-		if (!cards.length) {
-			const empty = document.createElement("div");
-			empty.className = "escape-halfling-retry-empty";
-			empty.textContent = "Нет карт для сброса";
-			cardsWrap.appendChild(empty);
-		} else {
-			cards.forEach((card) => {
-				const cardBtn = document.createElement("button");
-				cardBtn.type = "button";
-				cardBtn.className = "escape-halfling-retry-card";
-				const img = document.createElement("img");
-				img.src = card.img;
-				img.alt = card.cardId;
-				img.className = "escape-halfling-retry-card-img";
-				cardBtn.appendChild(img);
-				cardBtn.addEventListener("click", () => {
-					sendDecision(true, card.cardId);
-				});
-				cardsWrap.appendChild(cardBtn);
-			});
-		}
-
-		skipBtn.addEventListener("click", () => sendDecision(false));
-
-		panel.appendChild(title);
-		panel.appendChild(cardsWrap);
-		panel.appendChild(skipBtn);
-		modal.appendChild(panel);
-		document.body.appendChild(modal);
-
-		modal.addEventListener("click", (event) => {
-			if (event.target === modal) {
-				sendDecision(false);
-			}
-		});
+		openHalflingRetryModalNow(response.seat);
 	}
 	if (response.method === "EscapeHalflingRetryDecision") {
 		if (localSeat !== escapeOwnerSeat) {
 			return;
 		}
 		const seat = parseInt(response.seat, 10);
-		if (Number.isNaN(seat) || seat !== escapeCurrentSeat || !escapeHalflingRetryPending) {
+		if (Number.isNaN(seat) || seat !== escapeCurrentSeat) {
 			return;
 		}
+		let pendingPayload = escapeHalflingRetryPending;
+		if (!pendingPayload && escapeFailAidPending && Number(escapeFailAidPending.seat) === Number(seat) && escapeFailAidPending.payload) {
+			pendingPayload = escapeFailAidPending.payload;
+		}
+		if (!pendingPayload) {
+			return;
+		}
+
+		const clearEscapePendingForSeat = () => {
+			escapeHalflingRetryPending = null;
+			if (escapeFailAidPending && Number(escapeFailAidPending.seat) === Number(seat)) {
+				escapeFailAidPending = null;
+			}
+		};
 
 		const useAbility = Boolean(response.useAbility);
 		const cardId = response.cardId;
 		if (!useAbility) {
-			const failedPayload = { ...escapeHalflingRetryPending };
-			escapeHalflingRetryPending = null;
+			const failedPayload = { ...pendingPayload };
+			clearEscapePendingForSeat();
 			emitEscapeRollResultAndAdvance(failedPayload);
 			return;
 		}
 
 		if (!cardId) {
-			const failedPayload = { ...escapeHalflingRetryPending };
-			escapeHalflingRetryPending = null;
+			const failedPayload = { ...pendingPayload };
+			clearEscapePendingForSeat();
 			emitEscapeRollResultAndAdvance(failedPayload);
 			return;
 		}
 
+		clearEscapePendingForSeat();
 		socket.emit("message", {
 			method: "HalflingEscapeDiscard",
 			cardId,
+			seat,
 		});
-		escapeHalflingRetryPending = null;
 		escapeWaitingForRoll = true;
 		escapeRollInProgress = false;
 		socket.emit("message", {
@@ -9037,7 +10338,13 @@ socket.on("message", response => {
 		});
 	}
 	if (response.method === "HalflingEscapeDiscard") {
-		moveCardToDiscardById(response.cardId);
+		const cid = String(response.cardId || "");
+		const seat = Number(response.seat);
+		if (cid.includes("treasure") && Number.isFinite(seat)) {
+			moveTreasureCardToDiscard(cid, { ownerSeat: seat });
+		} else if (cid) {
+			moveCardToDiscardById(cid);
+		}
 	}
 	if (response.method === "EscapeRollSubmit") {
 		const seat = parseInt(response.seat, 10);
@@ -9047,6 +10354,8 @@ socket.on("message", response => {
 		}
 	}
 	if (response.method === "EscapeRollResult") {
+		hideEscapeAidOptionsModal();
+		hideEscapeRatMonsterPickModal();
 		escapeWizardFlightPending = null;
 		hideWizardFlightModal();
 		updateWizardFlightUi();
@@ -9067,6 +10376,9 @@ socket.on("message", response => {
 		}
 	}
 	if (response.method === "EscapeSequenceFinished") {
+		hideEscapeAidOptionsModal();
+		hideEscapeRatMonsterPickModal();
+		hideInstantWallModal();
 		clearEscapeMonsterPickSession();
 		escapeActive = false;
 		escapeQueue = [];
@@ -9085,6 +10397,9 @@ socket.on("message", response => {
 		escapeHalflingRetryUsedForCurrentAttempt = false;
 		escapeHalflingRetryPending = null;
 		escapeWizardFlightPending = null;
+		escapeInstantWallGate = null;
+		escapeInstantWallOfferPending = null;
+		escapeInstantWallAutoSeats = new Set();
 		hideWizardFlightModal();
 		hideEscapeMonsterPicker();
 		hideEscapeHalflingRetryModal();
@@ -9398,6 +10713,102 @@ socket.on("message", response => {
 		setupMunchkinDiceAfterGameStart();
 
 	}
+	if (response.method === "EscapeRatOnStickApply") {
+		applyEscapeRatOnStickFromNetwork({
+			ratCardId: response.ratCardId,
+			monsterCardId: response.monsterCardId,
+			actingSeat: response.actingSeat,
+		});
+	}
+	if (response.method === "InstantWallHelperPrompt") {
+		const helperSeat = Number(response.helperSeat);
+		const loserSeat = Number(response.loserSeat);
+		if (!Number.isFinite(helperSeat) || !Number.isFinite(loserSeat)) {
+			return;
+		}
+		// Окно должно открыться у помощника ДО начала смывки лидера.
+		if (Number(localSeat) !== helperSeat) {
+			return;
+		}
+		openInstantWallPickModal({
+			title: "Instant wall: применить стенку мгновенку?",
+			seat: helperSeat,
+			onPick: (cardId) => {
+				socket.emit("message", { method: "InstantWallHelperDecision", helperSeat, loserSeat, used: true, cardId });
+			},
+			onSkip: () => {
+				socket.emit("message", { method: "InstantWallHelperDecision", helperSeat, loserSeat, used: false, cardId: null });
+			},
+		});
+	}
+	if (response.method === "InstantWallHelperDecision") {
+		hideInstantWallModal();
+		const helperSeat = Number(response.helperSeat);
+		const loserSeat = Number(response.loserSeat);
+		const used = Boolean(response.used);
+		const cardId = response.cardId ? String(response.cardId) : "";
+		if (used && cardId) {
+			moveTreasureCardToDiscard(cardId, { ownerSeat: helperSeat });
+		}
+		// Продолжение смывки контролирует владелец очереди.
+		if (Number(localSeat) === Number(escapeOwnerSeat) && escapeInstantWallGate && Number(escapeInstantWallGate.helperSeat) === helperSeat) {
+			escapeInstantWallGate = null;
+			if (!used) {
+				runNextEscapeAttemptAndBroadcast();
+			} else {
+				escapeInstantWallOfferPending = { helperSeat, loserSeat };
+				socket.emit("message", { method: "InstantWallOffer", fromSeat: helperSeat, toSeat: loserSeat });
+			}
+		}
+	}
+	if (response.method === "InstantWallUse") {
+		const cardId = response.cardId ? String(response.cardId) : "";
+		const actingSeat = Number(response.actingSeat);
+		if (cardId && Number.isFinite(actingSeat)) {
+			moveTreasureCardToDiscard(cardId, { ownerSeat: actingSeat });
+		}
+		// Владелец очереди предлагает второму игроку (если он есть) уйти тоже, иначе просто заканчиваем/двигаем очередь.
+		if (Number(localSeat) === Number(escapeOwnerSeat) && escapeActive && Number.isFinite(actingSeat)) {
+			const otherSeat = (Array.isArray(escapeQueue) ? escapeQueue : []).find((s) => Number(s) !== Number(actingSeat));
+			if (otherSeat != null && Number.isFinite(Number(otherSeat))) {
+				socket.emit("message", { method: "InstantWallOffer", fromSeat: actingSeat, toSeat: Number(otherSeat) });
+			} else {
+				finishEscapeSequenceAndBroadcast();
+			}
+		}
+	}
+	if (response.method === "InstantWallOffer") {
+		const fromSeat = Number(response.fromSeat);
+		const toSeat = Number(response.toSeat);
+		if (!Number.isFinite(fromSeat) || !Number.isFinite(toSeat)) {
+			return;
+		}
+		if (Number(localSeat) !== Number(toSeat)) {
+			return;
+		}
+		openInstantWallOfferModal({ fromSeat, toSeat });
+	}
+	if (response.method === "InstantWallOfferDecision") {
+		hideInstantWallModal();
+		const fromSeat = Number(response.fromSeat);
+		const toSeat = Number(response.toSeat);
+		const accept = Boolean(response.accept);
+		if (!Number.isFinite(fromSeat) || !Number.isFinite(toSeat)) {
+			return;
+		}
+		// Решение применяет владелец очереди смывки.
+		if (Number(localSeat) === Number(escapeOwnerSeat) && escapeActive) {
+			if (accept) {
+				finishEscapeSequenceAndBroadcast();
+				return;
+			}
+			// Лидер отказался: помощник всё равно должен смыться автоматически, но на СВОЕЙ очереди (без кубика).
+			try {
+				escapeInstantWallAutoSeats?.add?.(Number(fromSeat));
+			} catch {}
+			runNextEscapeAttemptAndBroadcast();
+		}
+	}
 	if (response.method === "MateTestDeal") {
 		const seat = parseInt(response.seat, 10);
 		const cardId = String(response.cardId || "");
@@ -9549,7 +10960,8 @@ const treasure21 = new Card_treasure("treasure21", "",  "../img/treasure1/card01
 const treasure22 = new Card_treasure("treasure22", "",  "../img/treasure1/card0117.png", "../img/treasure1/cardBack_Treasure.png", 2, 400, 0, 1, 0, 0);
 const treasure23 = new Card_treasure("treasure23", "",  "../img/treasure1/card0118.png", "../img/treasure1/cardBack_Treasure.png", 5, 800, 0, 1, 0, 0, 0, 0, "", 0, [{ mode: "only", kind: ["Wizard"] }]);
 const treasure24 = new Card_treasure("treasure24", "",  "../img/treasure1/card0119.png", "../img/treasure1/cardBack_Treasure.png", 0, 300, 0, 1, 0, 0, 1, 0, "", 3);
-const treasure25 = new Card_treasure("treasure25", "",  "../img/treasure1/card0120.png", "../img/treasure1/cardBack_Treasure.png", 1, 0, 0, 1, 0, 0);
+// Не oneTime: иначе в основной экипировке сила обнуляется (см. updateCharacterStatesFromBoard). Сброс — только эффект карты.
+const treasure25 = new Card_treasure("treasure25", "Rat on a stick", "../img/treasure1/card0120.png", "../img/treasure1/cardBack_Treasure.png", 1, 0, 0, 1, 0, 0, 0, 0, "Rat on a stick", 0, null, false);
 const treasure26 = new Card_treasure("treasure26", "",  "../img/treasure1/card0121.png", "../img/treasure1/cardBack_Treasure.png", 3, 600, 0, 2, 0, 0, 1);
 const treasure27 = new Card_treasure("treasure27", "",  "../img/treasure1/card0122.png", "../img/treasure1/cardBack_Treasure.png", 4, 800, 0, 2, 0, 0, 0, 0, "", 0, [{ mode: "only", race: ["Elf"] }]);
 const treasure28 = new Card_treasure("treasure28", "",  "../img/treasure1/card0123.png", "../img/treasure1/cardBack_Treasure.png", 3, 0, 0, 2, 0, 0, 1);
@@ -9565,10 +10977,12 @@ const treasure37 = new Card_treasure("treasure37", "",  "../img/treasure1/card01
 const treasure38 = new Card_treasure("treasure38", "",  "../img/treasure1/card0133.png", "../img/treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
 const treasure39 = new Card_treasure("treasure39", "",  "../img/treasure1/card0134.png", "../img/treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
 const treasure40 = new Card_treasure("treasure40", "",  "../img/treasure1/card0135.png", "../img/treasure1/cardBack_Treasure.png", 1, 0, 0, 0, 0, 0, 0, 0, "Hireling", 0, null);
-const treasure41 = new Card_treasure("treasure41", "",  "../img/treasure1/card0136.png", "../img/treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+// card0136: Instant wall — позволяет автоматически смыться от всех монстров в бою (одному или двум игрокам).
+const treasure41 = new Card_treasure("treasure41", "Instant wall",  "../img/treasure1/card0136.png", "../img/treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "Instant wall", 0, null, true);
 const treasure42 = new Card_treasure("treasure42", "",  "../img/treasure1/card0137.png", "../img/treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure43 = new Card_treasure("treasure43", "",  "../img/treasure1/card0138.png", "../img/treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0, 0, 0, "", 0, null, true);
-const treasure44 = new Card_treasure("treasure44", "",  "../img/treasure1/card0139.png", "../img/treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+// card0139: Loaded die — читерский кубик (меняет результат броска после того как он выпал).
+const treasure44 = new Card_treasure("treasure44", "Loaded die",  "../img/treasure1/card0139.png", "../img/treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "Loaded die", 0, null, true);
 const treasure45 = new Card_treasure("treasure45", "Magic lamp",  "../img/treasure1/card0140.png", "../img/treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0, 0, 0, "Magic lamp", 0, null, true);
 const treasure46 = new Card_treasure("treasure46", "Wand of dowsing", "../img/treasure1/card0141.png", "../img/treasure1/cardBack_Treasure.png", 0, 1100, 0, 0, 0, 0, 0, 0, "Wand of dowsing", 0, null, true);
 const treasure47 = new Card_treasure("treasure47", "Doppleganger", "../img/treasure1/card0142.png", "../img/treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "Doppleganger", 0, null, true);
@@ -9579,7 +10993,8 @@ const treasure51 = new Card_treasure("treasure51", "",  "../img/treasure1/card01
 const treasure52 = new Card_treasure("treasure52", "",  "../img/treasure1/card0147.png", "../img/treasure1/cardBack_Treasure.png", 3, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure53 = new Card_treasure("treasure53", "",  "../img/treasure1/card0148.png", "../img/treasure1/cardBack_Treasure.png", 3, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure54 = new Card_treasure("treasure54", "",  "../img/treasure1/card0149.png", "../img/treasure1/cardBack_Treasure.png", 2, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
-const treasure55 = new Card_treasure("treasure55", "",  "../img/treasure1/card0150.png", "../img/treasure1/cardBack_Treasure.png", 0, 200, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+// card0150: зелье невидимости — после провала смывки можно автоматически смыться от текущего монстра.
+const treasure55 = new Card_treasure("treasure55", "Invisibility potion", "../img/treasure1/card0150.png", "../img/treasure1/cardBack_Treasure.png", 0, 200, 0, 0, 0, 0, 0, 0, "Invisibility potion", 0, null, true);
 const treasure56 = new Card_treasure("treasure56", "",  "../img/treasure1/card0151.png", "../img/treasure1/cardBack_Treasure.png", 5, 200, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure57 = new Card_treasure("treasure57", "Pollymorth Potion",  "../img/treasure1/card0152.png", "../img/treasure1/cardBack_Treasure.png", 0, 1300, 0, 0, 0, 0, 0, 0, "Pollymorth Potion", 0, null, true);
 const treasure58 = new Card_treasure("treasure58", "Transferral potion", "../img/treasure1/card0153.png", "../img/treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "Transferral potion", 0, null, true);

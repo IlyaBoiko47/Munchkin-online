@@ -1115,6 +1115,11 @@ a{
 	border-color: rgba(255, 255, 255, 0.4);
 }
 
+.escape-halfling-retry-card.is-selected {
+	border-color: #8fd2ff;
+	box-shadow: 0 0 0 3px rgba(143, 210, 255, 0.32);
+}
+
 .escape-halfling-retry-card-img {
 	width: 100%;
 	max-width: 146px;
