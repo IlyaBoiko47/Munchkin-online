@@ -1274,6 +1274,26 @@ a{
 	z-index: 100002;
 }
 
+/* Плашка «соперник решает по тюбику клея» — держим поверх стола, пока не придёт EscapeGlueClose */
+.escape-glue-waiting-banner {
+	position: fixed;
+	left: 50%;
+	transform: translateX(-50%);
+	top: 12px;
+	z-index: 100003;
+	max-width: min(92vw, 720px);
+	padding: 12px 18px;
+	font-size: 22px;
+	line-height: 1.25;
+	text-align: center;
+	color: #fff;
+	background: rgba(20, 22, 30, 0.95);
+	border: 2px solid rgba(255, 196, 86, 0.55);
+	border-radius: 12px;
+	box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+	pointer-events: none;
+}
+
 .wizard-taming-panel,
 .wizard-taming-pick-panel {
 	width: min(92vw, 1200px);

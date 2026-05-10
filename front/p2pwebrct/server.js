@@ -221,27 +221,6 @@ io.on('connection', socket => {
           io.to(roomID).emit("message", { method: "moveCard", cardId, targetId: null, zoneId, fromZoneId: "zone_treasure" });
         }
 
-        // Тестовая раздача: Loaded die в руку игроку на месте 0.
-        const testSeat = 0;
-        const testHand = handZoneIdForSeatInRoom(roomID, testSeat);
-        const testCards = [
-          { id: "treasure44", from: "zone_treasure" },
-        ];
-        testCards.forEach(({ id, from }) => {
-          const cid = String(id || "");
-          if (!cid) return;
-          const prev = state.cards[cid];
-          const fromZoneId = prev?.zoneId ? String(prev.zoneId) : from;
-          state.cards[cid] = { zoneId: testHand, targetId: null };
-          io.to(roomID).emit("message", {
-            method: "moveCard",
-            cardId: cid,
-            targetId: null,
-            zoneId: testHand,
-            fromZoneId: fromZoneId,
-          });
-        });
-
         roomStates.set(roomID, state);
         shareRoomsInfo();
       }
@@ -296,15 +275,23 @@ io.on('connection', socket => {
       "EscapeFailAidPrompt",
       "EscapeFailAidSkip",
       "InstantWallHelperPrompt",
+      "InstantWallHelperWaiting",
+      "InstantWallSoloAidWaiting",
+      "InstantWallSoloAidClose",
       "InstantWallHelperDecision",
       "InstantWallUse",
       "InstantWallOffer",
+      "InstantWallOfferWaiting",
       "InstantWallOfferDecision",
       "EscapeRollResult",
       "EscapeOwnerTransfer",
       "EscapeHalflingRetryPrompt",
       "EscapeHalflingRetryDecision",
       "HalflingEscapeDiscard",
+      "EscapeGluePrompt",
+      "EscapeGlueWaiting",
+      "EscapeGlueDecision",
+      "EscapeGlueClose",
       "WizardFlightApply",
       "WizardTamingApply",
       "WarriorFrenzyApply",
@@ -545,6 +532,12 @@ io.on('connection', socket => {
     if (moveData.method === "LoadedDieDiscard") {
       const cid = String(moveData.cardId || '').trim();
       if (cid) patchRoomDiscards(roomID, [cid]);
+    }
+
+    if (moveData.method === "EscapeGlueDecision") {
+      const used = Boolean(moveData.used);
+      const cid = String(moveData.cardId || '').trim();
+      if (used && cid) patchRoomDiscards(roomID, [cid]);
     }
 
     if (moveData.method === "InstantWallHelperDecision") {

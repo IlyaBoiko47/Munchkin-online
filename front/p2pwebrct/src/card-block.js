@@ -1,5 +1,5 @@
 import { UpdateZones } from './увеличение карточек во время игры.js';
-import { UpdatebackImgTreasure, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, scheduleWanderingMonsterIfNeeded, scheduleCheatIfNeeded, scheduleMagicLampIfNeeded, schedulePollymorthPotionIfNeeded, scheduleIllusionIfNeeded, scheduleMateIfNeeded, canLocalPlayMagicLampToBattleZone, canPlaceTreasureInPlayerEquipment, canPlaceDoorInPlayerEquipment, canPlaceDopplegangerTreasureInBonusZone, getLocalSeatForSocket } from './game.js';
+import { UpdatebackImgTreasure, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, scheduleWanderingMonsterIfNeeded, scheduleCheatIfNeeded, scheduleMagicLampIfNeeded, schedulePollymorthPotionIfNeeded, scheduleIllusionIfNeeded, scheduleMateIfNeeded, canLocalPlayMagicLampToBattleZone, canPlaceTreasureInPlayerEquipment, canPlaceDoorInPlayerEquipment, canPlaceDopplegangerTreasureInBonusZone, canPlaceYuppieWaterTreasureInBonusZone, getLocalSeatForSocket } from './game.js';
 import { UpdatebackImgDoor } from './game.js';
 import socket from './socket/index.js';
 //import {socket} from './game.js';
@@ -104,9 +104,10 @@ function dragend_handler(e) {
 		const invalidMonsterToBattle = currentDrag && zone && !canPlaceCardIntoMonsterBattleZone(currentDrag, zone);
 		const invalidMagicLampToBattle = currentDrag && zone && !canPlaceMagicLampIntoBattleZone(currentDrag, zone);
 		const invalidDopplegangerBonus = currentDrag && zone && !canPlaceDopplegangerTreasureInBonusZone(currentDrag, zone);
+		const invalidYuppieWaterBonus = currentDrag && zone && !canPlaceYuppieWaterTreasureInBonusZone(currentDrag, zone);
 
 		// Если перенос в последнюю зону был невалиден — откатываем.
-		if (invalidTreasureEquip || invalidDoorEquip || invalidMonsterToBattle || invalidMagicLampToBattle || invalidDopplegangerBonus) {
+		if (invalidTreasureEquip || invalidDoorEquip || invalidMonsterToBattle || invalidMagicLampToBattle || invalidDopplegangerBonus || invalidYuppieWaterBonus) {
 			dragFromSnapshot.parent.insertBefore(currentDrag, dragFromSnapshot.next);
 			currentDrag.style.filter = '';
 		} else {
@@ -312,7 +313,8 @@ function dragover_handler(e) {
 	const invalidMonsterToBattle = currentDrag && zone && !canPlaceCardIntoMonsterBattleZone(currentDrag, zone);
 	const invalidMagicLampToBattle = currentDrag && zone && !canPlaceMagicLampIntoBattleZone(currentDrag, zone);
 	const invalidDopplegangerBonus = currentDrag && zone && !canPlaceDopplegangerTreasureInBonusZone(currentDrag, zone);
-	if (invalidTreasureEquip || invalidDoorEquip || invalidMonsterToBattle || invalidMagicLampToBattle || invalidDopplegangerBonus) {
+	const invalidYuppieWaterBonus = currentDrag && zone && !canPlaceYuppieWaterTreasureInBonusZone(currentDrag, zone);
+	if (invalidTreasureEquip || invalidDoorEquip || invalidMonsterToBattle || invalidMagicLampToBattle || invalidDopplegangerBonus || invalidYuppieWaterBonus) {
 		if (currentDrag) {
 			currentDrag.style.filter = invalidMonsterToBattle ? INVALID_MONSTER_TO_BATTLE_FILTER : INVALID_TREASURE_EQUIPMENT_FILTER;
 		}
@@ -334,7 +336,8 @@ function drop_handler(e) {
   const invalidMonsterToBattle = currentDrag && zone && !canPlaceCardIntoMonsterBattleZone(currentDrag, zone);
   const invalidMagicLampToBattle = currentDrag && zone && !canPlaceMagicLampIntoBattleZone(currentDrag, zone);
   const invalidDopplegangerBonus = currentDrag && zone && !canPlaceDopplegangerTreasureInBonusZone(currentDrag, zone);
-  if (currentDrag && zone && (invalidTreasureEquip || invalidDoorEquip || invalidMonsterToBattle || invalidMagicLampToBattle || invalidDopplegangerBonus) && dragFromSnapshot?.parent) {
+  const invalidYuppieWaterBonus = currentDrag && zone && !canPlaceYuppieWaterTreasureInBonusZone(currentDrag, zone);
+  if (currentDrag && zone && (invalidTreasureEquip || invalidDoorEquip || invalidMonsterToBattle || invalidMagicLampToBattle || invalidDopplegangerBonus || invalidYuppieWaterBonus) && dragFromSnapshot?.parent) {
 	dragFromSnapshot.parent.insertBefore(currentDrag, dragFromSnapshot.next);
 	if (currentDrag) {
 		currentDrag.style.filter = '';

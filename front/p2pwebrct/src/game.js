@@ -192,8 +192,11 @@ let escapeWizardFlightPending = null;
 // Instant wall: приоритет помощника и предложение лидеру.
 let escapeInstantWallGate = null; // { helperSeat, loserSeat } пока ждём решения помощника перед стартом смывки
 let escapeInstantWallOfferPending = null; // { helperSeat, loserSeat } пока ждём ответа лидера (принять стенку или нет)
+let instantWallSoloAidWaitingEmitted = false; // ждали рассылку InstantWallSoloAidWaiting (aid с опцией стенки) — чтобы при закрытии aid ушёл InstantWallSoloAidClose
 let escapeInstantWallAutoSeats = new Set(); // места, которые будут смываться автоматически (без кубика) от всех монстров
 let escapeFailAidPending = null; // { seat, payload, attemptNumber } ждём решения игрока по помощи после провала смывки
+let escapeGluePromptState = null; // только у владельца очереди: { key, escapedSeat, wallFleeSeats?, monsterCardId, pending: Set<number>, resolved: boolean, viaInstantWall: boolean, finishAfter: boolean }
+let escapeGlueWaitingKey = null; // key опроса клея, для показа статуса "игрок решает" на всех клиентах
 /** Пока ждём выбор монстра для смывки (EscapeMonsterPickStart); нужен для restore после F5. */
 let escapeMonsterPickSession = null;
 let sellTreasuresDelegated = false;
@@ -3473,6 +3476,77 @@ function applyWizardTaming(seat, handCardIds, monsterCardId) {
 	updateTurnActionButtons(false);
 }
 
+/** Сколько мест за столом участвуют в опросе (тюбик клея и т.п.). Нельзя брать Math.min(num, characterBySeat.length): длина массива часто 0 до инициализации UI. */
+function getRoomSeatCountForGluePrompts() {
+	const n = Number(num);
+	if (Number.isFinite(n) && n > 0) {
+		return n;
+	}
+	const len = Array.isArray(characterBySeat) ? characterBySeat.length : 0;
+	if (len > 0) {
+		return len;
+	}
+	const qLen = Array.isArray(escapeQueue) ? escapeQueue.length : 0;
+	return qLen > 0 ? qLen : 1;
+}
+
+/**
+ * Только у владельца очереди смывки: рассылает EscapeGluePrompt и держит escapeGluePromptState.
+ * @returns {boolean} true если опрос клея запущен.
+ */
+function startEscapeGluePromptFromOwner({ escapedSeat, monsterCardId, viaInstantWall, finishAfter, wallFleeSeats }) {
+	if (Number(localSeat) !== Number(escapeOwnerSeat) || !escapeActive) {
+		return false;
+	}
+	const es = Number(escapedSeat);
+	if (!Number.isFinite(es)) {
+		return false;
+	}
+	const viaWall = Boolean(viaInstantWall);
+	let mon = String(monsterCardId || "").trim();
+	if (!mon) {
+		mon = String(escapeCurrentMonsterCardId || (escapeMonsterTemplateQueue?.[0]?.cardId) || "").trim();
+	}
+	if (!mon && viaWall) {
+		mon = "__instant_wall__";
+	}
+	if (!mon) {
+		return false;
+	}
+	const wallFleeArr = (Array.isArray(wallFleeSeats) ? wallFleeSeats : [])
+		.map((x) => Number(x))
+		.filter((x) => Number.isFinite(x));
+	const wallFleeUnique = Array.from(new Set(wallFleeArr.length ? wallFleeArr : [es]));
+	const wallFleeSet = new Set(wallFleeUnique);
+	const key = `${Date.now()}-${wallFleeUnique.join("-")}-${mon}`;
+	const pending = new Set();
+	const maxSeat = getRoomSeatCountForGluePrompts();
+	for (let s = 0; s < maxSeat; s += 1) {
+		if (!wallFleeSet.has(Number(s))) {
+			pending.add(Number(s));
+		}
+	}
+	escapeGluePromptState = {
+		key,
+		escapedSeat: es,
+		wallFleeSeats: wallFleeUnique,
+		monsterCardId: mon,
+		pending,
+		resolved: false,
+		viaInstantWall: viaWall,
+		finishAfter: Boolean(finishAfter),
+	};
+	socket.emit("message", {
+		method: "EscapeGluePrompt",
+		key,
+		escapedSeat: es,
+		monsterCardId: mon,
+		viaInstantWall: viaWall,
+		wallFleeSeats: wallFleeUnique,
+	});
+	return true;
+}
+
 function emitEscapeRollResultAndAdvance(payload) {
 	// Важно: продвигать очередь смывки и публиковать результат должен только владелец очереди.
 	if (Number(localSeat) !== Number(escapeOwnerSeat)) {
@@ -3530,6 +3604,25 @@ function emitEscapeRollResultAndAdvance(payload) {
 			}
 		}
 		// Не продвигаем очередь смывки для умершего.
+		return;
+	}
+
+	// Flask of glue: после успешной смывки ждём ответов игроков (без таймера), прежде чем продолжать смывку.
+	if (payload?.escaped) {
+		const escapedSeat = Number(payload.seat);
+		const viaInstantWall = Boolean(payload.viaInstantWall);
+		const monInput = String(payload.monsterCardId || "").trim();
+		if (!startEscapeGluePromptFromOwner({
+			escapedSeat,
+			monsterCardId: monInput,
+			viaInstantWall,
+			finishAfter: false,
+			wallFleeSeats: [escapedSeat],
+		})) {
+			setTimeout(() => {
+				runNextEscapeAttemptAndBroadcast();
+			}, 1200);
+		}
 		return;
 	}
 
@@ -5151,9 +5244,16 @@ function hideEscapeMonsterPicker() {
 }
 
 function hideEscapeAidOptionsModal() {
+	const had = Boolean(document.getElementById("escape-aid-options-modal"));
+	const soloClose = had && instantWallSoloAidWaitingEmitted;
+	instantWallSoloAidWaitingEmitted = false;
+	removeInstantWallSoloAidWaitingBanner();
 	const a = document.getElementById("escape-aid-options-modal");
 	if (a) {
 		a.remove();
+	}
+	if (soloClose && typeof socket !== "undefined" && socket && typeof socket.emit === "function") {
+		socket.emit("message", { method: "InstantWallSoloAidClose" });
 	}
 }
 
@@ -5169,6 +5269,89 @@ function hideEscapeRatMonsterPickModal() {
 	if (m) {
 		m.remove();
 	}
+}
+
+const INSTANT_WALL_OFFER_WAITING_ID = "instant-wall-offer-waiting-banner";
+const INSTANT_WALL_HELPER_WAITING_ID = "instant-wall-helper-waiting-banner";
+const INSTANT_WALL_SOLO_AID_WAITING_ID = "instant-wall-solo-aid-waiting-banner";
+
+function removeInstantWallSoloAidWaitingBanner() {
+	const el = document.getElementById(INSTANT_WALL_SOLO_AID_WAITING_ID);
+	if (el) {
+		el.remove();
+	}
+}
+
+function removeInstantWallHelperWaitingBanner() {
+	const el = document.getElementById(INSTANT_WALL_HELPER_WAITING_ID);
+	if (el) {
+		el.remove();
+	}
+}
+
+function removeInstantWallOfferWaitingBanner() {
+	const el = document.getElementById(INSTANT_WALL_OFFER_WAITING_ID);
+	if (el) {
+		el.remove();
+	}
+}
+
+function removeInstantWallWaitingBanners() {
+	removeInstantWallHelperWaitingBanner();
+	removeInstantWallOfferWaitingBanner();
+}
+
+/** Сравнение места: Number(null)===0, поэтому без проверки null «помощник 0» ломал плашки для части клиентов. */
+function localSeatMatchesSeat(seat) {
+	if (localSeat == null || localSeat === "") {
+		return false;
+	}
+	return Number(localSeat) === Number(seat);
+}
+
+/** Союзник решает, воспользоваться ли стенкой для авто-смывки (модалка у toSeat). */
+function showInstantWallOfferWaitingBanner(fromSeat, toSeat) {
+	removeInstantWallHelperWaitingBanner();
+	const fs = Number(fromSeat);
+	const ts = Number(toSeat);
+	if (!Number.isFinite(fs) || !Number.isFinite(ts)) {
+		return;
+	}
+	const bar = document.createElement("div");
+	bar.id = INSTANT_WALL_OFFER_WAITING_ID;
+	bar.className = "escape-glue-waiting-banner instant-wall-waiting-banner";
+	bar.setAttribute("role", "status");
+	bar.textContent = `${getSeatLabel(ts)} решает, воспользоваться ли мгновенной стенкой для автоматической смывки.`;
+	document.body.appendChild(bar);
+}
+
+/** Помощник решает, применять ли стенку до начала смывки лидера. */
+function showInstantWallHelperWaitingBanner(helperSeat) {
+	removeInstantWallOfferWaitingBanner();
+	const hs = Number(helperSeat);
+	if (!Number.isFinite(hs)) {
+		return;
+	}
+	const bar = document.createElement("div");
+	bar.id = INSTANT_WALL_HELPER_WAITING_ID;
+	bar.className = "escape-glue-waiting-banner instant-wall-waiting-banner";
+	bar.setAttribute("role", "status");
+	bar.textContent = `${getSeatLabel(hs)} решает, применять ли мгновенную стенку перед смывкой.`;
+	document.body.appendChild(bar);
+}
+
+function showInstantWallSoloAidWaitingBanner(deciderSeat) {
+	removeInstantWallSoloAidWaitingBanner();
+	const ds = Number(deciderSeat);
+	if (!Number.isFinite(ds)) {
+		return;
+	}
+	const bar = document.createElement("div");
+	bar.id = INSTANT_WALL_SOLO_AID_WAITING_ID;
+	bar.className = "escape-glue-waiting-banner instant-wall-waiting-banner";
+	bar.setAttribute("role", "status");
+	bar.textContent = `${getSeatLabel(ds)} решает, использовать ли карту «Мгновенная стенка».`;
+	document.body.appendChild(bar);
 }
 
 function hideInstantWallModal() {
@@ -5205,6 +5388,150 @@ function getLoadedDieTreasureCardIdsForSeat(seat) {
 		});
 	});
 	return out;
+}
+
+function hideFlaskOfGlueModal() {
+	const m = document.getElementById("flask-glue-modal");
+	if (m) {
+		m.remove();
+	}
+}
+
+const ESCAPE_GLUE_WAITING_BANNER_ID = "escape-glue-waiting-banner";
+
+function removeEscapeGlueWaitingBanner() {
+	const el = document.getElementById(ESCAPE_GLUE_WAITING_BANNER_ID);
+	if (el) {
+		el.remove();
+	}
+}
+
+/** Плашка для соперников: кто-то с открытой модалкой клея принимает решение. У игрока с модалкой не показываем. */
+function showEscapeGlueWaitingBanner(key, actingSeat) {
+	const k = String(key || "");
+	const act = Number(actingSeat);
+	if (!k || !Number.isFinite(act)) {
+		return;
+	}
+	removeEscapeGlueWaitingBanner();
+	escapeGlueWaitingKey = k;
+	const bar = document.createElement("div");
+	bar.id = ESCAPE_GLUE_WAITING_BANNER_ID;
+	bar.className = "escape-glue-waiting-banner";
+	bar.setAttribute("role", "status");
+	bar.textContent = `${getSeatLabel(act)} решает, использовать ли тюбик клея.`;
+	document.body.appendChild(bar);
+}
+
+function getFlaskOfGlueTreasureCardIdsForSeat(seat) {
+	const s = Number(seat);
+	if (!Number.isFinite(s) || s < 0) {
+		return [];
+	}
+	const out = [];
+	const seen = new Set();
+	const hand = getHandElementForPlayerSeat(s);
+	const { main, side } = getMainAndSideZoneElementsForSeat(s);
+	[hand, main, side].forEach((zoneEl) => {
+		if (!zoneEl) return;
+		zoneEl.querySelectorAll(".card").forEach((cardEl) => {
+			const cid = String(cardEl?.id || "");
+			if (!cid || !cid.includes("treasure") || seen.has(cid)) return;
+			if (!isTreasureSpecial(cid, "Flask of glue")) return;
+			seen.add(cid);
+			out.push(cid);
+		});
+	});
+	return out;
+}
+
+function openFlaskOfGlueConfirmModal({ promptKey, escapedSeat, monsterCardId, viaInstantWall, wallFleeSeats }) {
+	const escaped = Number(escapedSeat);
+	const mon = String(monsterCardId || "");
+	const viaWall = Boolean(viaInstantWall);
+	if (!Number.isFinite(escaped) || (!mon && !viaWall)) {
+		return;
+	}
+	const wallFleeUnique = Array.from(
+		new Set(
+			(Array.isArray(wallFleeSeats) ? wallFleeSeats : [])
+				.map((x) => Number(x))
+				.filter((x) => Number.isFinite(x)),
+		),
+	);
+	const wallFleeSet = new Set(wallFleeUnique.length ? wallFleeUnique : [escaped]);
+	// Жертвы смывки по стенке не выбирают применение клея (клей играет соперник).
+	if (wallFleeSet.has(Number(localSeat))) {
+		return;
+	}
+	const ids = getFlaskOfGlueTreasureCardIdsForSeat(localSeat);
+	if (!ids.length) {
+		return;
+	}
+	hideFlaskOfGlueModal();
+	const glueId = ids[0];
+	const tr = window.treasures?.find((t) => t.name === glueId);
+	const modal = document.createElement("div");
+	modal.id = "flask-glue-modal";
+	modal.className = "wizard-taming-pick-modal";
+	const panel = document.createElement("div");
+	panel.className = "wizard-taming-pick-panel";
+	const title = document.createElement("div");
+	title.className = "wizard-taming-pick-title";
+	const names = Array.from(wallFleeSet)
+		.sort((a, b) => a - b)
+		.map((s) => getSeatLabel(s))
+		.join(" и ");
+	const succ =
+		wallFleeSet.size > 1
+			? `${names} успешно смылись.`
+			: `${getSeatLabel(escaped)} успешно смылся.`;
+	title.textContent = `${succ} Использовать тюбик клея, чтобы снова смываться${viaWall ? ". После стенки — от всех монстров" : ""}?`;
+	const cardImg = document.createElement("img");
+	cardImg.className = "wizard-taming-pick-card-img";
+	cardImg.src = tr?.img || "";
+	cardImg.alt = glueId;
+	cardImg.style.display = "block";
+	cardImg.style.margin = "0 auto";
+	cardImg.style.maxWidth = "160px";
+	const yesBtn = document.createElement("button");
+	yesBtn.type = "button";
+	yesBtn.className = "wizard-taming-pick-apply-btn";
+	yesBtn.textContent = "Да, использовать";
+	const noBtn = document.createElement("button");
+	noBtn.type = "button";
+	noBtn.className = "wizard-taming-pick-apply-btn";
+	noBtn.textContent = "Нет";
+
+	const sendDecision = (used) => {
+		hideFlaskOfGlueModal();
+		socket.emit("message", {
+			method: "EscapeGlueDecision",
+			key: String(promptKey || ""),
+			used: Boolean(used),
+			actingSeat: Number(localSeat),
+			targetSeat: escaped,
+			monsterCardId: mon,
+			viaInstantWall: viaWall,
+			cardId: used ? glueId : null,
+			wallFleeSeats: Array.from(wallFleeSet),
+		});
+	};
+	yesBtn.addEventListener("click", () => sendDecision(true));
+	noBtn.addEventListener("click", () => sendDecision(false));
+
+	panel.appendChild(title);
+	panel.appendChild(cardImg);
+	panel.appendChild(yesBtn);
+	panel.appendChild(noBtn);
+	modal.appendChild(panel);
+	document.body.appendChild(modal);
+	modal.addEventListener("click", (e) => {
+		if (e.target === modal) {
+			sendDecision(false);
+		}
+	});
+	pushOpenModalsToServerDebounced();
 }
 
 function promptLoadedDieAfterRoll({ seat, rawRoll, onFinalize }) {
@@ -5348,6 +5675,7 @@ function getInstantWallCardIdsForSeat(seat) {
 }
 
 function openInstantWallPickModal({ title, seat, onPick, onSkip }) {
+	removeInstantWallWaitingBanners();
 	hideInstantWallModal();
 	const ids = getInstantWallCardIdsForSeat(seat);
 	if (!ids.length) {
@@ -5421,6 +5749,7 @@ function openInstantWallPickModal({ title, seat, onPick, onSkip }) {
 }
 
 function openInstantWallOfferModal({ fromSeat, toSeat }) {
+	removeInstantWallWaitingBanners();
 	hideInstantWallModal();
 	const modal = document.createElement("div");
 	modal.id = "instant-wall-modal";
@@ -5453,6 +5782,11 @@ function openInstantWallOfferModal({ fromSeat, toSeat }) {
 	panel.appendChild(noBtn);
 	modal.appendChild(panel);
 	document.body.appendChild(modal);
+	socket.emit("message", {
+		method: "InstantWallOfferWaiting",
+		fromSeat,
+		toSeat,
+	});
 	modal.addEventListener("click", (e) => {
 		if (e.target === modal) {
 			hideInstantWallModal();
@@ -6141,6 +6475,12 @@ function openEscapeAidOptionsModal() {
 	panel.appendChild(applyBtn);
 	modal.appendChild(panel);
 	document.body.appendChild(modal);
+	const hasWallAid = entries.some((e) => e && e.aidKind === "instant_wall");
+	// Плашку видят все, кроме смывающегося: и в соло, и когда в очереди 2+ игрока (лидер выбирает стенку из aid-модалки).
+	if (hasWallAid && Number.isFinite(Number(fleeSeat))) {
+		instantWallSoloAidWaitingEmitted = true;
+		socket.emit("message", { method: "InstantWallSoloAidWaiting", deciderSeat: Number(fleeSeat) });
+	}
 	modal.addEventListener("click", (e) => {
 		if (e.target === modal) {
 			hideEscapeAidOptionsModal();
@@ -6498,6 +6838,8 @@ function startEscapeSequenceAndBroadcast(loserSeat, helperSeat, monsterRemover) 
 	if (!Number.isNaN(parsedHelperSeat) && parsedHelperSeat !== parsedLoserSeat) {
 		escapeInstantWallGate = { helperSeat: parsedHelperSeat, loserSeat: parsedLoserSeat };
 		socket.emit("message", { method: "InstantWallHelperPrompt", helperSeat: parsedHelperSeat, loserSeat: parsedLoserSeat });
+		// Плашку «помощник решает» шлёт владелец очереди — так её получают все клиенты (в т.ч. второй участник боя).
+		socket.emit("message", { method: "InstantWallHelperWaiting", helperSeat: parsedHelperSeat, loserSeat: parsedLoserSeat });
 		return;
 	}
 	runNextEscapeAttemptAndBroadcast();
@@ -6670,6 +7012,7 @@ function recalculateMyBonusDisplay() {
 	let helpersBonusPower = 0;
 	let frenzyBonusPower = 0;
 	let exorcismBonusPower = 0;
+	let yuppieWaterBonusPower = 0;
 	const activeIsWarrior = String(characterBySeat[powerSeat]?.kind || "") === "Warrior";
 	const activeIsCleric = String(characterBySeat[powerSeat]?.kind || "") === "Cleric";
 	if (battleActive && powerSeat != null) {
@@ -6683,6 +7026,17 @@ function recalculateMyBonusDisplay() {
 		frenzyBonusPower += helperIsWarrior ? (Number(warriorFrenzyBonusBySeat[acceptedHelperSeat]) || 0) : 0;
 		exorcismBonusPower += helperIsCleric ? ((Number(clericExorcismBonusBySeat[acceptedHelperSeat]) || 0) * 3) : 0;
 	}
+	// Yuppie water в zone3: +2 каждому эльфу в этом бою.
+	if (battleActive && Boolean(document.querySelector(".zone3 #treasure51")) && powerSeat != null) {
+		let elfCount = 0;
+		if (seatHasRace(powerSeat, "Elf")) {
+			elfCount += 1;
+		}
+		if (acceptedHelperSeat !== null && seatHasRace(acceptedHelperSeat, "Elf")) {
+			elfCount += 1;
+		}
+		yuppieWaterBonusPower = 2 * elfCount;
+	}
 	let trimDebuffActive = 0;
 	let trimDebuffHelper = 0;
 	if (battleActive && powerSeat != null) {
@@ -6692,7 +7046,7 @@ function recalculateMyBonusDisplay() {
 		trimDebuffHelper = Number(thiefBackstabDebuffBySeat[acceptedHelperSeat]) || 0;
 	}
 	const myBonusValue = activeCombatPower + zone3CombatPower - trimDebuffActive
-		+ (helpersBonusPower - trimDebuffHelper) + frenzyBonusPower + exorcismBonusPower;
+		+ (helpersBonusPower - trimDebuffHelper) + frenzyBonusPower + exorcismBonusPower + yuppieWaterBonusPower;
 
 	setPowerText('.MyBonus', myBonusValue);
 	return myBonusValue;
@@ -7261,6 +7615,10 @@ function collectVisibleModalIdsForRoomUiSync() {
 			return;
 		}
 		if (!id.includes("modal") && id !== "escape-monster-picker") {
+			return;
+		}
+		// Эфемерные модалки стенки/клея не синхронизируем — иначе у других клиентов может «всплыть» старая стенка после выбора монстра.
+		if (id === "instant-wall-modal" || id === "flask-glue-modal") {
 			return;
 		}
 		seen.add(id);
@@ -8017,6 +8375,23 @@ export function canPlaceDopplegangerTreasureInBonusZone(cardEl, zoneEl) {
 		return false;
 	}
 	return true;
+}
+
+export function canPlaceYuppieWaterTreasureInBonusZone(cardEl, zoneEl) {
+	if (!cardEl || !zoneEl || String(zoneEl.id) !== "zone3") {
+		return true;
+	}
+	if (!isTreasureSpecial(cardEl.id, "Yuppie water")) {
+		return true;
+	}
+	// Можно класть в бонусы игрока только когда идёт бой и в бою есть хотя бы один Elf (боец или помощник).
+	if (!battleActive) {
+		return false;
+	}
+	const fightSeat = getMonsterFightSeat();
+	const hasElfFighter = fightSeat != null && seatHasRace(fightSeat, "Elf");
+	const hasElfHelper = acceptedHelperSeat != null && seatHasRace(acceptedHelperSeat, "Elf");
+	return Boolean(hasElfFighter || hasElfHelper);
 }
 
 function getHirelingCardInMainForSeat(seat) {
@@ -10280,6 +10655,171 @@ socket.on("message", response => {
 		}
 		recalculateAllPowerDisplays();
 	}
+	if (response.method === "EscapeGluePrompt") {
+		const key = String(response.key || "");
+		const escapedSeat = Number(response.escapedSeat);
+		const monsterCardId = String(response.monsterCardId || "");
+		const viaInstantWall = Boolean(response.viaInstantWall);
+		const wallFleeRaw = Array.isArray(response.wallFleeSeats) ? response.wallFleeSeats : [];
+		const wallFleeSet = new Set(
+			wallFleeRaw
+				.map((x) => Number(x))
+				.filter((x) => Number.isFinite(x)),
+		);
+		if (!wallFleeSet.size && Number.isFinite(escapedSeat)) {
+			wallFleeSet.add(Number(escapedSeat));
+		}
+		if (!key || !Number.isFinite(escapedSeat) || (!monsterCardId && !viaInstantWall)) {
+			return;
+		}
+		// Опрос клея заменяет фазу выбора монстра — иначе после стенки остаётся открытое окно выбора.
+		clearEscapeMonsterPickSession();
+		hideEscapeMonsterPicker();
+		// Участники, которых «приклеили» (в т.ч. оба после стенки), не участвуют в выборе клея.
+		if (wallFleeSet.has(Number(localSeat))) {
+			return;
+		}
+		const ids = getFlaskOfGlueTreasureCardIdsForSeat(localSeat);
+		if (!ids.length) {
+			socket.emit("message", { method: "EscapeGlueDecision", key, used: false, actingSeat: Number(localSeat) });
+			return;
+		}
+		// Сообщение всем: этот игрок сейчас решает по тюбику клея.
+		socket.emit("message", { method: "EscapeGlueWaiting", key, actingSeat: Number(localSeat) });
+		openFlaskOfGlueConfirmModal({
+			promptKey: key,
+			escapedSeat,
+			monsterCardId,
+			viaInstantWall,
+			wallFleeSeats: Array.from(wallFleeSet),
+		});
+	}
+	if (response.method === "EscapeGlueWaiting") {
+		const key = String(response.key || "");
+		const actingSeat = Number(response.actingSeat);
+		if (!key || !Number.isFinite(actingSeat)) {
+			return;
+		}
+		// У решающего игрока открыта модалка — дублирующую плашку не показываем.
+		if (Number(localSeat) === Number(actingSeat)) {
+			return;
+		}
+		showEscapeGlueWaitingBanner(key, actingSeat);
+	}
+	if (response.method === "EscapeGlueClose") {
+		hideFlaskOfGlueModal();
+		const key = String(response.key || "");
+		if (key && escapeGlueWaitingKey && key === escapeGlueWaitingKey) {
+			escapeGlueWaitingKey = null;
+			removeEscapeGlueWaitingBanner();
+			hideBattleResult();
+		}
+	}
+	if (response.method === "EscapeGlueDecision") {
+		// Сброс клея должен отобразиться у всех клиентов (не только у владельца очереди).
+		const usedAny = Boolean(response.used);
+		const actingSeatAny = Number(response.actingSeat);
+		const glueIdAny = String(response.cardId || "");
+		if (usedAny && glueIdAny && Number.isFinite(actingSeatAny) && glueIdAny.includes("treasure")) {
+			moveTreasureCardToDiscard(glueIdAny, { ownerSeat: actingSeatAny });
+			recalculateAllPowerDisplays();
+		}
+
+		// Решение применяет владелец очереди смывки.
+		if (Number(localSeat) !== Number(escapeOwnerSeat) || !escapeGluePromptState) {
+			return;
+		}
+		const key = String(response.key || "");
+		if (!key || key !== String(escapeGluePromptState.key || "")) {
+			return;
+		}
+		const actingSeat = Number(response.actingSeat);
+		if (!Number.isFinite(actingSeat)) {
+			return;
+		}
+		escapeGluePromptState.pending?.delete?.(actingSeat);
+		const used = Boolean(response.used);
+		if (used) {
+			escapeGluePromptState.resolved = true;
+			const targetSeat = Number(response.targetSeat);
+			const glueId = String(response.cardId || "");
+			const monsterId = String(response.monsterCardId || "");
+			const wasInstantWall = Boolean(escapeGluePromptState.viaInstantWall);
+			const victimsFromMsg = Array.isArray(response.wallFleeSeats)
+				? response.wallFleeSeats.map((x) => Number(x)).filter((x) => Number.isFinite(x))
+				: [];
+			const victimsFromState = Array.isArray(escapeGluePromptState.wallFleeSeats)
+				? escapeGluePromptState.wallFleeSeats.map((x) => Number(x)).filter((x) => Number.isFinite(x))
+				: [];
+			const victims = (victimsFromMsg.length ? victimsFromMsg : victimsFromState.length ? victimsFromState : (Number.isFinite(targetSeat) ? [targetSeat] : []));
+			socket.emit("message", { method: "EscapeGlueClose", key });
+			if (glueId && Number.isFinite(actingSeat)) {
+				moveTreasureCardToDiscard(glueId, { ownerSeat: actingSeat });
+			}
+			if (monsterId || wasInstantWall) {
+				const lab = victims.map((s) => getSeatLabel(s)).join(" и ");
+				showBattleResult(
+					victims.length > 1
+						? `Тюбик клея! ${lab} снова смываются.`
+						: `Тюбик клея! ${lab || getSeatLabel(targetSeat)} смывается снова.`,
+				);
+				setTimeout(() => hideBattleResult(), 1600);
+			}
+			// Перезапуск смывки. Если смывка была по Instant wall — нужно смываться от ВСЕХ монстров.
+			escapeAttemptNumber = 0;
+			escapeHalflingRetryUsedForCurrentAttempt = false;
+			escapeHalflingRetryPending = null;
+			escapeWizardFlightPending = null;
+			escapeFailAidPending = null;
+			hideEscapeFailAidModal();
+			hideWizardFlightModal();
+			updateWizardFlightUi();
+			escapeRollInProgress = false;
+			escapeGluePromptState = null;
+
+			if (wasInstantWall) {
+				// Снимаем автосмывку стенки у всех, кто ушёл со стенкой; очередь смывки с начала.
+				victims.forEach((s) => {
+					try {
+						escapeInstantWallAutoSeats?.delete?.(Number(s));
+					} catch {}
+				});
+				escapeCurrentMonsterCardId = null;
+				escapeMonsterQueue = (escapeMonsterTemplateQueue || []).slice();
+				escapeMonsterInitialCount = escapeMonsterQueue.length;
+				escapeQueueIndex = 0;
+				escapeWaitingForRoll = false;
+				escapeCurrentSeat = null;
+				runNextEscapeAttemptAndBroadcast();
+			} else {
+				// Обычный случай: смывка заново от того же монстра.
+				setCurrentEscapeMonsterById(monsterId);
+				escapeCurrentSeat = Number(targetSeat);
+				escapeWaitingForRoll = true;
+				socket.emit("message", {
+					method: "EscapeTurnStart",
+					seat: Number(targetSeat),
+					index: escapeQueueIndex,
+					isRetry: false,
+				});
+			}
+			return;
+		}
+		// Если все ответили "нет" — продолжаем.
+		if (!escapeGluePromptState.resolved && escapeGluePromptState.pending && escapeGluePromptState.pending.size <= 0) {
+			const k = escapeGluePromptState.key;
+			const finishAfter = Boolean(escapeGluePromptState.finishAfter);
+			escapeGluePromptState = null;
+			socket.emit("message", { method: "EscapeGlueClose", key: k });
+			setTimeout(() => {
+				if (finishAfter) {
+					finishEscapeSequenceAndBroadcast();
+				} else {
+					runNextEscapeAttemptAndBroadcast();
+				}
+			}, 1200);
+		}
+	}
 	if (response.method === "EscapeHalflingRetryPrompt") {
 		openHalflingRetryModalNow(response.seat);
 	}
@@ -10367,6 +10907,7 @@ socket.on("message", response => {
 		const monsterRemover = Number(response.monsterRemover) || 0;
 		const totalRoll = Number(response.totalRoll);
 		const escaped = Boolean(response.escaped);
+		const monsterCardId = String(response.monsterCardId || "");
 		const badStaffPenalty = normalizeBadStaff(response.badStaffPenalty);
 		if (!Number.isNaN(seat) && Number.isFinite(rawRoll) && Number.isFinite(totalRoll)) {
 			showBattleResult(escaped ? "Смывка удалась!" : "Смывка не удалась");
@@ -10374,11 +10915,18 @@ socket.on("message", response => {
 				applyBadStaffToSeat(seat, badStaffPenalty);
 			}
 		}
+		// Flask of glue обрабатывается через EscapeGluePrompt (без таймеров).
 	}
 	if (response.method === "EscapeSequenceFinished") {
 		hideEscapeAidOptionsModal();
 		hideEscapeRatMonsterPickModal();
+		removeInstantWallWaitingBanners();
+		removeInstantWallSoloAidWaitingBanner();
+		instantWallSoloAidWaitingEmitted = false;
 		hideInstantWallModal();
+		hideFlaskOfGlueModal();
+		removeEscapeGlueWaitingBanner();
+		escapeGlueWaitingKey = null;
 		clearEscapeMonsterPickSession();
 		escapeActive = false;
 		escapeQueue = [];
@@ -10727,7 +11275,7 @@ socket.on("message", response => {
 			return;
 		}
 		// Окно должно открыться у помощника ДО начала смывки лидера.
-		if (Number(localSeat) !== helperSeat) {
+		if (!localSeatMatchesSeat(helperSeat)) {
 			return;
 		}
 		openInstantWallPickModal({
@@ -10741,7 +11289,43 @@ socket.on("message", response => {
 			},
 		});
 	}
+	if (response.method === "InstantWallHelperWaiting") {
+		const helperSeat = Number(response.helperSeat);
+		if (!Number.isFinite(helperSeat)) {
+			return;
+		}
+		if (localSeatMatchesSeat(helperSeat)) {
+			return;
+		}
+		showInstantWallHelperWaitingBanner(helperSeat);
+	}
+	if (response.method === "InstantWallOfferWaiting") {
+		const fromSeat = Number(response.fromSeat);
+		const toSeat = Number(response.toSeat);
+		if (!Number.isFinite(fromSeat) || !Number.isFinite(toSeat)) {
+			return;
+		}
+		// Плашку показываем всем, кроме того, у кого открыта модалка принятия/отказа (toSeat).
+		if (localSeatMatchesSeat(toSeat)) {
+			return;
+		}
+		showInstantWallOfferWaitingBanner(fromSeat, toSeat);
+	}
+	if (response.method === "InstantWallSoloAidWaiting") {
+		const deciderSeat = Number(response.deciderSeat);
+		if (!Number.isFinite(deciderSeat)) {
+			return;
+		}
+		if (localSeatMatchesSeat(deciderSeat)) {
+			return;
+		}
+		showInstantWallSoloAidWaitingBanner(deciderSeat);
+	}
+	if (response.method === "InstantWallSoloAidClose") {
+		removeInstantWallSoloAidWaitingBanner();
+	}
 	if (response.method === "InstantWallHelperDecision") {
+		removeInstantWallWaitingBanners();
 		hideInstantWallModal();
 		const helperSeat = Number(response.helperSeat);
 		const loserSeat = Number(response.loserSeat);
@@ -10750,9 +11334,14 @@ socket.on("message", response => {
 		if (used && cardId) {
 			moveTreasureCardToDiscard(cardId, { ownerSeat: helperSeat });
 		}
+		const gateMatch = Boolean(
+			escapeInstantWallGate
+			&& Number.isFinite(helperSeat)
+			&& Number(escapeInstantWallGate.helperSeat) === helperSeat,
+		);
+		escapeInstantWallGate = null;
 		// Продолжение смывки контролирует владелец очереди.
-		if (Number(localSeat) === Number(escapeOwnerSeat) && escapeInstantWallGate && Number(escapeInstantWallGate.helperSeat) === helperSeat) {
-			escapeInstantWallGate = null;
+		if (Number(localSeat) === Number(escapeOwnerSeat) && escapeActive && gateMatch) {
 			if (!used) {
 				runNextEscapeAttemptAndBroadcast();
 			} else {
@@ -10772,7 +11361,15 @@ socket.on("message", response => {
 			const otherSeat = (Array.isArray(escapeQueue) ? escapeQueue : []).find((s) => Number(s) !== Number(actingSeat));
 			if (otherSeat != null && Number.isFinite(Number(otherSeat))) {
 				socket.emit("message", { method: "InstantWallOffer", fromSeat: actingSeat, toSeat: Number(otherSeat) });
-			} else {
+			} else if (
+				!startEscapeGluePromptFromOwner({
+					escapedSeat: Number(actingSeat),
+					monsterCardId: "",
+					viaInstantWall: true,
+					finishAfter: true,
+					wallFleeSeats: [Number(actingSeat)],
+				})
+			) {
 				finishEscapeSequenceAndBroadcast();
 			}
 		}
@@ -10783,12 +11380,13 @@ socket.on("message", response => {
 		if (!Number.isFinite(fromSeat) || !Number.isFinite(toSeat)) {
 			return;
 		}
-		if (Number(localSeat) !== Number(toSeat)) {
+		if (!localSeatMatchesSeat(toSeat)) {
 			return;
 		}
 		openInstantWallOfferModal({ fromSeat, toSeat });
 	}
 	if (response.method === "InstantWallOfferDecision") {
+		removeInstantWallWaitingBanners();
 		hideInstantWallModal();
 		const fromSeat = Number(response.fromSeat);
 		const toSeat = Number(response.toSeat);
@@ -10799,7 +11397,19 @@ socket.on("message", response => {
 		// Решение применяет владелец очереди смывки.
 		if (Number(localSeat) === Number(escapeOwnerSeat) && escapeActive) {
 			if (accept) {
-				finishEscapeSequenceAndBroadcast();
+				// Instant wall: оба игрока считаются успешно смывшимися. Перед завершением боя даём шанс "тюбику клея".
+				const monsterPick = String(escapeCurrentMonsterCardId || (escapeMonsterTemplateQueue?.[0]?.cardId) || "__instant_wall__");
+				if (
+					!startEscapeGluePromptFromOwner({
+						escapedSeat: Number(toSeat),
+						monsterCardId: monsterPick,
+						viaInstantWall: true,
+						finishAfter: true,
+						wallFleeSeats: [Number(fromSeat), Number(toSeat)],
+					})
+				) {
+					finishEscapeSequenceAndBroadcast();
+				}
 				return;
 			}
 			// Лидер отказался: помощник всё равно должен смыться автоматически, но на СВОЕЙ очереди (без кубика).
@@ -10986,10 +11596,12 @@ const treasure44 = new Card_treasure("treasure44", "Loaded die",  "../img/treasu
 const treasure45 = new Card_treasure("treasure45", "Magic lamp",  "../img/treasure1/card0140.png", "../img/treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0, 0, 0, "Magic lamp", 0, null, true);
 const treasure46 = new Card_treasure("treasure46", "Wand of dowsing", "../img/treasure1/card0141.png", "../img/treasure1/cardBack_Treasure.png", 0, 1100, 0, 0, 0, 0, 0, 0, "Wand of dowsing", 0, null, true);
 const treasure47 = new Card_treasure("treasure47", "Doppleganger", "../img/treasure1/card0142.png", "../img/treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "Doppleganger", 0, null, true);
-const treasure48 = new Card_treasure("treasure48", "",  "../img/treasure1/card0143.png", "../img/treasure1/cardBack_Treasure.png", 0, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+// card0143: Flask of glue — после успешной смывки заставляет смываться снова от этого монстра.
+const treasure48 = new Card_treasure("treasure48", "Flask of glue",  "../img/treasure1/card0143.png", "../img/treasure1/cardBack_Treasure.png", 0, 100, 0, 0, 0, 0, 0, 0, "Flask of glue", 0, null, true);
 const treasure49 = new Card_treasure("treasure49", "",  "../img/treasure1/card0144.png", "../img/treasure1/cardBack_Treasure.png", 5, 0, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure50 = new Card_treasure("treasure50", "",  "../img/treasure1/card0145.png", "../img/treasure1/cardBack_Treasure.png", 2, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
-const treasure51 = new Card_treasure("treasure51", "",  "../img/treasure1/card0146.png", "../img/treasure1/cardBack_Treasure.png", 0, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+// card0146: Yuppie water — в бою даёт +2 каждому эльфу (только если в бою есть хотя бы один эльф).
+const treasure51 = new Card_treasure("treasure51", "Yuppie water",  "../img/treasure1/card0146.png", "../img/treasure1/cardBack_Treasure.png", 0, 100, 0, 0, 0, 0, 0, 0, "Yuppie water", 0, null, true);
 const treasure52 = new Card_treasure("treasure52", "",  "../img/treasure1/card0147.png", "../img/treasure1/cardBack_Treasure.png", 3, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure53 = new Card_treasure("treasure53", "",  "../img/treasure1/card0148.png", "../img/treasure1/cardBack_Treasure.png", 3, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure54 = new Card_treasure("treasure54", "",  "../img/treasure1/card0149.png", "../img/treasure1/cardBack_Treasure.png", 2, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
