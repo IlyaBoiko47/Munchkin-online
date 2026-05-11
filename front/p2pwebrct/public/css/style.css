@@ -2309,3 +2309,70 @@ button:hover {
 	display: block;
 }
 
+/* Проклятие + хотельное кольцо: компактная плашка сверху, не перекрывает стол (pointer-events только на панели) */
+.wishing-ring-curse-choice {
+	position: fixed;
+	top: 52px;
+	left: 50%;
+	transform: translateX(-50%);
+	z-index: 99992;
+	max-width: min(96vw, 720px);
+	width: max-content;
+	pointer-events: none;
+}
+
+.wishing-ring-curse-choice-panel {
+	pointer-events: auto;
+	max-width: min(96vw, 720px);
+	padding: 10px 14px 12px;
+	background: rgba(18, 20, 28, 0.94);
+	border: 1px solid rgba(120, 200, 255, 0.55);
+	border-radius: 12px;
+	box-shadow: 0 6px 22px rgba(0, 0, 0, 0.4);
+	text-align: center;
+}
+
+.wishing-ring-curse-choice-title {
+	color: #fff;
+	font-size: 15px;
+	line-height: 1.35;
+	margin-bottom: 10px;
+}
+
+.wishing-ring-curse-choice-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
+	justify-content: center;
+}
+
+.wishing-ring-curse-choice-btn {
+	min-width: 120px;
+	padding: 8px 14px;
+	font-size: 17px;
+	font-weight: 700;
+	border: none;
+	border-radius: 10px;
+	cursor: pointer;
+	background: #ffffff;
+	color: #1c1000;
+	outline: none;
+	box-shadow: none;
+	appearance: none;
+}
+
+.wishing-ring-curse-choice-btn:hover:not(:disabled) {
+	background: #ffa221;
+}
+
+.wishing-ring-curse-choice-btn:focus,
+.wishing-ring-curse-choice-btn:focus-visible {
+	outline: none;
+	box-shadow: none;
+}
+
+.wishing-ring-curse-choice-btn:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+

@@ -982,7 +982,7 @@ export function canPlaceDoorInPlayerEquipment(draggingCardEl, targetZoneEl) {
 		return true;
 	}
 	// Проклятия и двери с bad_staff: любой игрок может положить на любого (в т.ч. на себя), без правил рас/классов.
-	if (String(door.special || "") === "Curse" || normalizeBadStaff(door.bad_staff)) {
+	if (String(door.special || "").trim().toLowerCase() === "curse" || normalizeBadStaff(door.bad_staff)) {
 		return true;
 	}
 
@@ -3046,16 +3046,329 @@ function moveTreasureCardToDiscard(cardId, opts) {
 	adjustCardWidth('.zone_treasure_drop');
 }
 
+const WISHING_RING_LABEL = "Wishing ring";
+
+function treasureMetaIsWishingRing(tr) {
+	if (!tr) {
+		return false;
+	}
+	return String(tr.card_name || "").trim() === WISHING_RING_LABEL
+		|| String(tr.special || "").trim() === WISHING_RING_LABEL;
+}
+
+function isDoorCurseBySpecial(door) {
+	if (!door) {
+		return false;
+	}
+	return String(door.special || "").trim().toLowerCase() === "curse";
+}
+
+function findWishingRingTreasureIdForSeat(seat) {
+	const s = Number(seat);
+	if (!Number.isFinite(s) || s < 0) {
+		return null;
+	}
+	const hand = getHandElementForPlayerSeat(s);
+	const { main, side } = getMainAndSideZoneElementsForSeat(s) || {};
+	for (const zoneEl of [hand, main, side]) {
+		if (!zoneEl) {
+			continue;
+		}
+		for (const el of zoneEl.querySelectorAll(".card")) {
+			const id = el?.id;
+			if (!id || !String(id).includes("treasure")) {
+				continue;
+			}
+			const tr = window.treasures?.find((t) => t.name === id);
+			if (treasureMetaIsWishingRing(tr)) {
+				return id;
+			}
+		}
+	}
+	return null;
+}
+
+/**
+ * Ожидание решений по хотельным кольцам: проклятие не применяется, пока все держатели колец не ответят
+ * («не использовать») или кто-то не отменит проклятие кольцом.
+ * @type {{
+ *   curseCardId: string,
+ *   curseTargetSeat: number,
+ *   incomeTax: boolean,
+ *   bad_staff: object | null,
+ *   ringSeats: number[],
+ *   ringCardBySeat: Record<string, string>,
+ *   skipped: number[],
+ *   cancelled: boolean,
+ * } | null}
+ */
+let curseWishingRingActive = null;
+
+function hideWishingRingChoiceBanner() {
+	const el = document.getElementById("wishing-ring-curse-choice");
+	if (el) {
+		el.remove();
+	}
+}
+
+function clearCurseWishingRingActive() {
+	curseWishingRingActive = null;
+	hideWishingRingChoiceBanner();
+}
+
+function collectWishingRingRespondersForTable() {
+	const n = effectiveSeatLayoutPlayerCount();
+	const out = [];
+	for (let s = 0; s < n; s++) {
+		const ringCardId = findWishingRingTreasureIdForSeat(s);
+		if (ringCardId) {
+			out.push({ seat: s, ringCardId });
+		}
+	}
+	return out;
+}
+
+function maybeEmitCurseWishingRingAllSkippedApply() {
+	const a = curseWishingRingActive;
+	if (!a || a.cancelled) {
+		return;
+	}
+	if (!a.ringSeats.length) {
+		return;
+	}
+	if (!a.ringSeats.every((s) => a.skipped.includes(s))) {
+		return;
+	}
+	const minSeat = Math.min(...a.ringSeats);
+	if (localSeat === null || localSeat === undefined || Number(localSeat) !== minSeat) {
+		return;
+	}
+	socket.emit("message", {
+		method: "CurseWishingRingAllSkippedApply",
+		curseTargetSeat: a.curseTargetSeat,
+		curseCardId: a.curseCardId,
+		incomeTax: Boolean(a.incomeTax),
+		bad_staff: a.bad_staff,
+	});
+}
+
+function refreshWishingRingBarUI() {
+	hideWishingRingChoiceBanner();
+	const a = curseWishingRingActive;
+	if (!a || a.cancelled) {
+		return;
+	}
+	if (localSeat === null || localSeat === undefined) {
+		return;
+	}
+	const my = Number(localSeat);
+	if (!Number.isFinite(my) || my < 0) {
+		return;
+	}
+	if (!a.ringSeats.includes(my)) {
+		return;
+	}
+	if (a.skipped.includes(my)) {
+		return;
+	}
+	const wrap = document.createElement("div");
+	wrap.id = "wishing-ring-curse-choice";
+	wrap.className = "wishing-ring-curse-choice";
+	const panel = document.createElement("div");
+	panel.className = "wishing-ring-curse-choice-panel";
+	const title = document.createElement("div");
+	title.className = "wishing-ring-curse-choice-title";
+	const victimLabel = getSeatLabel(a.curseTargetSeat);
+	if (my === Number(a.curseTargetSeat)) {
+		title.textContent = "На тебя сыграли проклятие. Использовать хотельное кольцо и отменить его?";
+	} else {
+		title.textContent = `Сыграли проклятие на ${victimLabel}. Использовать своё хотельное кольцо и отменить проклятие?`;
+	}
+	panel.appendChild(title);
+	const row = document.createElement("div");
+	row.className = "wishing-ring-curse-choice-actions";
+	const btnUse = document.createElement("button");
+	btnUse.type = "button";
+	btnUse.className = "wishing-ring-curse-choice-btn";
+	btnUse.textContent = "Использовать кольцо";
+	const btnSkip = document.createElement("button");
+	btnSkip.type = "button";
+	btnSkip.className = "wishing-ring-curse-choice-btn";
+	btnSkip.textContent = "Не использовать";
+	let done = false;
+	const finish = (useRing) => {
+		if (done) {
+			return;
+		}
+		done = true;
+		const st = curseWishingRingActive;
+		if (!st || st.cancelled) {
+			return;
+		}
+		if (localSeat === null || localSeat === undefined) {
+			return;
+		}
+		const mySeat = Number(localSeat);
+		if (!st.ringSeats.includes(mySeat)) {
+			return;
+		}
+		const ringId = String(st.ringCardBySeat[String(mySeat)] || "").trim();
+		socket.emit("message", {
+			method: "CurseWishingRingResponse",
+			curseCardId: st.curseCardId,
+			responderSeat: mySeat,
+			useRing,
+			ringCardId: useRing ? ringId : "",
+		});
+		hideWishingRingChoiceBanner();
+	};
+	btnUse.addEventListener("click", () => finish(true));
+	btnSkip.addEventListener("click", () => finish(false));
+	row.appendChild(btnUse);
+	row.appendChild(btnSkip);
+	panel.appendChild(row);
+	wrap.appendChild(panel);
+	document.body.appendChild(wrap);
+}
+
+function applyBadStaffLevelFromNetwork(res) {
+	const seat = Number(res.seat);
+	const badStaff = normalizeBadStaff(res.bad_staff);
+	const cardId = res.cardId;
+	if (!Number.isFinite(seat) || seat < 0 || !badStaff || !cardId) {
+		return;
+	}
+	if (badStaff.type === "change class") {
+		applyChangeClassCurseToSeat(seat, cardId);
+	} else if (badStaff.type === "change race") {
+		applyChangeRaceCurseToSeat(seat, cardId);
+	} else if (badStaff.type === "lose your class") {
+		applyLoseYourClassCurseToSeat(seat, cardId);
+	} else if (badStaff.type === "lose your race") {
+		applyLoseYourRaceCurseToSeat(seat, cardId);
+	} else if (badStaff.type === "malign mirrror") {
+		applyMalignMirrorCurseToSeat(seat, cardId);
+	} else if (badStaff.type === "change sex") {
+		applyChangeSexCurseToSeat(seat, cardId);
+	} else if (badStaff.type === "chicken on your head") {
+		// Остаётся в экипировке; штраф к кубику — по наличию карты в зоне.
+	} else if (badStaff.type === "income tax") {
+		// Отдельный поток IncomeTaxStart / IncomeTaxInitiatorPick.
+	} else {
+		applyBadStaffToSeat(seat, badStaff);
+		moveBadStaffCardToDiscard(cardId);
+	}
+}
+
+function handleCurseWishingRingOffer(res) {
+	const curseTargetSeat = Number(res.curseTargetSeat);
+	const curseCardId = String(res.curseCardId || "").trim();
+	const incomeTax = Boolean(res.incomeTax);
+	const rawResponders = Array.isArray(res.ringResponders) ? res.ringResponders : [];
+	const bad_staff = res.bad_staff && typeof res.bad_staff === "object" ? res.bad_staff : null;
+	if (!Number.isFinite(curseTargetSeat) || curseTargetSeat < 0 || !curseCardId) {
+		return;
+	}
+	const ringResponders = rawResponders
+		.map((x) => ({
+			seat: Number(x?.seat),
+			ringCardId: String(x?.ringCardId || "").trim(),
+		}))
+		.filter((x) => Number.isFinite(x.seat) && x.seat >= 0 && x.ringCardId);
+	if (!ringResponders.length) {
+		return;
+	}
+	const ringCardBySeat = {};
+	const ringSeats = [];
+	for (const { seat, ringCardId } of ringResponders) {
+		ringSeats.push(seat);
+		ringCardBySeat[String(seat)] = ringCardId;
+	}
+	curseWishingRingActive = {
+		curseCardId,
+		curseTargetSeat,
+		incomeTax,
+		bad_staff: bad_staff ? normalizeBadStaff(bad_staff) : null,
+		ringSeats,
+		ringCardBySeat,
+		skipped: [],
+		cancelled: false,
+	};
+	refreshWishingRingBarUI();
+}
+
+function handleCurseWishingRingResponse(res) {
+	const curseCardId = String(res.curseCardId || "").trim();
+	const responderSeat = Number(res.responderSeat);
+	const useRing = Boolean(res.useRing);
+	const ringCardId = String(res.ringCardId || "").trim();
+	const a = curseWishingRingActive;
+	if (!curseCardId || !Number.isFinite(responderSeat) || responderSeat < 0) {
+		return;
+	}
+	if (!a || a.cancelled || a.curseCardId !== curseCardId) {
+		return;
+	}
+	if (!a.ringSeats.includes(responderSeat)) {
+		return;
+	}
+	if (useRing) {
+		a.cancelled = true;
+		if (ringCardId) {
+			moveTreasureCardToDiscard(ringCardId, { ownerSeat: responderSeat });
+		}
+		moveBadStaffCardToDiscard(curseCardId);
+		clearCurseWishingRingActive();
+		recalculateAllPowerDisplays();
+		return;
+	}
+	if (a.skipped.includes(responderSeat)) {
+		return;
+	}
+	a.skipped.push(responderSeat);
+	refreshWishingRingBarUI();
+	maybeEmitCurseWishingRingAllSkippedApply();
+}
+
+function handleCurseWishingRingAllSkippedApply(res) {
+	hideWishingRingChoiceBanner();
+	const curseCardId = String(res.curseCardId || "").trim();
+	const curseTargetSeat = Number(res.curseTargetSeat);
+	const incomeTax = Boolean(res.incomeTax);
+	if (!curseCardId || !Number.isFinite(curseTargetSeat) || curseTargetSeat < 0) {
+		return;
+	}
+	if (!curseWishingRingActive || curseWishingRingActive.curseCardId !== curseCardId) {
+		return;
+	}
+	curseWishingRingActive = null;
+	if (incomeTax) {
+		handleIncomeTaxStart({ curseSeat: curseTargetSeat, curseCardId });
+	} else {
+		const bs = normalizeBadStaff(res.bad_staff);
+		if (bs) {
+			applyBadStaffLevelFromNetwork({
+				seat: curseTargetSeat,
+				bad_staff: res.bad_staff,
+				cardId: curseCardId,
+			});
+		} else {
+			moveBadStaffCardToDiscard(curseCardId);
+		}
+	}
+	recalculateAllPowerDisplays();
+}
+
 export function scheduleBadStaffIfNeeded(cardId, zoneEl) {
 	const door = window.doors?.find(d => d.name === cardId);
 	if (!door) {
 		return;
 	}
-	const badStaff = normalizeBadStaff(door.bad_staff);
-	if (!badStaff) {
+	if (!isDoorCurseBySpecial(door)) {
 		return;
 	}
-	if (badStaff.type === "chicken on your head") {
+	const badStaff = normalizeBadStaff(door.bad_staff);
+	if (badStaff?.type === "chicken on your head") {
 		return;
 	}
 	if (door.race === 'monster') {
@@ -3070,12 +3383,38 @@ export function scheduleBadStaffIfNeeded(cardId, zoneEl) {
 	}
 	const zoneId = zoneEl.id;
 
-	if (badStaff.type === "income tax") {
-		setTimeout(() => {
+	const ringResponders = collectWishingRingRespondersForTable();
+	const emitCurseWishingRingOfferIfNeeded = () => {
+		if (!ringResponders.length) {
+			return false;
+		}
+		socket.emit("message", {
+			method: "CurseWishingRingOffer",
+			curseTargetSeat: seat,
+			curseCardId: cardId,
+			incomeTax: badStaff?.type === "income tax",
+			bad_staff: badStaff?.type === "income tax" ? null : badStaff,
+			ringResponders,
+		});
+		return true;
+	};
+
+	const runWhenCardStillInZone = (fn) => {
+		queueMicrotask(() => {
 			const card = document.getElementById(cardId);
-			if (!card) {
+			const zone = document.getElementById(zoneId);
+			if (!card || !zone || !zone.contains(card)) {
 				return;
 			}
+			fn(card, zone);
+		});
+	};
+
+	if (badStaff?.type === "income tax") {
+		if (emitCurseWishingRingOfferIfNeeded()) {
+			return;
+		}
+		runWhenCardStillInZone((card) => {
 			const { main, side } = getMainAndSideZoneElementsForSeat(seat) || {};
 			const stillEquipped = (main && main.contains(card)) || (side && side.contains(card));
 			if (!stillEquipped) {
@@ -3086,24 +3425,26 @@ export function scheduleBadStaffIfNeeded(cardId, zoneEl) {
 				curseSeat: seat,
 				curseCardId: cardId,
 			});
-		}, 1000);
+		});
 		return;
 	}
 
-	setTimeout(() => {
-		const card = document.getElementById(cardId);
-		const zone = document.getElementById(zoneId);
-		if (!card || !zone || !zone.contains(card)) {
-			return;
-		}
+	if (emitCurseWishingRingOfferIfNeeded()) {
+		return;
+	}
 
-		socket.emit("message", {
-			method: "BadStaffLevel",
-			seat,
-			bad_staff: badStaff,
-			cardId,
-		});
-	}, 1000);
+	runWhenCardStillInZone(() => {
+		if (badStaff) {
+			socket.emit("message", {
+				method: "BadStaffLevel",
+				seat,
+				bad_staff: badStaff,
+				cardId,
+			});
+		} else {
+			syncDoorCardMoveToDiscard(cardId);
+		}
+	});
 }
 
 function ensureIncomeTaxBannerEl() {
@@ -12523,31 +12864,16 @@ socket.on("message", response => {
 		finishIncomeTaxCurse(cid);
 	}
 	if (response.method === "BadStaffLevel") {
-		const seat = parseInt(response.seat, 10);
-		const badStaff = normalizeBadStaff(response.bad_staff);
-		const cardId = response.cardId;
-		if (!Number.isNaN(seat) && badStaff && cardId) {
-			if (badStaff.type === "change class") {
-				applyChangeClassCurseToSeat(seat, cardId);
-			} else if (badStaff.type === "change race") {
-				applyChangeRaceCurseToSeat(seat, cardId);
-			} else if (badStaff.type === "lose your class") {
-				applyLoseYourClassCurseToSeat(seat, cardId);
-			} else if (badStaff.type === "lose your race") {
-				applyLoseYourRaceCurseToSeat(seat, cardId);
-			} else if (badStaff.type === "malign mirrror") {
-				applyMalignMirrorCurseToSeat(seat, cardId);
-			} else if (badStaff.type === "change sex") {
-				applyChangeSexCurseToSeat(seat, cardId);
-			} else if (badStaff.type === "chicken on your head") {
-				// Остаётся в экипировке; штраф к кубику — по наличию карты в зоне.
-			} else if (badStaff.type === "income tax") {
-				// Отдельный поток IncomeTaxStart / IncomeTaxInitiatorPick.
-			} else {
-				applyBadStaffToSeat(seat, badStaff);
-				moveBadStaffCardToDiscard(cardId);
-			}
-		}
+		applyBadStaffLevelFromNetwork(response);
+	}
+	if (response.method === "CurseWishingRingOffer") {
+		handleCurseWishingRingOffer(response);
+	}
+	if (response.method === "CurseWishingRingResponse") {
+		handleCurseWishingRingResponse(response);
+	}
+	if (response.method === "CurseWishingRingAllSkippedApply") {
+		handleCurseWishingRingAllSkippedApply(response);
 	}
 	if (response.method === "MalignMirrorApply") {
 		const seat = Number(response.seat);
@@ -12737,19 +13063,15 @@ socket.on("message", response => {
 		shuffle(window.doors);
 		shuffle(window.treasures);
 
-		// Тестовая раздача: Income Tax (door26) — поднимаем в начало колоды дверей.
-		const idxDoor26 = window.doors.findIndex((d) => d && d.name === "door26");
-		if (idxDoor26 > 0) {
-			const [c] = window.doors.splice(idxDoor26, 1);
-			window.doors.unshift(c);
-		}
-
 		const shuffleDeck = {
 			method: "shuffleDeck",
 			deckDoors: window.doors,
 			deckTreasure: window.treasures,
 		};
 		socket.emit("message",shuffleDeck);
+		// Тестовая раздача: два хотельных кольца в руку первого игрока.
+		socket.emit("message", { method: "MateTestDeal", seat: 0, cardId: "treasure42" });
+		socket.emit("message", { method: "MateTestDeal", seat: 0, cardId: "treasure43" });
 		
 		
   }
@@ -13227,8 +13549,8 @@ const treasure39 = new Card_treasure("treasure39", "",  "../img/treasure1/card01
 const treasure40 = new Card_treasure("treasure40", "",  "../img/treasure1/card0135.png", "../img/treasure1/cardBack_Treasure.png", 1, -1, 0, 0, 0, 0, 0, 0, "Hireling", 0, null);
 // card0136: Instant wall — позволяет автоматически смыться от всех монстров в бою (одному или двум игрокам).
 const treasure41 = new Card_treasure("treasure41", "Instant wall",  "../img/treasure1/card0136.png", "../img/treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "Instant wall", 0, null, true);
-const treasure42 = new Card_treasure("treasure42", "",  "../img/treasure1/card0137.png", "../img/treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0, 0, 0, "", 0, null, true);
-const treasure43 = new Card_treasure("treasure43", "",  "../img/treasure1/card0138.png", "../img/treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure42 = new Card_treasure("treasure42", "Wishing ring", "../img/treasure1/card0137.png", "../img/treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0, 0, 0, "Wishing ring", 0, null, true);
+const treasure43 = new Card_treasure("treasure43", "Wishing ring", "../img/treasure1/card0138.png", "../img/treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0, 0, 0, "Wishing ring", 0, null, true);
 // card0139: Loaded die — читерский кубик (меняет результат броска после того как он выпал).
 const treasure44 = new Card_treasure("treasure44", "Loaded die",  "../img/treasure1/card0139.png", "../img/treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "Loaded die", 0, null, true);
 const treasure45 = new Card_treasure("treasure45", "Magic lamp",  "../img/treasure1/card0140.png", "../img/treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0, 0, 0, "Magic lamp", 0, null, true);

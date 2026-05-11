@@ -326,6 +326,9 @@ io.on('connection', socket => {
       "IncomeTaxInsufficientDumpSync",
       "IncomeTaxResponderSubmit",
       "IncomeTaxCurseFinished",
+      "CurseWishingRingOffer",
+      "CurseWishingRingResponse",
+      "CurseWishingRingAllSkippedApply",
       "LoseYourClassResolve",
       "MalignMirrorApply",
       "ChangeSexApply",
@@ -715,6 +718,36 @@ io.on('connection', socket => {
     if (moveData.method === "IncomeTaxCurseFinished") {
       const cid = String(moveData.curseCardId || '').trim();
       if (cid) patchRoomDiscards(roomID, [cid]);
+    }
+
+    if (moveData.method === "CurseWishingRingResponse") {
+      const useRing = Boolean(moveData.useRing);
+      const curseCardId = String(moveData.curseCardId || '').trim();
+      const ringCardId = String(moveData.ringCardId || '').trim();
+      if (useRing && curseCardId && ringCardId) {
+        patchRoomDiscards(roomID, [curseCardId, ringCardId].filter(Boolean));
+      }
+    }
+
+    if (moveData.method === "CurseWishingRingAllSkippedApply") {
+      const curseCardId = String(moveData.curseCardId || '').trim();
+      const incomeTax = Boolean(moveData.incomeTax);
+      if (!incomeTax) {
+        const game = getOrInitRoomGameState(roomID);
+        const seat = clampSeatInRoom(roomID, moveData.curseTargetSeat);
+        const bad = moveData.bad_staff;
+        const loss = bad && typeof bad === 'object'
+          ? (Number(bad.levelLoss) || Number(bad.levels) || 0)
+          : 0;
+        if (seat != null && loss > 0) {
+          const cur = getLevelBySeatFromGame(game, seat);
+          setLevelBySeatInGame(game, seat, cur - loss);
+        }
+        const badType = bad && typeof bad === 'object' ? String(bad.type || '').trim() : '';
+        if (badType !== 'chicken on your head' && badType !== 'income tax' && curseCardId) {
+          patchRoomDiscards(roomID, [curseCardId]);
+        }
+      }
     }
 
     if (moveData.method === "TreasureLevel") {
