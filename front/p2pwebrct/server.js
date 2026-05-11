@@ -42,6 +42,27 @@ function getOrInitRoomGameState(roomID) {
   return game;
 }
 
+function clampSeatInRoom(roomID, seat) {
+  const prev = roomStates.get(roomID) || {};
+  const numPlayers = Math.max(1, Math.min(3, Number(prev.num) || 3));
+  const s = Number(seat);
+  if (!Number.isFinite(s) || s < 0 || s >= numPlayers) return null;
+  return Math.floor(s);
+}
+
+function getLevelBySeatFromGame(game, seat) {
+  const s = Number(seat);
+  const cur = Array.isArray(game?.levelBySeat) ? Number(game.levelBySeat[s] || 1) : 1;
+  return Math.max(1, Math.floor(Number.isFinite(cur) ? cur : 1));
+}
+
+function setLevelBySeatInGame(game, seat, level) {
+  const s = Number(seat);
+  const next = Math.max(1, Math.floor(Number(level) || 1));
+  if (!Array.isArray(game.levelBySeat)) game.levelBySeat = [1, 1, 1];
+  game.levelBySeat[s] = next;
+}
+
 function discardZoneIdForCardId(cardId) {
   const id = String(cardId || '').trim();
   if (!id) return null;
@@ -70,7 +91,28 @@ function patchRoomCardEntries(roomID, entries) {
     const cardId = String(e?.cardId || '').trim();
     const zoneId = String(e?.zoneId || '').trim();
     if (!cardId || !zoneId) return;
-    const targetId = e?.targetId ? String(e.targetId) : null;
+    let targetId = e?.targetId ? String(e.targetId) : null;
+
+    // Если карта кладётся в сброс без targetId, вычисляем его на сервере,
+    // чтобы после refresh порядок "последних сбросов" восстанавливался корректно.
+    if (!targetId && (zoneId === 'zone_doors_drop' || zoneId === 'zone_treasure_drop')) {
+      const keys = Object.keys(cards);
+      for (let i = keys.length - 1; i >= 0; i--) {
+        const k = keys[i];
+        if (!k || k === cardId) continue;
+        const pos = cards[k];
+        if (pos && String(pos.zoneId || '') === zoneId) {
+          targetId = k;
+          break;
+        }
+      }
+    }
+    // ВАЖНО: сохраняем порядок "последних перемещений" для корректного восстановления после refresh.
+    // В JS порядок ключей объекта сохраняется; чтобы обновить позицию карты в этом порядке,
+    // удаляем ключ и добавляем заново.
+    if (Object.prototype.hasOwnProperty.call(cards, cardId)) {
+      delete cards[cardId];
+    }
     cards[cardId] = { zoneId, targetId };
     if (zoneId !== 'zone_monster') delete nextMba[cardId];
   });
@@ -83,12 +125,40 @@ function patchRoomCardEntries(roomID, entries) {
 }
 
 function patchRoomDiscards(roomID, cardIds) {
+  const prev = roomStates.get(roomID) || {};
+  // Берём текущий порядок карт (ключи объекта) как "хронологию" последних перемещений.
+  // Это позволяет вычислить targetId так, чтобы "последняя сброшенная" оказалась сверху после refresh.
+  const cards = prev.cards && typeof prev.cards === 'object' ? { ...prev.cards } : {};
+
   const entries = [];
   (Array.isArray(cardIds) ? cardIds : []).forEach((raw) => {
     const id = String(raw || '').trim();
     const z = discardZoneIdForCardId(id);
-    if (id && z) entries.push({ cardId: id, zoneId: z, targetId: null });
+    if (!id || !z) return;
+
+    // Ищем последнюю карту, уже лежащую в нужном сбросе (по порядку ключей объекта).
+    let targetId = null;
+    const keys = Object.keys(cards);
+    for (let i = keys.length - 1; i >= 0; i--) {
+      const k = keys[i];
+      if (!k || k === id) continue;
+      const pos = cards[k];
+      if (pos && String(pos.zoneId || '') === z) {
+        targetId = k;
+        break;
+      }
+    }
+
+    // Обновляем локальную копию cards в том же порядке, как это сделает patchRoomCardEntries,
+    // чтобы следующая карта в списке сбрасывалась "поверх" предыдущей.
+    if (Object.prototype.hasOwnProperty.call(cards, id)) {
+      delete cards[id];
+    }
+    cards[id] = { zoneId: z, targetId };
+
+    entries.push({ cardId: id, zoneId: z, targetId });
   });
+
   patchRoomCardEntries(roomID, entries);
 }
 
@@ -251,6 +321,15 @@ io.on('connection', socket => {
       "DeathLootDropMonsters",
       "MonsterBonusAttach",
       "BadStaffLevel",
+      "IncomeTaxStart",
+      "IncomeTaxInitiatorPick",
+      "IncomeTaxInsufficientDumpSync",
+      "IncomeTaxResponderSubmit",
+      "IncomeTaxCurseFinished",
+      "LoseYourClassResolve",
+      "MalignMirrorApply",
+      "ChangeSexApply",
+      "LevelAdjust",
       "TreasureLevel",
       "Treasure65LevelSwap",
       "DivineInterventionResolve",
@@ -322,10 +401,19 @@ io.on('connection', socket => {
     if (moveData.method === "moveCard" && moveData.cardId && moveData.zoneId) {
       const prev = roomStates.get(roomID) || {};
       const cards = prev.cards && typeof prev.cards === 'object' ? prev.cards : {};
-      const nextCards = { ...cards, [String(moveData.cardId)]: { zoneId: String(moveData.zoneId), targetId: moveData.targetId ? String(moveData.targetId) : null } };
+      const cid = String(moveData.cardId);
+      const zid = String(moveData.zoneId);
+      const tid = moveData.targetId ? String(moveData.targetId) : null;
+      // ВАЖНО: обновляем порядок ключей так, чтобы "последнее moveCard" было последним в Object.keys().
+      // Это нужно для корректного восстановления стека сброса после refresh.
+      const nextCards = { ...(cards && typeof cards === 'object' ? cards : {}) };
+      if (Object.prototype.hasOwnProperty.call(nextCards, cid)) {
+        delete nextCards[cid];
+      }
+      nextCards[cid] = { zoneId: zid, targetId: tid };
       let nextMba = prev.monsterBonusAttachments && typeof prev.monsterBonusAttachments === 'object' ? { ...prev.monsterBonusAttachments } : {};
-      if (String(moveData.zoneId) !== 'zone_monster') {
-        delete nextMba[String(moveData.cardId)];
+      if (zid !== 'zone_monster') {
+        delete nextMba[cid];
       }
       roomStates.set(roomID, { ...prev, cards: nextCards, monsterBonusAttachments: nextMba, started: startedRooms.has(roomID) || prev.started });
     }
@@ -410,12 +498,26 @@ io.on('connection', socket => {
 
     if (moveData.method === "BadStaffLevel") {
       const game = getOrInitRoomGameState(roomID);
-      const seat = Number(moveData.seat);
+      const seat = clampSeatInRoom(roomID, moveData.seat);
       const bad = moveData.bad_staff;
-      const loss = bad && typeof bad === 'object' ? Number(bad.levelLoss) || 0 : 0;
-      if (Number.isFinite(seat) && seat >= 0 && seat <= 2 && loss > 0) {
-        const cur = Number(game.levelBySeat[seat] || 1) || 1;
-        game.levelBySeat[seat] = Math.max(1, Math.floor(cur - loss));
+      const loss = bad && typeof bad === 'object'
+        ? (Number(bad.levelLoss) || Number(bad.levels) || 0)
+        : 0;
+      if (seat != null && loss > 0) {
+        const cur = getLevelBySeatFromGame(game, seat);
+        setLevelBySeatInGame(game, seat, cur - loss);
+      }
+    }
+
+    if (moveData.method === "LevelAdjust") {
+      const game = getOrInitRoomGameState(roomID);
+      const seat = clampSeatInRoom(roomID, moveData.seat);
+      const delta = Number(moveData.delta) || 0;
+      if (seat != null && Number.isFinite(delta) && delta !== 0) {
+        const cur = getLevelBySeatFromGame(game, seat);
+        setLevelBySeatInGame(game, seat, cur + delta);
+        const latest = roomStates.get(roomID) || {};
+        roomStates.set(roomID, { ...latest, game });
       }
     }
 
@@ -578,7 +680,40 @@ io.on('connection', socket => {
     }
 
     if (moveData.method === "BadStaffLevel") {
-      const cid = String(moveData.cardId || '').trim();
+      const bad = moveData.bad_staff;
+      const badType = bad && typeof bad === 'object' ? String(bad.type || '').trim() : '';
+      if (badType !== 'chicken on your head' && badType !== 'income tax') {
+        const cid = String(moveData.cardId || '').trim();
+        if (cid) patchRoomDiscards(roomID, [cid]);
+      }
+    }
+
+    if (moveData.method === "IncomeTaxInitiatorPick") {
+      const tid = String(moveData.treasureId || '').trim();
+      if (tid) patchRoomDiscards(roomID, [tid]);
+    }
+
+    if (moveData.method === "IncomeTaxInsufficientDumpSync") {
+      const seat = clampSeatInRoom(roomID, moveData.seat);
+      const ids = Array.isArray(moveData.cardIds) ? moveData.cardIds.map((x) => String(x || '').trim()).filter(Boolean) : [];
+      if (seat != null) {
+        if (ids.length) {
+          patchRoomDiscards(roomID, ids);
+        }
+        const game = getOrInitRoomGameState(roomID);
+        const cur = getLevelBySeatFromGame(game, seat);
+        setLevelBySeatInGame(game, seat, cur - 1);
+        const latest = roomStates.get(roomID) || {};
+        roomStates.set(roomID, { ...latest, game });
+      }
+    }
+
+    if (moveData.method === "IncomeTaxResponderSubmit") {
+      patchRoomDiscards(roomID, Array.isArray(moveData.cardIds) ? moveData.cardIds : []);
+    }
+
+    if (moveData.method === "IncomeTaxCurseFinished") {
+      const cid = String(moveData.curseCardId || '').trim();
       if (cid) patchRoomDiscards(roomID, [cid]);
     }
 
@@ -716,6 +851,37 @@ io.on('connection', socket => {
       const prev = roomStates.get(roomID) || {};
       const game = prev.game && typeof prev.game === 'object' ? prev.game : {};
       roomStates.set(roomID, { ...prev, game: { ...game, timerRunning: false } });
+    }
+
+    if (moveData.method === "IncomeTaxSyncDiscards") {
+      const game = getOrInitRoomGameState(roomID);
+      const seats = Array.isArray(moveData.levelDownSeats) ? moveData.levelDownSeats : [];
+      seats.forEach((raw) => {
+        const s = clampSeatInRoom(roomID, raw);
+        if (s != null) {
+          const cur = getLevelBySeatFromGame(game, s);
+          setLevelBySeatInGame(game, s, cur - 1);
+        }
+      });
+      const latest = roomStates.get(roomID) || {};
+      roomStates.set(roomID, { ...latest, game });
+      const rawIds = Array.isArray(moveData.cardIds) ? moveData.cardIds : [];
+      patchRoomDiscards(roomID, rawIds);
+      const room = roomID;
+      const treasureIds = [...new Set(rawIds.map((x) => String(x || '').trim()).filter((id) => id.includes('treasure')))];
+      if (treasureIds.length) {
+        queueMicrotask(() => {
+          treasureIds.forEach((cardId) => {
+            io.to(room).emit('message', {
+              method: 'moveCard',
+              cardId,
+              targetId: null,
+              zoneId: 'zone_treasure_drop',
+            });
+          });
+        });
+      }
+      return;
     }
 
     if (includeSenderMethods.has(moveData.method)) {

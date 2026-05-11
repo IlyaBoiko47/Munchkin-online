@@ -2285,3 +2285,27 @@ button:hover {
 
 /* dice end*/
 
+.income-tax-curse-banner {
+	position: fixed;
+	top: 10px;
+	left: 50%;
+	transform: translateX(-50%);
+	z-index: 99990;
+	max-width: min(96vw, 760px);
+	padding: 12px 18px;
+	background: rgba(18, 20, 28, 0.94);
+	border: 1px solid rgba(255, 162, 33, 0.7);
+	border-radius: 12px;
+	color: #fff;
+	font-size: 17px;
+	line-height: 1.35;
+	text-align: center;
+	box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+	display: none;
+	pointer-events: none;
+}
+
+.income-tax-curse-banner.is-visible {
+	display: block;
+}
+

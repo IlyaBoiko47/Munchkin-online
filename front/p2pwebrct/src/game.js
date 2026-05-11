@@ -20,6 +20,22 @@ let currentTurnSeat = 0;
 const levelBySeat = [1, 1, 1];
 const STEAL_LEVEL_CARD_NAME = "Steal a level";
 
+// Curse state: Malign mirrror (door38)
+// Pending: applied to seat, will activate when seat participates in a battle.
+// Active: currently restricting equipment power in battle; discarded after battle ends.
+const malignMirrorPendingBySeat = new Map(); // seat -> curseCardId
+const malignMirrorActiveBySeat = new Map(); // seat -> curseCardId
+
+// Curse state: Change sex (door23)
+// Pending: -5 in next battle the seat participates in (or current if already in battle)
+// Active: -5 currently applied in battle; discarded after battle ends.
+const changeSexPendingBySeat = new Map(); // seat -> curseCardId
+const changeSexActiveBySeat = new Map(); // seat -> curseCardId
+
+// Налог (door26): пошаговый сброс шмоток.
+/** @type {{ curseSeat: number, curseCardId: string, referenceCost: number, phase2NeedModal: number[], phase2AllCount: number, phase2Done: Set<number>, finishEmitSent?: boolean } | null} */
+let incomeTaxSession = null;
+
 function getCharacterRaces(character) {
 	if (!character) {
 		return [];
@@ -159,7 +175,9 @@ let acceptedHelperSeat = null;
 let monsterFightSeat = null;
 
 function getMonsterFightSeat() {
-	if (!battleActive) {
+	// ВАЖНО: battleActive может расходиться между клиентами (особенно у помощника),
+	// но факт боя можно надёжно определить по наличию монстров на столе.
+	if (!battleActive && !getMonsterBattleContext().hasMonster) {
 		return currentTurnSeat;
 	}
 	if (monsterFightSeat != null && monsterFightSeat !== undefined && !Number.isNaN(Number(monsterFightSeat))) {
@@ -353,14 +371,30 @@ function updatePlayersUiVisibility(numPlayers) {
 	}
 }
 
+/**
+ * Сколько игроков учитывать в маппинге мест → зон (иконки, сила, уровень, рука, налог).
+ * Строго num === 2 | 3 — как раньше; иначе Number(num)||window.num (после StartGame num иногда строка или ещё не записан).
+ */
+function effectiveSeatLayoutPlayerCount() {
+	if (num === 2 || num === 3) {
+		return num;
+	}
+	const n = Number(num) || Number(window.num);
+	if (!Number.isFinite(n)) {
+		return 2;
+	}
+	return Math.min(3, Math.max(2, Math.floor(n)));
+}
+
 function getSeatToIconMap() {
-	if (num === 2) {
+	const n = effectiveSeatLayoutPlayerCount();
+	if (n === 2) {
 		return localSeat === 1
 			? { 1: '.image-bottom-center', 0: '.top-center-image' }
 			: { 0: '.image-bottom-center', 1: '.top-center-image' };
 	}
 
-	if (num === 3) {
+	if (n >= 3) {
 		if (localSeat === 1) {
 			return { 1: '.image-bottom-center', 2: '.image-top-right', 0: '.image-top-left' };
 		}
@@ -374,13 +408,14 @@ function getSeatToIconMap() {
 }
 
 function getSeatToPowerMap() {
-	if (num === 2) {
+	const n = effectiveSeatLayoutPlayerCount();
+	if (n === 2) {
 		return localSeat === 1
 			? { 1: '.MyPower', 0: '.PowerPlayer2' }
 			: { 0: '.MyPower', 1: '.PowerPlayer2' };
 	}
 
-	if (num === 3) {
+	if (n >= 3) {
 		if (localSeat === 1) {
 			return { 1: '.MyPower', 2: '.PowerPlayer3', 0: '.PowerPlayer4' };
 		}
@@ -418,13 +453,14 @@ function getSeatToBattleZoneMap() {
 }
 
 function getSeatToLevelMap() {
-	if (num === 2) {
+	const n = effectiveSeatLayoutPlayerCount();
+	if (n === 2) {
 		return localSeat === 1
 			? { 1: '.level-bottom-center', 0: '.level-top-center' }
 			: { 0: '.level-bottom-center', 1: '.level-top-center' };
 	}
 
-	if (num === 3) {
+	if (n >= 3) {
 		if (localSeat === 1) {
 			return { 1: '.level-bottom-center', 2: '.level-top-right', 0: '.level-top-left' };
 		}
@@ -459,6 +495,90 @@ function hideBattleResult() {
 	}
 }
 
+function formatGenderRu(gender) {
+	const g = String(gender || "").trim();
+	if (g === "Male") return "М";
+	if (g === "Female") return "Ж";
+	return "";
+}
+
+function getChickenOnHeadDicePenaltyForSeat(seat) {
+	// door24: chicken on your head
+	const s = Number(seat);
+	if (!Number.isFinite(s) || s < 0) {
+		return 0;
+	}
+	return isCardInSeatMainOrSide("door24", s) ? -1 : 0;
+}
+
+function applyDicePenaltyForSeat(seat, roll) {
+	const r = Number(roll);
+	if (!Number.isFinite(r)) {
+		return roll;
+	}
+	const next = r + getChickenOnHeadDicePenaltyForSeat(seat);
+	// Бросок кубика остаётся в диапазоне 1..6
+	return Math.max(1, Math.min(6, Math.floor(next)));
+}
+
+function hideSeatIconTooltip() {
+	const existing = document.getElementById("seat-icon-tooltip");
+	if (existing) {
+		existing.remove();
+	}
+}
+
+function showSeatIconTooltipForSeat(seat, anchorEl) {
+	if (!anchorEl) {
+		return;
+	}
+	hideSeatIconTooltip();
+	const s = Number(seat);
+	const name = String(characterBySeat?.[s]?.name || "").trim() || `Игрок ${s + 1}`;
+	const gender = formatGenderRu(characterBySeat?.[s]?.gender || "");
+	const tip = document.createElement("div");
+	tip.id = "seat-icon-tooltip";
+	tip.style.position = "fixed";
+	tip.style.zIndex = "100000";
+	tip.style.padding = "6px 10px";
+	tip.style.borderRadius = "10px";
+	tip.style.background = "rgba(0,0,0,0.72)";
+	tip.style.color = "#fff";
+	tip.style.fontSize = "18px";
+	tip.style.lineHeight = "1.1";
+	tip.style.pointerEvents = "none";
+	tip.textContent = gender ? `${name} (${gender})` : name;
+	const rect = anchorEl.getBoundingClientRect();
+	// Плашка прямо поверх иконки (по центру).
+	tip.style.left = `${Math.round(rect.left + rect.width / 2)}px`;
+	tip.style.top = `${Math.round(rect.top + rect.height / 2)}px`;
+	tip.style.transform = "translate(-50%, -50%)";
+	document.body.appendChild(tip);
+}
+
+function bindSeatIconHoverTooltips() {
+	const seatToIconMap = getSeatToIconMap();
+	Object.entries(seatToIconMap).forEach(([seatKey, selector]) => {
+		const seat = parseInt(seatKey, 10);
+		if (Number.isNaN(seat) || !selector) {
+			return;
+		}
+		const el = document.querySelector(selector);
+		if (!el) {
+			return;
+		}
+		if (String(el.dataset?.seatTooltipBound || "") === "1") {
+			return;
+		}
+		el.dataset.seatTooltipBound = "1";
+		el.addEventListener("mouseenter", () => showSeatIconTooltipForSeat(seat, el));
+		el.addEventListener("mouseleave", () => hideSeatIconTooltip());
+	});
+	// Если уводим курсор/перекладываем DOM — прячем.
+	window.addEventListener("scroll", hideSeatIconTooltip, { passive: true });
+	window.addEventListener("resize", hideSeatIconTooltip);
+}
+
 function setLevelBySeat(seat, level) {
 	const v = Math.max(1, Math.floor(Number(level)) || 1);
 	if (seat >= 0 && seat <= 2) {
@@ -491,12 +611,16 @@ export function isPlayerPlayZoneElement(zoneEl) {
 }
 
 export function getGlobalSeatForPlayZone(zoneEl) {
-	if (!zoneEl || !num) {
+	if (!zoneEl) {
+		return null;
+	}
+	const nPlayers = Number(num) || Number(window.num);
+	if (!Number.isFinite(nPlayers) || nPlayers < 1) {
 		return null;
 	}
 	// id при swap не совпадает с «ролью» зоны: ориентируемся на те же .zone2 / .zone5,
 	// что и getSeatToBattleZoneMap (querySelector по классу).
-	const maxSeat = Math.min(num, characterBySeat.length);
+	const maxSeat = Math.min(Math.floor(nPlayers), characterBySeat.length);
 	for (let seat = 0; seat < maxSeat; seat += 1) {
 		const { main, side } = getMainAndSideZoneElementsForSeat(seat);
 		if (zoneEl === main || zoneEl === side) {
@@ -507,10 +631,14 @@ export function getGlobalSeatForPlayZone(zoneEl) {
 }
 
 function isMainEquipmentZoneElement(zoneEl) {
-	if (!zoneEl || !num) {
+	if (!zoneEl) {
 		return false;
 	}
-	const maxSeat = Math.min(num, characterBySeat.length);
+	const nPlayers = Number(num) || Number(window.num);
+	if (!Number.isFinite(nPlayers) || nPlayers < 1) {
+		return false;
+	}
+	const maxSeat = Math.min(Math.floor(nPlayers), characterBySeat.length);
 	for (let seat = 0; seat < maxSeat; seat += 1) {
 		const { main } = getMainAndSideZoneElementsForSeat(seat);
 		if (main && zoneEl === main) {
@@ -521,10 +649,14 @@ function isMainEquipmentZoneElement(zoneEl) {
 }
 
 function isSideEquipmentZoneElement(zoneEl) {
-	if (!zoneEl || !num) {
+	if (!zoneEl) {
 		return false;
 	}
-	const maxSeat = Math.min(num, characterBySeat.length);
+	const nPlayers = Number(num) || Number(window.num);
+	if (!Number.isFinite(nPlayers) || nPlayers < 1) {
+		return false;
+	}
+	const maxSeat = Math.min(Math.floor(nPlayers), characterBySeat.length);
 	for (let seat = 0; seat < maxSeat; seat += 1) {
 		const { side } = getMainAndSideZoneElementsForSeat(seat);
 		if (side && zoneEl === side) {
@@ -567,10 +699,11 @@ function getHandElementForPlayerSeat(targetSeat) {
 	if (Number(targetSeat) === Number(localSeat)) {
 		return document.querySelector(".myhand");
 	}
-	if (num === 2) {
+	const n = effectiveSeatLayoutPlayerCount();
+	if (n === 2) {
 		return document.querySelector(".opponenthand");
 	}
-	if (num === 3) {
+	if (n >= 3) {
 		const bz = getSeatToBattleZoneMap();
 		const mainSel = bz[String(targetSeat)] ?? bz[targetSeat];
 		if (!mainSel) {
@@ -848,6 +981,10 @@ export function canPlaceDoorInPlayerEquipment(draggingCardEl, targetZoneEl) {
 	if (String(door.race || "") === "monster") {
 		return true;
 	}
+	// Проклятия и двери с bad_staff: любой игрок может положить на любого (в т.ч. на себя), без правил рас/классов.
+	if (String(door.special || "") === "Curse" || normalizeBadStaff(door.bad_staff)) {
+		return true;
+	}
 
 	const { main } = getMainAndSideZoneElementsForSeat(seat);
 	if (!main) {
@@ -1102,6 +1239,122 @@ function syncDoorCardMoveToZone(cardId, zoneId, targetId = null) {
 	});
 }
 
+function syncDoorCardMoveToDiscard(cardId) {
+	const z = document.getElementById("zone_doors_drop");
+	// Чтобы порядок сброса корректно восстанавливался после refresh, сохраняем targetId:
+	// "вставить после текущей верхней карты сброса" (то есть после последней в DOM).
+	let targetId = null;
+	if (z) {
+		const els = Array.from(z.querySelectorAll(".card"));
+		for (let i = els.length - 1; i >= 0; i--) {
+			const id = els[i]?.id;
+			// В сбросе есть плейсхолдер (id="card") — его нельзя использовать как targetId,
+			// иначе карты после refresh будут оказываться "внизу".
+			if (!id || id === "card") {
+				continue;
+			}
+			if (id === cardId) {
+				continue;
+			}
+			targetId = id;
+			break;
+		}
+	}
+	syncDoorCardMoveToZone(cardId, "zone_doors_drop", targetId);
+	// Для Change sex: как только карта проклятия попала в сброс, её можно применять снова.
+	const el = document.getElementById(String(cardId || "").trim());
+	if (el && String(el.dataset?.changeSexUsedNotDiscarded || "") === "1") {
+		el.dataset.changeSexUsedNotDiscarded = "";
+	}
+}
+
+/** Для проклятий с модалкой выбора. */
+const loseYourClassPendingBySeat = new Map(); // seat -> { curseCardId: string, classCardIds: string[] }
+
+function hideLoseYourClassModal() {
+	const existing = document.getElementById("lose-your-class-modal");
+	if (existing) {
+		existing.remove();
+	}
+}
+
+function openLoseYourClassModal({ seat, curseCardId, classCardIds }) {
+	hideLoseYourClassModal();
+	const modal = document.createElement("div");
+	modal.id = "lose-your-class-modal";
+	modal.className = "wizard-taming-pick-modal";
+	const panel = document.createElement("div");
+	panel.className = "wizard-taming-pick-panel";
+	const title = document.createElement("div");
+	title.className = "wizard-taming-pick-title";
+	title.textContent = "Потеряй один класс: выбери, какой сбросить";
+	panel.appendChild(title);
+
+	const cardsWrap = document.createElement("div");
+	cardsWrap.className = "wizard-taming-pick-cards";
+	cardsWrap.style.maxHeight = "min(55vh, 600px)";
+	cardsWrap.style.overflowY = "auto";
+
+	let selectedId = "";
+	classCardIds.forEach((id) => {
+		const door = window.doors?.find((d) => d.name === id);
+		const img = door?.img || "";
+		const btn = document.createElement("button");
+		btn.type = "button";
+		btn.className = "wizard-taming-pick-card";
+		btn.dataset.cardId = id;
+		const imgEl = document.createElement("img");
+		imgEl.className = "wizard-taming-pick-card-img";
+		imgEl.src = img;
+		imgEl.alt = id;
+		btn.appendChild(imgEl);
+		btn.addEventListener("click", () => {
+			selectedId = id;
+			cardsWrap.querySelectorAll(".wizard-taming-pick-card").forEach((x) => x.classList.remove("selected"));
+			btn.classList.add("selected");
+			applyBtn.disabled = false;
+		});
+		cardsWrap.appendChild(btn);
+	});
+
+	const applyBtn = document.createElement("button");
+	applyBtn.type = "button";
+	applyBtn.className = "wizard-taming-pick-apply-btn";
+	applyBtn.textContent = "Сбросить выбранный класс";
+	applyBtn.disabled = true;
+	applyBtn.addEventListener("click", () => {
+		if (!selectedId) {
+			return;
+		}
+		// Применяем локально сразу, чтобы пострадавший игрок видел сброс без ожидания эха сервера.
+		// Остальные игроки применят по широковещательному сообщению.
+		resolveLoseYourClassCurse({
+			seat,
+			curseCardId,
+			chosenClassCardId: selectedId,
+		});
+		socket.emit("message", {
+			method: "LoseYourClassResolve",
+			seat,
+			curseCardId,
+			chosenClassCardId: selectedId,
+		});
+		modal.remove();
+	});
+
+	panel.appendChild(cardsWrap);
+	panel.appendChild(applyBtn);
+	modal.appendChild(panel);
+	document.body.appendChild(modal);
+
+	modal.addEventListener("click", (e) => {
+		// Не даём закрывать кликом по фону, чтобы не зависало состояние.
+		if (e.target === modal) {
+			e.stopPropagation();
+		}
+	});
+}
+
 /**
  * Проклятие change class: сначала запоминаем верхний класс в сбросе дверей, затем сбрасываем все классы
  * (и Super Munchkin при наличии классов), затем экипируем запомнённый класс в основную зону.
@@ -1112,12 +1365,15 @@ function applyChangeClassCurseToSeat(seat, curseCardId) {
 	if (Number.isNaN(s) || s < 0) {
 		return;
 	}
+	// Эффекты проклятий должны эмититься ровно одним клиентом, иначе будет задвоение moveCard/уровней.
+	// Берём владельца места (того, у кого localSeat совпадает с seat).
+	if (Number(localSeat) !== Number(s)) {
+		return;
+	}
 	const curseId = String(curseCardId || "").trim();
 	const equippedClassIds = collectEquippedClassDoorIdsForSeat(s);
 	if (equippedClassIds.length === 0) {
-		if (curseId) {
-			moveBadStaffCardToDiscard(curseId);
-		}
+		if (curseId) syncDoorCardMoveToDiscard(curseId);
 		recalculateAllPowerDisplays();
 		return;
 	}
@@ -1125,7 +1381,7 @@ function applyChangeClassCurseToSeat(seat, curseCardId) {
 	const superIds = collectEquippedSuperMunchkinDoorIdsForSeat(s);
 	const stripIds = [...equippedClassIds, ...superIds.filter((id) => !equippedClassIds.includes(id))];
 	stripIds.forEach((id) => {
-		syncDoorCardMoveToZone(id, "zone_doors_drop", null);
+		syncDoorCardMoveToDiscard(id);
 	});
 	if (replacementId && document.getElementById(replacementId)) {
 		const { main } = getMainAndSideZoneElementsForSeat(s) || {};
@@ -1133,9 +1389,7 @@ function applyChangeClassCurseToSeat(seat, curseCardId) {
 			syncDoorCardMoveToZone(replacementId, main.id, null);
 		}
 	}
-	if (curseId) {
-		moveBadStaffCardToDiscard(curseId);
-	}
+	if (curseId) syncDoorCardMoveToDiscard(curseId);
 	recalculateAllPowerDisplays();
 }
 
@@ -1223,12 +1477,13 @@ function applyChangeRaceCurseToSeat(seat, curseCardId) {
 	if (Number.isNaN(s) || s < 0) {
 		return;
 	}
+	if (Number(localSeat) !== Number(s)) {
+		return;
+	}
 	const curseId = String(curseCardId || "").trim();
 	const equippedRaceIds = collectEquippedRaceDoorIdsForSeat(s);
 	if (equippedRaceIds.length === 0) {
-		if (curseId) {
-			moveBadStaffCardToDiscard(curseId);
-		}
+		if (curseId) syncDoorCardMoveToDiscard(curseId);
 		recalculateAllPowerDisplays();
 		return;
 	}
@@ -1236,7 +1491,7 @@ function applyChangeRaceCurseToSeat(seat, curseCardId) {
 	const halfBreedIds = collectEquippedHalfBreedDoorIdsForSeat(s);
 	const stripIds = [...equippedRaceIds, ...halfBreedIds.filter((id) => !equippedRaceIds.includes(id))];
 	stripIds.forEach((id) => {
-		syncDoorCardMoveToZone(id, "zone_doors_drop", null);
+		syncDoorCardMoveToDiscard(id);
 	});
 	if (replacementId && document.getElementById(replacementId)) {
 		const { main } = getMainAndSideZoneElementsForSeat(s) || {};
@@ -1244,10 +1499,199 @@ function applyChangeRaceCurseToSeat(seat, curseCardId) {
 			syncDoorCardMoveToZone(replacementId, main.id, null);
 		}
 	}
-	if (curseId) {
-		moveBadStaffCardToDiscard(curseId);
+	if (curseId) syncDoorCardMoveToDiscard(curseId);
+	recalculateAllPowerDisplays();
+}
+
+function emitLevelAdjust(seat, delta) {
+	const s = Number(seat);
+	const d = Number(delta) || 0;
+	if (!Number.isFinite(s) || s < 0 || !Number.isFinite(d) || d === 0) {
+		return;
+	}
+	socket.emit("message", { method: "LevelAdjust", seat: s, delta: d });
+}
+
+function resolveLoseYourClassCurse({ seat, curseCardId, chosenClassCardId }) {
+	const s = Number(seat);
+	const curseId = String(curseCardId || "").trim();
+	const chosenId = String(chosenClassCardId || "").trim();
+	if (!Number.isFinite(s) || s < 0 || !curseId) {
+		return;
+	}
+
+	const pending = loseYourClassPendingBySeat.get(s);
+	const allowed = pending?.classCardIds || [];
+	if (!chosenId || (allowed.length > 0 && !allowed.includes(chosenId))) {
+		return;
+	}
+
+	// Сбрасываем выбранный класс.
+	syncDoorCardMoveToDiscard(chosenId);
+	// И сбрасываем саму карту проклятия.
+	syncDoorCardMoveToDiscard(curseId);
+	loseYourClassPendingBySeat.delete(s);
+	recalculateAllPowerDisplays();
+}
+
+function applyLoseYourClassCurseToSeat(seat, curseCardId) {
+	const s = Number(seat);
+	if (Number.isNaN(s) || s < 0) {
+		return;
+	}
+	// Только владелец места эмитит LevelAdjust/moveCard, иначе эффект задваивается (2+ клиентов отправляют одно и то же).
+	if (Number(localSeat) !== Number(s)) {
+		return;
+	}
+	const curseId = String(curseCardId || "").trim();
+	const classIds = collectEquippedClassDoorIdsForSeat(s);
+	if (classIds.length === 0) {
+		emitLevelAdjust(s, -1);
+		if (curseId) syncDoorCardMoveToDiscard(curseId);
+		return;
+	}
+	if (classIds.length === 1) {
+		syncDoorCardMoveToDiscard(classIds[0]);
+		if (curseId) syncDoorCardMoveToDiscard(curseId);
+		recalculateAllPowerDisplays();
+		return;
+	}
+
+	// 2 класса: модалка выбора только если есть Super Munchkin.
+	const superIds = collectEquippedSuperMunchkinDoorIdsForSeat(s);
+	const hasSuper = superIds.length > 0;
+	if (!hasSuper) {
+		// Фолбэк: сбрасываем «верхний» класс (последний найденный).
+		const id = classIds[classIds.length - 1];
+		syncDoorCardMoveToDiscard(id);
+		if (curseId) syncDoorCardMoveToDiscard(curseId);
+		recalculateAllPowerDisplays();
+		return;
+	}
+
+	loseYourClassPendingBySeat.set(s, { curseCardId: curseId, classCardIds: classIds.slice(0, 2) });
+	// Модалку открывает только игрок, на которого применили проклятие.
+	if (Number(localSeat) === Number(s)) {
+		openLoseYourClassModal({ seat: s, curseCardId: curseId, classCardIds: classIds.slice(0, 2) });
+	}
+}
+
+function applyLoseYourRaceCurseToSeat(seat, curseCardId) {
+	const s = Number(seat);
+	if (Number.isNaN(s) || s < 0) {
+		return;
+	}
+	// Только владелец места эмитит moveCard, иначе эффект задваивается.
+	if (Number(localSeat) !== Number(s)) {
+		return;
+	}
+	const curseId = String(curseCardId || "").trim();
+	const raceIds = collectEquippedRaceDoorIdsForSeat(s);
+	if (raceIds.length === 0) {
+		// Рас нет — просто сбрасываем карту проклятия.
+		if (curseId) syncDoorCardMoveToDiscard(curseId);
+		return;
+	}
+	// Сбрасываем все экипированные расы и Half-breed (если был).
+	const halfBreedIds = collectEquippedHalfBreedDoorIdsForSeat(s);
+	const stripIds = [...raceIds, ...halfBreedIds.filter((id) => !raceIds.includes(id))];
+	stripIds.forEach((id) => syncDoorCardMoveToDiscard(id));
+	if (curseId) syncDoorCardMoveToDiscard(curseId);
+	recalculateAllPowerDisplays();
+}
+
+function applyMalignMirrorCurseToSeat(seat, curseCardId) {
+	const s = Number(seat);
+	if (Number.isNaN(s) || s < 0) {
+		return;
+	}
+	const curseId = String(curseCardId || "").trim();
+	if (!curseId) {
+		return;
+	}
+	// Локально состояние меняем у всех клиентов, но широковещательно "применить проклятие" эмитит только владелец места.
+	if (Number(localSeat) === Number(s)) {
+		socket.emit("message", { method: "MalignMirrorApply", seat: s, curseCardId: curseId });
 	}
 	recalculateAllPowerDisplays();
+}
+
+function tryActivateMalignMirrorForSeat(seat) {
+	const s = Number(seat);
+	if (!Number.isFinite(s) || s < 0) {
+		return;
+	}
+	// ВАЖНО: battleActive может расходиться между клиентами, используем наличие монстров на столе.
+	if (!getMonsterBattleContext().hasMonster) {
+		return;
+	}
+	if (!malignMirrorPendingBySeat.has(s) || malignMirrorActiveBySeat.has(s)) {
+		return;
+	}
+	if (isSeatParticipantInCurrentMonsterBattle(s)) {
+		malignMirrorActiveBySeat.set(s, malignMirrorPendingBySeat.get(s));
+		malignMirrorPendingBySeat.delete(s);
+	}
+}
+
+function tryActivateChangeSexPenaltyForSeat(seat) {
+	const s = Number(seat);
+	if (!Number.isFinite(s) || s < 0) {
+		return;
+	}
+	if (!getMonsterBattleContext().hasMonster) {
+		return;
+	}
+	if (!changeSexPendingBySeat.has(s) || changeSexActiveBySeat.has(s)) {
+		return;
+	}
+	if (isSeatParticipantInCurrentMonsterBattle(s)) {
+		changeSexActiveBySeat.set(s, changeSexPendingBySeat.get(s));
+		changeSexPendingBySeat.delete(s);
+	}
+}
+
+function applyChangeSexCurseToSeat(seat, curseCardId) {
+	const s = Number(seat);
+	if (Number.isNaN(s) || s < 0) {
+		return;
+	}
+	const curseId = String(curseCardId || "").trim();
+	if (!curseId) {
+		return;
+	}
+	// Эмитит только владелец места: смена пола должна быть серверным фактом.
+	if (Number(localSeat) !== Number(s)) {
+		return;
+	}
+	// Повторно применять можно только после того, как карта побывала в сбросе.
+	const curseEl = document.getElementById(curseId);
+	if (curseEl) {
+		const usedNotDiscarded = String(curseEl.dataset?.changeSexUsedNotDiscarded || "") === "1";
+		const inDiscard = String(curseEl.parentElement?.id || "") === "zone_doors_drop";
+		if (usedNotDiscarded && !inDiscard) {
+			return;
+		}
+	}
+	const currentGender = String(characterBySeat?.[s]?.gender || "").trim();
+	const nextGender = currentGender === "Female" ? "Male" : "Female";
+	socket.emit("message", { method: "ChangeSexApply", seat: s, curseCardId: curseId, gender: nextGender });
+}
+
+function isCardInSeatMainOrSide(cardId, seat) {
+	const id = String(cardId || "").trim();
+	if (!id) {
+		return false;
+	}
+	const { main, side } = getMainAndSideZoneElementsForSeat(seat) || {};
+	if (!main && !side) {
+		return false;
+	}
+	const el = document.getElementById(id);
+	if (!el) {
+		return false;
+	}
+	return (main && main.contains(el)) || (side && side.contains(el));
 }
 
 function moveBadStaffCardToDiscard(cardId) {
@@ -2526,6 +2970,35 @@ function findTreasureCardInSeatZones(cardId, seat) {
 			return found;
 		}
 	}
+	// Синхронизация сброса: при расхождении num/DOM карта соперника может лежать в «другой» руке/зоне.
+	if (localSeat != null && Number.isFinite(Number(localSeat)) && Number(s) !== Number(localSeat)) {
+		const extra = [
+			document.getElementById("opponenthand"),
+			document.getElementById("opponent2hand"),
+			document.getElementById("opponent3hand"),
+			document.querySelector(".opponenthand"),
+		].filter(Boolean);
+		for (const z of extra) {
+			if (zones.includes(z)) {
+				continue;
+			}
+			const hit = Array.from(z.querySelectorAll(".card")).find((c) => c && c.id === id);
+			if (hit) {
+				return hit;
+			}
+		}
+		const zoneSels = [".zone_opponent", ".zone_opponent2", ".zone_opponent3", ".zone_opponent_side", ".zone_opponent2_side", ".zone_opponent3_side"];
+		for (const sel of zoneSels) {
+			const z = document.querySelector(sel);
+			if (!z || zones.includes(z)) {
+				continue;
+			}
+			const hit = Array.from(z.querySelectorAll(".card")).find((c) => c && c.id === id);
+			if (hit) {
+				return hit;
+			}
+		}
+	}
 	return null;
 }
 
@@ -2582,6 +3055,9 @@ export function scheduleBadStaffIfNeeded(cardId, zoneEl) {
 	if (!badStaff) {
 		return;
 	}
+	if (badStaff.type === "chicken on your head") {
+		return;
+	}
 	if (door.race === 'monster') {
 		return;
 	}
@@ -2593,6 +3069,26 @@ export function scheduleBadStaffIfNeeded(cardId, zoneEl) {
 		return;
 	}
 	const zoneId = zoneEl.id;
+
+	if (badStaff.type === "income tax") {
+		setTimeout(() => {
+			const card = document.getElementById(cardId);
+			if (!card) {
+				return;
+			}
+			const { main, side } = getMainAndSideZoneElementsForSeat(seat) || {};
+			const stillEquipped = (main && main.contains(card)) || (side && side.contains(card));
+			if (!stillEquipped) {
+				return;
+			}
+			socket.emit("message", {
+				method: "IncomeTaxStart",
+				curseSeat: seat,
+				curseCardId: cardId,
+			});
+		}, 1000);
+		return;
+	}
 
 	setTimeout(() => {
 		const card = document.getElementById(cardId);
@@ -2608,6 +3104,528 @@ export function scheduleBadStaffIfNeeded(cardId, zoneEl) {
 			cardId,
 		});
 	}, 1000);
+}
+
+function ensureIncomeTaxBannerEl() {
+	let el = document.getElementById("income-tax-curse-banner");
+	if (!el) {
+		el = document.createElement("div");
+		el.id = "income-tax-curse-banner";
+		el.className = "income-tax-curse-banner";
+		el.setAttribute("aria-live", "polite");
+		document.body.appendChild(el);
+	}
+	return el;
+}
+
+function showIncomeTaxBanner(text) {
+	const el = ensureIncomeTaxBannerEl();
+	el.textContent = String(text || "");
+	el.classList.add("is-visible");
+}
+
+function hideIncomeTaxBanner() {
+	const el = document.getElementById("income-tax-curse-banner");
+	if (el) {
+		el.textContent = "";
+		el.classList.remove("is-visible");
+	}
+}
+
+function collectIncomeTaxTreasuresForSeat(seat) {
+	const s = Number(seat);
+	if (!Number.isFinite(s) || s < 0) {
+		return [];
+	}
+	const hand = getHandElementForPlayerSeat(s);
+	const { main, side } = getMainAndSideZoneElementsForSeat(s) || {};
+	const out = [];
+	const seen = new Set();
+	const pushZone = (zoneEl) => {
+		if (!zoneEl) {
+			return;
+		}
+		zoneEl.querySelectorAll(".card").forEach((cardEl) => {
+			const id = cardEl.id;
+			if (!id || !String(id).includes("treasure") || seen.has(id)) {
+				return;
+			}
+			const t = window.treasures?.find((tr) => tr.name === id);
+			if (!t) {
+				return;
+			}
+			const price = Number(t.cost);
+			if (!Number.isFinite(price) || price < 0) {
+				return;
+			}
+			seen.add(id);
+			const imgEl = cardEl.querySelector(".card-item");
+			out.push({
+				cardId: id,
+				cost: price,
+				img: imgEl?.src || t.img,
+			});
+		});
+	};
+	pushZone(hand);
+	pushZone(main);
+	pushZone(side);
+	return out;
+}
+
+function getIncomeTaxTotalGoldForSeat(seat) {
+	return collectIncomeTaxTreasuresForSeat(seat).reduce((acc, x) => acc + (Number(x.cost) || 0), 0);
+}
+
+/** Стоимость эталонной шмотки (после выбора жертвой налога). */
+function getIncomeTaxReferenceCostForTreasureId(treasureId) {
+	const tid = String(treasureId || "").trim();
+	if (!tid) {
+		return 0;
+	}
+	const t = window.treasures?.find((x) => x.name === tid);
+	return Math.max(0, Number(t?.cost) || 0);
+}
+
+function closeIncomeTaxInitiatorModal() {
+	const m = document.getElementById("income-tax-initiator-modal");
+	if (m) {
+		m.remove();
+	}
+}
+
+function closeIncomeTaxResponderModal() {
+	const m = document.getElementById("income-tax-responder-modal");
+	if (m) {
+		m.remove();
+	}
+}
+
+function openIncomeTaxInitiatorModal(curseCardId) {
+	closeIncomeTaxInitiatorModal();
+	const curseSeat = incomeTaxSession ? incomeTaxSession.curseSeat : Number(localSeat);
+	const cards = collectIncomeTaxTreasuresForSeat(curseSeat);
+
+	const modal = document.createElement("div");
+	modal.id = "income-tax-initiator-modal";
+	modal.className = "sell-treasures-modal";
+
+	const panel = document.createElement("div");
+	panel.className = "sell-treasures-panel";
+
+	const topBar = document.createElement("div");
+	topBar.className = "sell-treasures-topbar";
+	const titleText = document.createElement("div");
+	titleText.className = "sell-treasures-total";
+	titleText.style.flex = "1";
+	titleText.style.fontSize = "22px";
+	titleText.textContent = "Налог: выбери одну шмотку для сброса";
+	const confirmBtn = document.createElement("button");
+	confirmBtn.className = "sell-treasures-btn";
+	confirmBtn.textContent = cards.length ? "Сбросить выбранную" : "Продолжить (нет шмоток)";
+	confirmBtn.disabled = cards.length > 0;
+	topBar.appendChild(titleText);
+	topBar.appendChild(confirmBtn);
+
+	const cardsContainer = document.createElement("div");
+	cardsContainer.className = "sell-treasures-cards";
+	panel.appendChild(topBar);
+	panel.appendChild(cardsContainer);
+	modal.appendChild(panel);
+	document.body.appendChild(modal);
+
+	let selectedId = "";
+	const updateBtn = () => {
+		if (!cards.length) {
+			confirmBtn.disabled = false;
+			return;
+		}
+		confirmBtn.disabled = !selectedId;
+	};
+
+	if (!cards.length) {
+		const emptyState = document.createElement("div");
+		emptyState.className = "sell-treasures-empty";
+		emptyState.textContent = "Нет шмоток — налог для остальных будет 0 золота.";
+		cardsContainer.appendChild(emptyState);
+	} else {
+		cards.forEach((cardData) => {
+			const item = document.createElement("button");
+			item.type = "button";
+			item.className = "sell-treasures-card";
+			item.dataset.cardId = cardData.cardId;
+			const img = document.createElement("img");
+			img.className = "sell-treasures-card-img";
+			img.src = cardData.img;
+			img.alt = cardData.cardId;
+			const costLabel = document.createElement("div");
+			costLabel.className = "sell-treasures-card-cost";
+			costLabel.textContent = `${cardData.cost}`;
+			item.appendChild(img);
+			item.appendChild(costLabel);
+			item.addEventListener("click", () => {
+				const cid = item.dataset.cardId;
+				if (!cid) {
+					return;
+				}
+				cardsContainer.querySelectorAll(".sell-treasures-card").forEach((el) => el.classList.remove("is-selected"));
+				if (selectedId === cid) {
+					selectedId = "";
+				} else {
+					selectedId = cid;
+					item.classList.add("is-selected");
+				}
+				updateBtn();
+			});
+			cardsContainer.appendChild(item);
+		});
+	}
+
+	confirmBtn.addEventListener("click", () => {
+		const tid = selectedId || "";
+		socket.emit("message", {
+			method: "IncomeTaxInitiatorPick",
+			curseSeat,
+			curseCardId: String(curseCardId || "").trim(),
+			treasureId: tid,
+			referenceCost: getIncomeTaxReferenceCostForTreasureId(tid),
+		});
+		closeIncomeTaxInitiatorModal();
+	});
+}
+
+function openIncomeTaxResponderModal(referenceCost, curseCardId) {
+	closeIncomeTaxResponderModal();
+	const ref = Math.max(0, Number(referenceCost) || 0);
+	const cards = collectIncomeTaxTreasuresForSeat(localSeat);
+
+	const modal = document.createElement("div");
+	modal.id = "income-tax-responder-modal";
+	modal.className = "sell-treasures-modal";
+
+	const panel = document.createElement("div");
+	panel.className = "sell-treasures-panel";
+
+	const topBar = document.createElement("div");
+	topBar.className = "sell-treasures-topbar";
+	const titleText = document.createElement("div");
+	titleText.className = "sell-treasures-total";
+	titleText.style.flex = "1";
+	titleText.style.fontSize = "22px";
+	titleText.textContent = `Налог: сбрось шмотки минимум на ${ref} золота (сейчас: 0).`;
+	const confirmBtn = document.createElement("button");
+	confirmBtn.className = "sell-treasures-btn";
+	confirmBtn.textContent = "Подтвердить сброс";
+	confirmBtn.disabled = ref > 0;
+	topBar.appendChild(titleText);
+	topBar.appendChild(confirmBtn);
+
+	const cardsContainer = document.createElement("div");
+	cardsContainer.className = "sell-treasures-cards";
+	panel.appendChild(topBar);
+	panel.appendChild(cardsContainer);
+	modal.appendChild(panel);
+	document.body.appendChild(modal);
+
+	const selected = new Set();
+	const selectedOrder = [];
+	const cardCostById = new Map();
+	cards.forEach(({ cardId, cost }) => {
+		cardCostById.set(cardId, Number(cost) || 0);
+	});
+	const sumSelected = () => {
+		let t = 0;
+		selected.forEach((id) => {
+			t += cardCostById.get(id) || 0;
+		});
+		return t;
+	};
+	const refreshTitle = () => {
+		const s = sumSelected();
+		titleText.textContent = `Налог: сбрось шмотки минимум на ${ref} золота (сейчас: ${s}).`;
+		confirmBtn.disabled = ref > 0 && s < ref;
+	};
+
+	if (!cards.length && ref > 0) {
+		const emptyState = document.createElement("div");
+		emptyState.className = "sell-treasures-empty";
+		emptyState.textContent = "Нет шмоток для выбора.";
+		cardsContainer.appendChild(emptyState);
+		confirmBtn.disabled = true;
+	} else {
+		cards.forEach((cardData) => {
+			const item = document.createElement("button");
+			item.type = "button";
+			item.className = "sell-treasures-card";
+			item.dataset.cardId = cardData.cardId;
+			const img = document.createElement("img");
+			img.className = "sell-treasures-card-img";
+			img.src = cardData.img;
+			img.alt = cardData.cardId;
+			const costLabel = document.createElement("div");
+			costLabel.className = "sell-treasures-card-cost";
+			costLabel.textContent = `${cardData.cost}`;
+			item.appendChild(img);
+			item.appendChild(costLabel);
+			item.addEventListener("click", () => {
+				const cid = item.dataset.cardId;
+				if (!cid) {
+					return;
+				}
+				if (selected.has(cid)) {
+					selected.delete(cid);
+					const idx = selectedOrder.indexOf(cid);
+					if (idx >= 0) {
+						selectedOrder.splice(idx, 1);
+					}
+					item.classList.remove("is-selected");
+				} else {
+					selected.add(cid);
+					selectedOrder.push(cid);
+					item.classList.add("is-selected");
+				}
+				refreshTitle();
+			});
+			cardsContainer.appendChild(item);
+		});
+	}
+
+	confirmBtn.addEventListener("click", () => {
+		if (ref > 0 && sumSelected() < ref) {
+			return;
+		}
+		socket.emit("message", {
+			method: "IncomeTaxResponderSubmit",
+			seat: localSeat,
+			cardIds: Array.from(selected),
+			curseCardId: String(curseCardId || "").trim(),
+		});
+		closeIncomeTaxResponderModal();
+	});
+}
+
+function finishIncomeTaxCurse(curseCardId) {
+	hideIncomeTaxBanner();
+	closeIncomeTaxInitiatorModal();
+	closeIncomeTaxResponderModal();
+	incomeTaxSession = null;
+	const cid = String(curseCardId || "").trim();
+	if (cid) {
+		moveBadStaffCardToDiscard(cid);
+	}
+	recalculateAllPowerDisplays();
+}
+
+/** Завершение налога: любой клиент может отправить (жертва не всегда надёжно определяется через localSeat). Сервер идемпотентен по сбросу карты. */
+function tryEmitIncomeTaxCurseFinishedIfDone() {
+	if (!incomeTaxSession || incomeTaxSession.finishEmitSent) {
+		return;
+	}
+	const { curseCardId, phase2NeedModal, phase2Done, phase2AllCount } = incomeTaxSession;
+	const need = Array.isArray(phase2NeedModal) ? phase2NeedModal : [];
+	const total = Number.isFinite(Number(phase2AllCount)) && Number(phase2AllCount) > 0
+		? Number(phase2AllCount)
+		: need.length;
+	if (phase2Done.size < total) {
+		return;
+	}
+	incomeTaxSession.finishEmitSent = true;
+	const cid = String(curseCardId || "").trim();
+	if (cid) {
+		socket.emit("message", { method: "IncomeTaxCurseFinished", curseCardId: cid });
+	}
+}
+
+function handleIncomeTaxStart(res) {
+	const curseSeat = Number(res.curseSeat);
+	const curseCardId = String(res.curseCardId || "").trim();
+	if (!Number.isFinite(curseSeat) || curseSeat < 0 || !curseCardId) {
+		return;
+	}
+	closeIncomeTaxInitiatorModal();
+	closeIncomeTaxResponderModal();
+	incomeTaxSession = {
+		curseSeat,
+		curseCardId,
+		referenceCost: null,
+		phase2NeedModal: [],
+		phase2AllCount: 0,
+		phase2Done: new Set(),
+		finishEmitSent: false,
+	};
+	showIncomeTaxBanner(`Налог: ${getSeatLabel(curseSeat)} выбирает шмотку для сброса.`);
+	if (localSeat !== null && localSeat !== undefined && Number(localSeat) === curseSeat) {
+		openIncomeTaxInitiatorModal(curseCardId);
+	}
+}
+
+function handleIncomeTaxInitiatorPick(res) {
+	const curseSeat = Number(res.curseSeat);
+	const curseCardId = String(res.curseCardId || "").trim();
+	const treasureId = String(res.treasureId || "").trim();
+	if (!Number.isFinite(curseSeat) || curseSeat < 0 || !curseCardId) {
+		return;
+	}
+	let referenceCost = Number(res.referenceCost);
+	if (!Number.isFinite(referenceCost)) {
+		referenceCost = 0;
+		if (treasureId) {
+			const t = window.treasures?.find((x) => x.name === treasureId);
+			referenceCost = Math.max(0, Number(t?.cost) || 0);
+		}
+	}
+	referenceCost = Math.max(0, referenceCost);
+
+	if (treasureId) {
+		moveTreasureCardToDiscard(treasureId, { ownerSeat: curseSeat });
+	}
+
+	// На каждом клиенте свой подсчёт по локальному DOM (без «снимка» жертвы): < эталона → сброс всех шмоток и −1 уровень, иначе → модалка выбора.
+	const nPlayersForModal = Math.min(3, Math.max(2, Number(num) || Number(window.num) || 2));
+	const insufficientSeats = [];
+	const discardIdsBySeat = {};
+	for (let s = 0; s < nPlayersForModal; s++) {
+		if (s === curseSeat) {
+			continue;
+		}
+		if (getIncomeTaxTotalGoldForSeat(s) < referenceCost) {
+			insufficientSeats.push(s);
+			discardIdsBySeat[s] = collectIncomeTaxTreasuresForSeat(s).map((r) => r.cardId).filter(Boolean);
+		}
+	}
+	const payingSeats = [];
+	for (let s = 0; s < nPlayersForModal; s++) {
+		if (s === curseSeat) {
+			continue;
+		}
+		if (!insufficientSeats.includes(s)) {
+			payingSeats.push(s);
+		}
+	}
+	const needModal = payingSeats;
+
+	// Полный сброс «бедного» рассылает только сам игрок (у жертвы налога на экране чужие суммы могли бы ошибиться).
+	for (const s of insufficientSeats) {
+		const rawIds = discardIdsBySeat[s] ?? discardIdsBySeat[String(s)] ?? [];
+		const ids = Array.isArray(rawIds) ? rawIds.filter(Boolean) : [];
+		if (localSeat !== null && localSeat !== undefined && Number(localSeat) === s) {
+			for (const id of ids) {
+				moveTreasureCardToDiscard(id, { ownerSeat: s });
+			}
+			let cur = levelBySeat[s];
+			if (cur == null || Number.isNaN(cur)) {
+				cur = 1;
+			}
+			setLevelBySeat(s, Math.max(1, cur - 1));
+			socket.emit("message", {
+				method: "IncomeTaxInsufficientDumpSync",
+				seat: s,
+				cardIds: ids,
+			});
+		}
+	}
+
+	if (localSeat !== null && localSeat !== undefined && Number(localSeat) === curseSeat) {
+		socket.emit("message", {
+			method: "IncomeTaxSyncDiscards",
+			cardIds: treasureId ? [treasureId] : [],
+			levelDownSeats: [],
+		});
+	}
+
+	const bannerParts = [];
+	if (insufficientSeats.length) {
+		const who = insufficientSeats
+			.map((s) => (localSeat !== null && localSeat !== undefined && Number(localSeat) === s ? "У тебя" : getSeatLabel(s)))
+			.join(", ");
+		bannerParts.push(`${who} — недостаточно суммы стоимости шмоток (нужно ${referenceCost}).`);
+	}
+	if (bannerParts.length) {
+		showIncomeTaxBanner(`Налог: ${bannerParts.join(" ")}`);
+	} else {
+		hideIncomeTaxBanner();
+	}
+
+	const phase2AllCount = insufficientSeats.length + payingSeats.length;
+	const phase2DoneInit = new Set(insufficientSeats);
+	const mergePhase2Done = () => {
+		const merged = new Set(phase2DoneInit);
+		if (incomeTaxSession && incomeTaxSession.curseCardId === curseCardId && incomeTaxSession.phase2Done) {
+			for (const s0 of incomeTaxSession.phase2Done) {
+				const n = Number(s0);
+				if (!Number.isFinite(n)) {
+					continue;
+				}
+				if (insufficientSeats.includes(n) || payingSeats.includes(n)) {
+					merged.add(n);
+				}
+			}
+		}
+		return merged;
+	};
+	const nextPhase2Done = mergePhase2Done();
+
+	if (!incomeTaxSession || incomeTaxSession.curseCardId !== curseCardId) {
+		incomeTaxSession = {
+			curseSeat,
+			curseCardId,
+			referenceCost,
+			phase2NeedModal: needModal,
+			phase2AllCount,
+			phase2Done: nextPhase2Done,
+			finishEmitSent: false,
+		};
+	} else {
+		incomeTaxSession.referenceCost = referenceCost;
+		incomeTaxSession.phase2NeedModal = needModal;
+		incomeTaxSession.phase2AllCount = phase2AllCount;
+		incomeTaxSession.phase2Done = nextPhase2Done;
+	}
+
+	if (needModal.length === 0) {
+		tryEmitIncomeTaxCurseFinishedIfDone();
+		return;
+	}
+
+	for (const s of needModal) {
+		if (localSeat !== null && localSeat !== undefined && Number(localSeat) === s) {
+			openIncomeTaxResponderModal(referenceCost, curseCardId);
+		}
+	}
+	tryEmitIncomeTaxCurseFinishedIfDone();
+}
+
+function handleIncomeTaxInsufficientDumpSync(res) {
+	const seat = Number(res.seat);
+	const cardIds = Array.isArray(res.cardIds) ? res.cardIds.filter(Boolean) : [];
+	if (!Number.isFinite(seat) || seat < 0) {
+		return;
+	}
+	if (localSeat !== null && localSeat !== undefined && Number(localSeat) === seat) {
+		return;
+	}
+	cardIds.forEach((id) => moveTreasureCardToDiscard(id, { ownerSeat: seat }));
+	let cur = levelBySeat[seat];
+	if (cur == null || Number.isNaN(cur)) {
+		cur = 1;
+	}
+	setLevelBySeat(seat, Math.max(1, cur - 1));
+	recalculateAllPowerDisplays();
+}
+
+function handleIncomeTaxResponderSubmit(res) {
+	const seat = Number(res.seat);
+	const curseCardId = String(res.curseCardId || "").trim();
+	const cardIds = Array.isArray(res.cardIds) ? res.cardIds.filter(Boolean) : [];
+	if (!Number.isFinite(seat) || seat < 0 || !curseCardId) {
+		return;
+	}
+	cardIds.forEach((id) => moveTreasureCardToDiscard(id, { ownerSeat: seat }));
+	if (incomeTaxSession && incomeTaxSession.curseCardId === curseCardId) {
+		incomeTaxSession.phase2Done.add(seat);
+		tryEmitIncomeTaxCurseFinishedIfDone();
+	}
+	recalculateAllPowerDisplays();
 }
 
 function applyTreasureLevelToSeat(seat, levelGain) {
@@ -2638,14 +3656,17 @@ function getLocalPlayerSellableTreasureCards() {
 			if (!treasure) {
 				return;
 			}
-			const cost = Number(treasure.cost) || 0;
-			if (cost <= 0) {
+			const price = Number(treasure.cost);
+			if (!Number.isFinite(price) || price < 0) {
+				return;
+			}
+			if (price === 0) {
 				return;
 			}
 			cards.push({
 				cardId: cardEl.id,
 				img: treasure.img,
-				cost,
+				cost: price,
 			});
 		});
 	};
@@ -2964,6 +3985,12 @@ function isSeatParticipantInCurrentMonsterBattle(seat) {
 		return false;
 	}
 	if (Number(seat) === Number(getMonsterFightSeat())) {
+		return true;
+	}
+	// Помощник участвует в бою. На некоторых клиентах acceptedHelperSeat может обновляться с задержкой,
+	// поэтому учитываем и "ожидающих" помощи (pendingHelpSeats) — это ближе к пользовательскому ожиданию:
+	// как только игрок вовлечён в бой как помощник, проклятия/ограничения боя должны действовать.
+	if (pendingHelpSeats?.has?.(Number(seat))) {
 		return true;
 	}
 	if (acceptedHelperSeat != null && acceptedHelperSeat >= 0 && Number(seat) === Number(acceptedHelperSeat)) {
@@ -5863,12 +6890,12 @@ function promptLoadedDieAfterRoll({ seat, rawRoll, onFinalize }) {
 	const s = Number(seat);
 	const r = Number(rawRoll);
 	if (!Number.isFinite(s) || !Number.isFinite(r) || r < 1 || r > 6) {
-		onFinalize?.(rawRoll);
+		onFinalize?.(applyDicePenaltyForSeat(seat, rawRoll));
 		return;
 	}
 	const ids = getLoadedDieTreasureCardIdsForSeat(s);
 	if (!ids.length) {
-		onFinalize?.(rawRoll);
+		onFinalize?.(applyDicePenaltyForSeat(seat, rawRoll));
 		return;
 	}
 	hideLoadedDieModals();
@@ -5937,10 +6964,11 @@ function promptLoadedDieAfterRoll({ seat, rawRoll, onFinalize }) {
 			if (!picked) return;
 			hideLoadedDieModals();
 			socket.emit("message", { method: "LoadedDieDiscard", seat: s, cardId: dieCardId });
-			onFinalize?.(picked);
+			const finalPicked = applyDicePenaltyForSeat(seat, picked);
+			onFinalize?.(finalPicked);
 			// Если это "обычный" бросок (не смывка/не кража), синхронизируем отображение кубика у остальных игроков.
-			if (!escapeActive && !thiefTheftBoardDicePending && Number(picked) !== Number(rawRoll)) {
-				socket.emit("message", { method: "RandDice", digit: Number(picked) });
+			if (!escapeActive && !thiefTheftBoardDicePending && Number(finalPicked) !== Number(rawRoll)) {
+				socket.emit("message", { method: "RandDice", digit: Number(finalPicked) });
 			}
 		});
 		pPanel.appendChild(pTitle);
@@ -5951,7 +6979,7 @@ function promptLoadedDieAfterRoll({ seat, rawRoll, onFinalize }) {
 		pick.addEventListener("click", (e) => {
 			if (e.target === pick) {
 				hideLoadedDieModals();
-				onFinalize?.(rawRoll);
+				onFinalize?.(applyDicePenaltyForSeat(seat, rawRoll));
 			}
 		});
 		pushOpenModalsToServerDebounced();
@@ -5960,7 +6988,7 @@ function promptLoadedDieAfterRoll({ seat, rawRoll, onFinalize }) {
 	yesBtn.addEventListener("click", openPick);
 	noBtn.addEventListener("click", () => {
 		hideLoadedDieModals();
-		onFinalize?.(rawRoll);
+		onFinalize?.(applyDicePenaltyForSeat(seat, rawRoll));
 	});
 	panel.appendChild(title);
 	panel.appendChild(cardImg);
@@ -5971,7 +6999,7 @@ function promptLoadedDieAfterRoll({ seat, rawRoll, onFinalize }) {
 	confirm.addEventListener("click", (e) => {
 		if (e.target === confirm) {
 			hideLoadedDieModals();
-			onFinalize?.(rawRoll);
+			onFinalize?.(applyDicePenaltyForSeat(seat, rawRoll));
 		}
 	});
 	pushOpenModalsToServerDebounced();
@@ -7337,6 +8365,10 @@ function recalculateMyBonusDisplay() {
 		activeCombatPower = activeCharacterPower + equipPow;
 		zone3CombatPower = 2 * zone3BonusPower;
 	}
+	// Change sex: -5 к силе в одном бою (когда игрок участвует в бою).
+	if (battleActive && powerSeat != null && changeSexActiveBySeat.has(powerSeat) && isSeatParticipantInCurrentMonsterBattle(powerSeat)) {
+		activeCombatPower -= 5;
+	}
 	let helpersBonusPower = 0;
 	let frenzyBonusPower = 0;
 	let exorcismBonusPower = 0;
@@ -7621,7 +8653,10 @@ function applyRoomStateFromServer(state) {
 	ensureDecksFilledForSnapshot(state);
 
 	// Переносим карты по зонам.
+	// ВАЖНО: порядок в сбросах восстанавливаем строго по targetId-цепочкам (а не по порядку ключей объекта).
 	const cards = state.cards && typeof state.cards === "object" ? state.cards : {};
+	/** @type {{ id: string, el: HTMLElement, zoneEl: HTMLElement, targetId: string | null }[]} */
+	const items = [];
 	Object.entries(cards).forEach(([cardId, pos]) => {
 		const el = document.getElementById(cardId);
 		if (!el) return;
@@ -7641,15 +8676,41 @@ function applyRoomStateFromServer(state) {
 			zoneEl = zoneId ? document.getElementById(zoneId) : null;
 		}
 		if (!zoneEl) return;
-		// targetId — это "вставить после target", а НЕ "сделать target родителем".
-		if (targetId) {
-			const target = document.getElementById(targetId);
-			if (target && target !== el && zoneEl.contains(target)) {
-				zoneEl.insertBefore(el, target.nextSibling);
-				return;
-			}
+		items.push({ id: cardId, el, zoneEl, targetId });
+	});
+
+	const byZone = new Map();
+	items.forEach((it) => {
+		const key = it.zoneEl;
+		const arr = byZone.get(key) || [];
+		arr.push(it);
+		byZone.set(key, arr);
+	});
+
+	const isDiscardZoneId = (zoneEl) => {
+		const id = String(zoneEl?.id || "");
+		return id === "zone_doors_drop" || id === "zone_treasure_drop";
+	};
+
+	byZone.forEach((zoneItems, zoneEl) => {
+		if (isDiscardZoneId(zoneEl)) {
+			// Критично: верх сброса должен соответствовать "последним moveCard" на сервере.
+			// Сервер поддерживает порядок ключей state.cards как историю последних перемещений,
+			// поэтому для сброса восстанавливаем строго в этом порядке (без targetId-графов).
+			zoneItems.forEach((it) => zoneEl.appendChild(it.el));
+			return;
 		}
-		zoneEl.appendChild(el);
+		// Для не-сбросов порядок не критичен: вставляем по targetId, иначе append.
+		zoneItems.forEach((it) => {
+			if (it.targetId) {
+				const target = document.getElementById(it.targetId);
+				if (target && target !== it.el && zoneEl.contains(target)) {
+					zoneEl.insertBefore(it.el, target.nextSibling);
+					return;
+				}
+			}
+			zoneEl.appendChild(it.el);
+		});
 	});
 
 	// Восстанавливаем привязки Cheat/Наёмничка.
@@ -7679,6 +8740,7 @@ function applyRoomStateFromServer(state) {
 	// поэтому принудительно включаем интерактивность под текущее число игроков.
 	const nPlayers = Number(state?.num) || window.num || num || 0;
 	updatePlayersUiVisibility(nPlayers);
+	bindSeatIconHoverTooltips();
 	UpdatebackImgDoor();
 	UpdatebackImgTreasure();
 	UpdateZones();
@@ -9243,7 +10305,11 @@ function getSeatCombatPower(seat) {
 	const seatToPowerMap = getSeatToPowerMap();
 	const powerSelector = seatToPowerMap[seat];
 	if (powerSelector) {
-		return getNumericText(powerSelector);
+		let base = getNumericText(powerSelector);
+		if (battleActive && changeSexActiveBySeat.has(seat) && isSeatParticipantInCurrentMonsterBattle(seat)) {
+			base -= 5;
+		}
+		return base;
 	}
 
 	// Fallback, если селектор не найден (не должно происходить в штатном сценарии).
@@ -9434,14 +10500,27 @@ function updateCharacterStatesFromBoard() {
 		character.hasSuperMunchkin = hasSuperMunchkin;
 
 		// Теперь, когда race/kind уже актуальны, считаем силу от шмоток (часть может зависеть от расы).
+		const malignMirrorRestrict = Boolean(malignMirrorActiveBySeat.has(seat))
+			&& isSeatParticipantInCurrentMonsterBattle(seat);
 		const equippedTreasures = mainCards
 			.map((cardEl) => {
 				const t = window.treasures?.find((tr) => tr.name === cardEl.id);
 				if (!t) {
 					return null;
 				}
+				const isHireling = isTreasureSpecial(cardEl.id, "Hireling");
+				const isArmor = Number(t.body) === 1;
+
+				// Malign mirrror: в бою бонус дают только броник (body=1) и наёмничек.
+				// Броня с Cheat по-прежнему даёт бонус (Cheat не меняет body), броня у наёмничка тоже даёт бонус.
+				if (malignMirrorRestrict && !isArmor && !isHireling) {
+					// Слоты/типы оставляем как у карты, но бонус силы обнуляем.
+					return { ...t, power: 0, powerByRace: null };
+				}
 				// Шмотка, выданная наёмничку, не занимает слоты/big и игнорирует ограничения.
 				if (cardEl?.dataset?.hirelingCardId) {
+					// Важно: даже если это броня (body=1), под Malign mirrror она должна продолжать давать бонус.
+					// Поэтому power НЕ трогаем здесь (он уже обнулён выше только для не-armor).
 					return { ...t, body: 0, hand: 0, footwear: 0, hat: 0, big: 0, restrictions: null };
 				}
 				// Разовые шмотки можно класть в экипировку, но бонус силы они не дают.
@@ -9574,6 +10653,67 @@ function updateHelpUi() {
 }
 
 export function recalculateAllPowerDisplays() {
+	// Malign mirrror: если карта проклятия больше не в экипировке/side у игрока, эффект снимаем.
+	// Это чисто производное от DOM-состояния, поэтому безопасно выполнять на всех клиентах.
+	for (const [seat, curseId] of malignMirrorPendingBySeat.entries()) {
+		if (curseId && !isCardInSeatMainOrSide(curseId, seat)) {
+			malignMirrorPendingBySeat.delete(seat);
+		}
+	}
+	for (const [seat, curseId] of malignMirrorActiveBySeat.entries()) {
+		if (curseId && !isCardInSeatMainOrSide(curseId, seat)) {
+			malignMirrorActiveBySeat.delete(seat);
+		}
+	}
+
+	// Change sex: если карта проклятия больше не в экипировке/side у игрока, эффект/ожидание снимаем.
+	for (const [seat, curseId] of changeSexPendingBySeat.entries()) {
+		// Проклятие действует до конца боя или пока карту не уберут в сброс.
+		const el = curseId ? document.getElementById(curseId) : null;
+		const inDiscard = el && String(el.parentElement?.id || "") === "zone_doors_drop";
+		if (curseId && inDiscard) {
+			changeSexPendingBySeat.delete(seat);
+		}
+	}
+	for (const [seat, curseId] of changeSexActiveBySeat.entries()) {
+		const el = curseId ? document.getElementById(curseId) : null;
+		const inDiscard = el && String(el.parentElement?.id || "") === "zone_doors_drop";
+		if (curseId && inDiscard) {
+			changeSexActiveBySeat.delete(seat);
+		}
+	}
+
+	// До пересчёта силы актуализируем состояние проклятия Malign mirrror по текущему бою.
+	// Это важно, потому что сама сила/шмотки считаются внутри updateCharacterStatesFromBoard.
+	if (battleActive) {
+		for (let seat = 0; seat < characterBySeat.length; seat++) {
+			if (malignMirrorActiveBySeat.has(seat)) {
+				continue;
+			}
+			if (!malignMirrorPendingBySeat.has(seat)) {
+				continue;
+			}
+			// Для помощника acceptedHelperSeat может не успеть синхронизироваться на всех клиентах,
+			// поэтому дополнительно считаем участником боя по факту: если бой активен и место игрока — либо ведущий,
+			// либо у него на столе есть принятая помощь (acceptedHelperSeat), либо его сила учитывается в бою.
+			// Здесь берём самое надёжное: isSeatParticipantInCurrentMonsterBattle.
+			if (isSeatParticipantInCurrentMonsterBattle(seat)) {
+				malignMirrorActiveBySeat.set(seat, malignMirrorPendingBySeat.get(seat));
+				malignMirrorPendingBySeat.delete(seat);
+			}
+		}
+	}
+	// Change sex: активация штрафа при входе в бой.
+	if (getMonsterBattleContext().hasMonster) {
+		for (let seat = 0; seat < characterBySeat.length; seat++) {
+			if (changeSexActiveBySeat.has(seat)) continue;
+			if (!changeSexPendingBySeat.has(seat)) continue;
+			if (isSeatParticipantInCurrentMonsterBattle(seat)) {
+				changeSexActiveBySeat.set(seat, changeSexPendingBySeat.get(seat));
+				changeSexPendingBySeat.delete(seat);
+			}
+		}
+	}
 	updateCharacterStatesFromBoard();
 	// Fail-safe: после любого пересчёта держим Cheat в консистентном состоянии.
 	enforceCheatAttachmentsInvariant();
@@ -9987,6 +11127,11 @@ socket.on("message", response => {
         zone.appendChild(card);
       }
     }
+
+		// Change sex: как только карта проклятия оказалась в сбросе дверей, её можно применять снова.
+		if (response.zoneId === "zone_doors_drop" && card && String(card.dataset?.changeSexUsedNotDiscarded || "") === "1") {
+			card.dataset.changeSexUsedNotDiscarded = "";
+		}
 		
     adjustCardWidth('.myhand');
     adjustCardWidth('.zone2');
@@ -10308,6 +11453,8 @@ socket.on("message", response => {
 		}
 		// Обновляем тексты, где могли использоваться имена.
 		recalculateAllPowerDisplays();
+		// Тултип берёт данные динамически, но при смене пола/имени лучше скрыть, чтобы не было "старого" текста.
+		hideSeatIconTooltip();
 	}
 	if (response.method === "CheatAttach") {
 		const seat = parseInt(response.seat, 10);
@@ -10494,7 +11641,10 @@ socket.on("message", response => {
 	if (response.method === "OfferHelp") {
 		const helperSeat = parseInt(response.helperSeat, 10);
 		const turnSeat = parseInt(response.turnSeat, 10);
-		if (!Number.isNaN(helperSeat) && !Number.isNaN(turnSeat) && turnSeat === getMonsterFightSeat() && battleActive && acceptedHelperSeat === null) {
+		// ВАЖНО: acceptedHelperSeat/pendingHelpSeats должны синхронизироваться на всех клиентах,
+		// даже если локальный battleActive временно не проставлен (например, у помощника).
+		// Принимаем факт боя/ведущего из сообщения, не полагаясь на локальные battle-флаги.
+		if (!Number.isNaN(helperSeat) && !Number.isNaN(turnSeat) && acceptedHelperSeat === null) {
 			pendingHelpSeats.add(helperSeat);
 			updateHelpUi();
 		}
@@ -10502,7 +11652,7 @@ socket.on("message", response => {
 	if (response.method === "AcceptHelp") {
 		const helperSeat = parseInt(response.helperSeat, 10);
 		const turnSeat = parseInt(response.turnSeat, 10);
-		if (!Number.isNaN(helperSeat) && !Number.isNaN(turnSeat) && turnSeat === getMonsterFightSeat() && battleActive && acceptedHelperSeat === null) {
+		if (!Number.isNaN(helperSeat) && !Number.isNaN(turnSeat) && acceptedHelperSeat === null) {
 			acceptedHelperSeat = helperSeat;
 			pendingHelpSeats.clear();
 			applyTurnHighlight();
@@ -10510,6 +11660,12 @@ socket.on("message", response => {
 			// поэтому пересчитываем всё, чтобы гарантированно обновить PlayerCharacterState всех мест.
 			recalculateAllPowerDisplays();
 			updateHelpUi();
+		}
+		// Malign mirrror: если проклятие было применено заранее, а игрок стал помощником позже — активируем сейчас.
+		// Это особенно важно на клиенте помощника, где acceptedHelperSeat/боевые флаги могли обновиться вне recalculate.
+		if (!Number.isNaN(helperSeat) && Number(localSeat) === Number(helperSeat)) {
+			tryActivateMalignMirrorForSeat(helperSeat);
+			recalculateAllPowerDisplays();
 		}
 	}
 	if (response.method === "CombatResolved") {
@@ -10544,6 +11700,32 @@ socket.on("message", response => {
 		monsterFightSeat = null;
 		battleActive = false;
 		battleTurnSeat = null;
+		// Malign mirrror: после завершения боя проклятие уходит в сброс.
+		// Эмитит только владелец места, иначе будет задвоение moveCard.
+		for (const [seat, curseId] of malignMirrorActiveBySeat.entries()) {
+			if (Number(localSeat) === Number(seat) && curseId) {
+				syncDoorCardMoveToDiscard(curseId);
+			}
+		}
+		// После боя проклятие больше не должно действовать/висеть.
+		malignMirrorPendingBySeat.clear();
+		malignMirrorActiveBySeat.clear();
+
+		// Change sex: после одного боя штраф снимается, карта уходит в сброс.
+		// Важно: карта должна уйти в сброс даже если штраф не успел перейти из pending -> active
+		// (например, на помощнике при рассинхроне acceptedHelperSeat).
+		for (const [seat, curseId] of changeSexPendingBySeat.entries()) {
+			if (Number(localSeat) === Number(seat) && curseId) {
+				syncDoorCardMoveToDiscard(curseId);
+			}
+		}
+		for (const [seat, curseId] of changeSexActiveBySeat.entries()) {
+			if (Number(localSeat) === Number(seat) && curseId) {
+				syncDoorCardMoveToDiscard(curseId);
+			}
+		}
+		changeSexPendingBySeat.clear();
+		changeSexActiveBySeat.clear();
 		applyTurnHighlight();
 		updateHelpUi();
 		if (response.winner === "player") {
@@ -11324,6 +12506,22 @@ socket.on("message", response => {
 			escapeOwnerSeat = nextOwner;
 		}
 	}
+	if (response.method === "IncomeTaxStart") {
+		handleIncomeTaxStart(response);
+	}
+	if (response.method === "IncomeTaxInitiatorPick") {
+		handleIncomeTaxInitiatorPick(response);
+	}
+	if (response.method === "IncomeTaxInsufficientDumpSync") {
+		handleIncomeTaxInsufficientDumpSync(response);
+	}
+	if (response.method === "IncomeTaxResponderSubmit") {
+		handleIncomeTaxResponderSubmit(response);
+	}
+	if (response.method === "IncomeTaxCurseFinished") {
+		const cid = String(response.curseCardId || "").trim();
+		finishIncomeTaxCurse(cid);
+	}
 	if (response.method === "BadStaffLevel") {
 		const seat = parseInt(response.seat, 10);
 		const badStaff = normalizeBadStaff(response.bad_staff);
@@ -11333,10 +12531,81 @@ socket.on("message", response => {
 				applyChangeClassCurseToSeat(seat, cardId);
 			} else if (badStaff.type === "change race") {
 				applyChangeRaceCurseToSeat(seat, cardId);
+			} else if (badStaff.type === "lose your class") {
+				applyLoseYourClassCurseToSeat(seat, cardId);
+			} else if (badStaff.type === "lose your race") {
+				applyLoseYourRaceCurseToSeat(seat, cardId);
+			} else if (badStaff.type === "malign mirrror") {
+				applyMalignMirrorCurseToSeat(seat, cardId);
+			} else if (badStaff.type === "change sex") {
+				applyChangeSexCurseToSeat(seat, cardId);
+			} else if (badStaff.type === "chicken on your head") {
+				// Остаётся в экипировке; штраф к кубику — по наличию карты в зоне.
+			} else if (badStaff.type === "income tax") {
+				// Отдельный поток IncomeTaxStart / IncomeTaxInitiatorPick.
 			} else {
 				applyBadStaffToSeat(seat, badStaff);
 				moveBadStaffCardToDiscard(cardId);
 			}
+		}
+	}
+	if (response.method === "MalignMirrorApply") {
+		const seat = Number(response.seat);
+		const curseId = String(response.curseCardId || "").trim();
+		if (Number.isFinite(seat) && seat >= 0 && curseId) {
+			// Ставим pending (если уже active/pending — не перетираем).
+			if (!malignMirrorActiveBySeat.has(seat) && !malignMirrorPendingBySeat.has(seat)) {
+				malignMirrorPendingBySeat.set(seat, curseId);
+			}
+			// Если игрок уже участвует в текущем бою — активируем сразу.
+			tryActivateMalignMirrorForSeat(seat);
+			recalculateAllPowerDisplays();
+		}
+	}
+	if (response.method === "ChangeSexApply") {
+		const seat = Number(response.seat);
+		const curseId = String(response.curseCardId || "").trim();
+		const gender = String(response.gender || "").trim();
+		if (Number.isFinite(seat) && seat >= 0 && curseId && (gender === "Male" || gender === "Female")) {
+			// Фиксируем, что карта использована и до сброса повторно не применяется.
+			const curseEl = document.getElementById(curseId);
+			if (curseEl) {
+				curseEl.dataset.changeSexUsedNotDiscarded = "1";
+			}
+			// Меняем пол у всех клиентов.
+			if (characterBySeat?.[seat]) {
+				characterBySeat[seat].gender = gender;
+			}
+			// Плашка для всех: у игрока сменён пол.
+			showBattleResult(`${getSeatLabel(seat)}: пол сменён`);
+			setTimeout(() => hideBattleResult(), 2000);
+			hideSeatIconTooltip();
+			// Штраф -5 на один бой: pending, либо активируем сразу если уже участвует в бою.
+			if (!changeSexActiveBySeat.has(seat) && !changeSexPendingBySeat.has(seat)) {
+				changeSexPendingBySeat.set(seat, curseId);
+			}
+			tryActivateChangeSexPenaltyForSeat(seat);
+			recalculateAllPowerDisplays();
+		}
+	}
+	if (response.method === "LoseYourClassResolve") {
+		resolveLoseYourClassCurse({
+			seat: response.seat,
+			curseCardId: response.curseCardId,
+			chosenClassCardId: response.chosenClassCardId,
+		});
+	}
+	if (response.method === "LevelAdjust") {
+		const seat = Number(response.seat);
+		const delta = Number(response.delta) || 0;
+		if (Number.isFinite(seat) && seat >= 0 && Number.isFinite(delta) && delta !== 0) {
+			let cur = levelBySeat[seat];
+			if (cur == null || Number.isNaN(cur)) {
+				cur = 1;
+			}
+			cur = Math.max(1, cur);
+			setLevelBySeat(seat, Math.max(1, cur + delta));
+			recalculateAllPowerDisplays();
 		}
 	}
 	if (response.method === "TreasureLevel") {
@@ -11467,16 +12736,13 @@ socket.on("message", response => {
 		}
 		shuffle(window.doors);
 		shuffle(window.treasures);
-		// Тест: «Смена класса» (door21) и «Смена расы» (door22) — в начало колоды дверей для стартовой раздачи.
-		const promoteTestDoorToFront = (name) => {
-			const idx = window.doors.findIndex((d) => d && d.name === name);
-			if (idx > 0) {
-				const [c] = window.doors.splice(idx, 1);
-				window.doors.unshift(c);
-			}
-		};
-		promoteTestDoorToFront("door21");
-		promoteTestDoorToFront("door22");
+
+		// Тестовая раздача: Income Tax (door26) — поднимаем в начало колоды дверей.
+		const idxDoor26 = window.doors.findIndex((d) => d && d.name === "door26");
+		if (idxDoor26 > 0) {
+			const [c] = window.doors.splice(idxDoor26, 1);
+			window.doors.unshift(c);
+		}
 
 		const shuffleDeck = {
 			method: "shuffleDeck",
@@ -11577,6 +12843,7 @@ socket.on("message", response => {
 		window.num = num;
 		//console.log(`${num} игроков`);
 		updatePlayersUiVisibility(num);
+		bindSeatIconHoverTooltips();
 		recalculateAllPowerDisplays();
 		applyTurnHighlight();
 		// Раздачу/перемещения теперь делает сервер через moveCard.
@@ -11948,16 +13215,16 @@ const treasure27 = new Card_treasure("treasure27", "",  "../img/treasure1/card01
 const treasure28 = new Card_treasure("treasure28", "",  "../img/treasure1/card0123.png", "../img/treasure1/cardBack_Treasure.png", 3, 0, 0, 2, 0, 0, 1);
 const treasure29 = new Card_treasure("treasure29", "",  "../img/treasure1/card0124.png", "../img/treasure1/cardBack_Treasure.png", 4, 600, 0, 2, 0, 0, 1, 0, "", 0, [{ mode: "only", race: ["Human"] }]);
 const treasure30 = new Card_treasure("treasure30", "",  "../img/treasure1/card0125.png", "../img/treasure1/cardBack_Treasure.png", 1, 200, 0, 2, 0, 0);
-const treasure31 = new Card_treasure("treasure31", "",  "../img/treasure1/card0126.png", "../img/treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
-const treasure32 = new Card_treasure("treasure32", "",  "../img/treasure1/card0127.png", "../img/treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
-const treasure33 = new Card_treasure("treasure33", "",  "../img/treasure1/card0128.png", "../img/treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
-const treasure34 = new Card_treasure("treasure34", "",  "../img/treasure1/card0129.png", "../img/treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
-const treasure35 = new Card_treasure("treasure35", "",  "../img/treasure1/card0130.png", "../img/treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
-const treasure36 = new Card_treasure("treasure36", "",  "../img/treasure1/card0131.png", "../img/treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
-const treasure37 = new Card_treasure("treasure37", "",  "../img/treasure1/card0132.png", "../img/treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
-const treasure38 = new Card_treasure("treasure38", "",  "../img/treasure1/card0133.png", "../img/treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
-const treasure39 = new Card_treasure("treasure39", "",  "../img/treasure1/card0134.png", "../img/treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 1, "", 0, null, true);
-const treasure40 = new Card_treasure("treasure40", "",  "../img/treasure1/card0135.png", "../img/treasure1/cardBack_Treasure.png", 1, 0, 0, 0, 0, 0, 0, 0, "Hireling", 0, null);
+const treasure31 = new Card_treasure("treasure31", "",  "../img/treasure1/card0126.png", "../img/treasure1/cardBack_Treasure.png", 0, -1, 0, 0, 0, 0, 0, 1, "", 0, null, true);
+const treasure32 = new Card_treasure("treasure32", "",  "../img/treasure1/card0127.png", "../img/treasure1/cardBack_Treasure.png", 0, -1, 0, 0, 0, 0, 0, 1, "", 0, null, true);
+const treasure33 = new Card_treasure("treasure33", "",  "../img/treasure1/card0128.png", "../img/treasure1/cardBack_Treasure.png", 0, -1, 0, 0, 0, 0, 0, 1, "", 0, null, true);
+const treasure34 = new Card_treasure("treasure34", "",  "../img/treasure1/card0129.png", "../img/treasure1/cardBack_Treasure.png", 0, -1, 0, 0, 0, 0, 0, 1, "", 0, null, true);
+const treasure35 = new Card_treasure("treasure35", "",  "../img/treasure1/card0130.png", "../img/treasure1/cardBack_Treasure.png", 0, -1, 0, 0, 0, 0, 0, 1, "", 0, null, true);
+const treasure36 = new Card_treasure("treasure36", "",  "../img/treasure1/card0131.png", "../img/treasure1/cardBack_Treasure.png", 0, -1, 0, 0, 0, 0, 0, 1, "", 0, null, true);
+const treasure37 = new Card_treasure("treasure37", "",  "../img/treasure1/card0132.png", "../img/treasure1/cardBack_Treasure.png", 0, -1, 0, 0, 0, 0, 0, 1, "", 0, null, true);
+const treasure38 = new Card_treasure("treasure38", "",  "../img/treasure1/card0133.png", "../img/treasure1/cardBack_Treasure.png", 0, -1, 0, 0, 0, 0, 0, 1, "", 0, null, true);
+const treasure39 = new Card_treasure("treasure39", "",  "../img/treasure1/card0134.png", "../img/treasure1/cardBack_Treasure.png", 0, -1, 0, 0, 0, 0, 0, 1, "", 0, null, true);
+const treasure40 = new Card_treasure("treasure40", "",  "../img/treasure1/card0135.png", "../img/treasure1/cardBack_Treasure.png", 1, -1, 0, 0, 0, 0, 0, 0, "Hireling", 0, null);
 // card0136: Instant wall — позволяет автоматически смыться от всех монстров в бою (одному или двум игрокам).
 const treasure41 = new Card_treasure("treasure41", "Instant wall",  "../img/treasure1/card0136.png", "../img/treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "Instant wall", 0, null, true);
 const treasure42 = new Card_treasure("treasure42", "",  "../img/treasure1/card0137.png", "../img/treasure1/cardBack_Treasure.png", 0, 500, 0, 0, 0, 0, 0, 0, "", 0, null, true);
@@ -11986,8 +13253,8 @@ const treasure60 = new Card_treasure("treasure60", "",  "../img/treasure1/card01
 const treasure61 = new Card_treasure("treasure61", "",  "../img/treasure1/card0156.png", "../img/treasure1/cardBack_Treasure.png", 2, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure62 = new Card_treasure("treasure62", "",  "../img/treasure1/card0157.png", "../img/treasure1/cardBack_Treasure.png", 3, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure63 = new Card_treasure("treasure63", "Friendship potion",  "../img/treasure1/card0158.png", "../img/treasure1/cardBack_Treasure.png", 0, 200, 0, 0, 0, 0, 0, 0, "Friendship potion", 0, null, true);
-const treasure64 = new Card_treasure("treasure64", "",  "../img/treasure1/card0159.png", "../img/treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, null, true);
-const treasure65 = new Card_treasure("treasure65", "Steal a level",  "../img/treasure1/card0160.png", "../img/treasure1/cardBack_Treasure.png", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure64 = new Card_treasure("treasure64", "",  "../img/treasure1/card0159.png", "../img/treasure1/cardBack_Treasure.png", 0, -1, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure65 = new Card_treasure("treasure65", "Steal a level",  "../img/treasure1/card0160.png", "../img/treasure1/cardBack_Treasure.png", 0, -1, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure66 = new Card_treasure("treasure66", "",  "../img/treasure1/card0161.png", "../img/treasure1/cardBack_Treasure.png", 1, 200, 0, 0, 0, 0);
 const treasure67 = new Card_treasure("treasure67", "",  "../img/treasure1/card0162.png", "../img/treasure1/cardBack_Treasure.png", 2, 600, 0, 0, 0, 0, 0, 0, "", 0, [{ mode: "not", kind: ["Thief"] }]);
 const treasure68 = new Card_treasure("treasure68", "",  "../img/treasure1/card0163.png", "../img/treasure1/cardBack_Treasure.png", 3, 400, 0, 0, 0, 0, 0, 0, "", 0, [{ mode: "only", race: ["Halfling"] }]);
@@ -12521,20 +13788,42 @@ function MoveMonstersToDrop() {
 		cards.forEach((card) => {
 			const fromZoneId = card.parentElement?.id || null;
 			if (card.id.includes("door")) {
+				// Сохраняем порядок в сбросе: targetId = текущая верхняя карта сброса (последняя в DOM, не плейсхолдер).
+				// ВАЖНО: считаем ДО вставки, иначе можно "поймать" не тот порядок.
+				let targetId = null;
+				{
+					const dropEls = Array.from(zone_doors_drop.querySelectorAll(".card"));
+					for (let i = dropEls.length - 1; i >= 0; i--) {
+						const id = dropEls[i]?.id;
+						if (!id || id === "card" || id === card.id) continue;
+						targetId = id;
+						break;
+					}
+				}
 				zone_doors_drop.appendChild(card);
 				socket.emit("message", {
 					method: "moveCard",
 					cardId: card.id,
-					targetId: null,
+					targetId,
 					zoneId: "zone_doors_drop",
 					fromZoneId,
 				});
 			} else if (card.id.includes("treasure")) {
+				let targetId = null;
+				{
+					const dropEls = Array.from(zone_treasure_drop.querySelectorAll(".card"));
+					for (let i = dropEls.length - 1; i >= 0; i--) {
+						const id = dropEls[i]?.id;
+						if (!id || id === "card" || id === card.id) continue;
+						targetId = id;
+						break;
+					}
+				}
 				zone_treasure_drop.appendChild(card);
 				socket.emit("message", {
 					method: "moveCard",
 					cardId: card.id,
-					targetId: null,
+					targetId,
 					zoneId: "zone_treasure_drop",
 					fromZoneId,
 				});
