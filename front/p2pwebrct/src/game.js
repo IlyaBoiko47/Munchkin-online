@@ -213,6 +213,8 @@ let escapeInstantWallOfferPending = null; // { helperSeat, loserSeat } пока 
 let instantWallSoloAidWaitingEmitted = false; // ждали рассылку InstantWallSoloAidWaiting (aid с опцией стенки) — чтобы при закрытии aid ушёл InstantWallSoloAidClose
 let escapeInstantWallAutoSeats = new Set(); // места, которые будут смываться автоматически (без кубика) от всех монстров
 let escapeFailAidPending = null; // { seat, payload, attemptNumber } ждём решения игрока по помощи после провала смывки
+/** После EscapeRollResult: ждём бросок кубика на непотребство (напр. door67). { penaltySeat, deathAtOrBelow } */
+let escapeBadStaffDicePending = null;
 let escapeGluePromptState = null; // только у владельца очереди: { key, escapedSeat, wallFleeSeats?, monsterCardId, pending: Set<number>, resolved: boolean, viaInstantWall: boolean, finishAfter: boolean }
 let escapeGlueWaitingKey = null; // key опроса клея, для показа статуса "игрок решает" на всех клиентах
 /** Пока ждём выбор монстра для смывки (EscapeMonsterPickStart); нужен для restore после F5. */
@@ -1115,7 +1117,45 @@ function normalizeBadStaff(badStaff) {
 	if (type === "death") {
 		return { type: "death" };
 	}
+	if (type === "discard_footwear_or_lose_level") {
+		return { type: "discard_footwear_or_lose_level" };
+	}
+	if (type === "lose_hand_or_lose_levels") {
+		const levels = Number(badStaff.levels) || 2;
+		return levels > 0 ? { type: "lose_hand_or_lose_levels", levels } : null;
+	}
+	if (type === "lose_all_equipped_classes_or_levels") {
+		const levels = Number(badStaff.levels) || 3;
+		const lv = Math.max(1, Math.floor(levels));
+		return { type: "lose_all_equipped_classes_or_levels", levels: lv };
+	}
+	if (type === "level_to_table_minimum") {
+		return { type: "level_to_table_minimum" };
+	}
+	if (type === "escape_dice_death_or_levels") {
+		const raw = Number(badStaff.deathAtOrBelow);
+		const deathAtOrBelow = Number.isFinite(raw) && raw >= 1 && raw <= 6 ? Math.floor(raw) : 2;
+		return { type: "escape_dice_death_or_levels", deathAtOrBelow };
+	}
 	return { type };
+}
+
+/** Место смывающегося для EscapeRollResult / штрафа (null/"" не превращать в 0). */
+function escapeRollPenaltySeatFromPayload(payload) {
+	if (!payload || typeof payload !== "object") {
+		return NaN;
+	}
+	const raw = payload.escapePenaltySeat != null && payload.escapePenaltySeat !== ""
+		? payload.escapePenaltySeat
+		: payload.seat;
+	if (raw === null || raw === undefined || raw === "") {
+		return NaN;
+	}
+	const n = Number(raw);
+	if (!Number.isFinite(n) || n < 0) {
+		return NaN;
+	}
+	return Math.floor(n);
 }
 
 function getBadStaffLevelLoss(badStaff) {
@@ -1132,7 +1172,7 @@ function applyBadStaffToSeat(seat, badStaff) {
 		return;
 	}
 	if (normalized.type !== "lose_levels") {
-		// Другие типы (например death) будут обработаны отдельной механикой.
+		// Другие типы (например death / discard_footwear_or_lose_level) обрабатываются отдельной механикой.
 		return;
 	}
 	const levelLoss = getBadStaffLevelLoss(normalized);
@@ -1147,6 +1187,164 @@ function applyBadStaffToSeat(seat, badStaff) {
 	const next = Math.max(1, current - levelLoss);
 	setLevelBySeat(seat, next);
 	recalculateAllPowerDisplays();
+}
+
+function getMinimumTablePlayerLevelAmongPlayers() {
+	const n = Number(num);
+	const maxSeats = Number.isFinite(n) && n > 0 ? n : 3;
+	let m = Infinity;
+	for (let s = 0; s < maxSeats; s += 1) {
+		if (!characterBySeat[s]) {
+			continue;
+		}
+		const lv = Math.max(1, Number(levelBySeat[s]) || 1);
+		m = Math.min(m, lv);
+	}
+	return Number.isFinite(m) ? m : 1;
+}
+
+function applyEscapeBadStaffPenaltyFromOwner(seat, badStaffPenalty) {
+	const s = Number(seat);
+	const bad = normalizeBadStaff(badStaffPenalty);
+	if (!Number.isFinite(s) || s < 0 || !bad) {
+		return;
+	}
+	// Только владелец очереди смывки публикует побочные эффекты (движение карт / изменение уровня).
+	if (Number(localSeat) !== Number(escapeOwnerSeat)) {
+		return;
+	}
+	if (bad.type === "level_to_table_minimum") {
+		const target = getMinimumTablePlayerLevelAmongPlayers();
+		const cur = Math.max(1, Number(levelBySeat[s]) || 1);
+		const delta = target - cur;
+		if (delta < 0) {
+			emitLevelAdjust(s, delta);
+		}
+		return;
+	}
+	if (bad.type === "lose_levels") {
+		let levels = Number(bad.levels) || 0;
+		const monId = String(escapeCurrentMonsterCardId || "").trim();
+		const ab = getMonsterAbilitiesByCardId(monId);
+		const elfLevels = Number(ab?.escapeLoseLevelsElfLevels);
+		if (Number.isFinite(elfLevels) && elfLevels > 0 && seatHasRace(s, "Elf")) {
+			levels = elfLevels;
+		}
+		if (levels > 0) {
+			socket.emit("message", { method: "LevelAdjust", seat: s, delta: -levels });
+		}
+		return;
+	}
+	if (bad.type === "discard_footwear_or_lose_level") {
+		const footwearId = findEquippedFootwearTreasureIdForSeat(s);
+		if (footwearId) {
+			syncTreasureCardMoveToDiscard(footwearId);
+		} else {
+			socket.emit("message", { method: "LevelAdjust", seat: s, delta: -1 });
+		}
+		return;
+	}
+	if (bad.type === "lose_hand_or_lose_levels") {
+		// Выбор жертвы в модалке после EscapeRollResult.
+		return;
+	}
+	if (bad.type === "lose_all_equipped_classes_or_levels") {
+		const levels = Number(bad.levels) || 3;
+		const classIds = collectEquippedClassDoorIdsForSeat(s);
+		if (classIds.length > 0) {
+			classIds.forEach((id) => syncDoorCardMoveToDiscard(id));
+		} else if (levels > 0) {
+			socket.emit("message", { method: "LevelAdjust", seat: s, delta: -levels });
+		}
+		return;
+	}
+	// death обрабатывается в emitEscapeRollResultAndAdvance
+}
+
+function collectHandCardIdsForSeat(seat) {
+	const s = Number(seat);
+	if (!Number.isFinite(s) || s < 0) {
+		return [];
+	}
+	const hand = getHandElementForPlayerSeat(s);
+	if (!hand) {
+		return [];
+	}
+	return Array.from(hand.querySelectorAll(".card"))
+		.map((el) => String(el?.id || "").trim())
+		.filter((id) => id && id !== "card");
+}
+
+function hideEscapeLoseHandOrLevelsModal() {
+	const el = document.getElementById("escape-lose-hand-or-levels-modal");
+	if (el) {
+		el.remove();
+	}
+}
+
+function openEscapeLoseHandOrLevelsModal({ seat, levelLoss }) {
+	hideEscapeLoseHandOrLevelsModal();
+	const s = Number(seat);
+	if (!Number.isFinite(s) || s < 0) {
+		return;
+	}
+	const loss = Math.max(1, Math.floor(Number(levelLoss) || 2));
+	const modal = document.createElement("div");
+	modal.id = "escape-lose-hand-or-levels-modal";
+	modal.className = "wishing-ring-curse-choice";
+	const panel = document.createElement("div");
+	panel.className = "wishing-ring-curse-choice-panel";
+	const title = document.createElement("div");
+	title.className = "wishing-ring-curse-choice-title";
+	title.textContent = `Смывка провалилась: сбрось всю руку или потеряй ${loss} уровня.`;
+	panel.appendChild(title);
+	const row = document.createElement("div");
+	row.className = "wishing-ring-curse-choice-actions";
+	const btnHand = document.createElement("button");
+	btnHand.type = "button";
+	btnHand.className = "wishing-ring-curse-choice-btn";
+	btnHand.textContent = "Сбросить все карты с руки";
+	const btnLevels = document.createElement("button");
+	btnLevels.type = "button";
+	btnLevels.className = "wishing-ring-curse-choice-btn";
+	btnLevels.textContent = `Потерять ${loss} уровня`;
+	const finish = (choice) => {
+		const cardIds = choice === "discard_hand" ? collectHandCardIdsForSeat(s) : [];
+		socket.emit("message", {
+			method: "EscapeLoseHandOrLevelsResolve",
+			seat: s,
+			escapePenaltySeat: s,
+			choice,
+			levelLoss: loss,
+			cardIds,
+		});
+		hideEscapeLoseHandOrLevelsModal();
+	};
+	btnHand.addEventListener("click", () => finish("discard_hand"));
+	btnLevels.addEventListener("click", () => finish("lose_levels"));
+	row.appendChild(btnHand);
+	row.appendChild(btnLevels);
+	panel.appendChild(row);
+	modal.appendChild(panel);
+	document.body.appendChild(modal);
+}
+
+function applyEscapeLoseHandOrLevelsResolveFromNetwork(res) {
+	const seat = escapeRollPenaltySeatFromPayload(res);
+	const choice = String(res.choice || "").trim();
+	if (!Number.isFinite(seat) || seat < 0) {
+		return;
+	}
+	if (choice !== "lose_levels" && choice !== "discard_hand") {
+		return;
+	}
+	// Уровень (lose_levels) и сброс руки (discard_hand): сервер обновляет roomState и рассылает LevelAdjust / moveCard — здесь только продолжение смывки.
+	recalculateAllPowerDisplays();
+	if (Number(localSeat) === Number(escapeOwnerSeat)) {
+		setTimeout(() => {
+			runNextEscapeAttemptAndBroadcast();
+		}, 400);
+	}
 }
 
 /** Карта класса для экипировки (kind), не монстр. */
@@ -1196,6 +1394,21 @@ function collectEquippedClassDoorIdsForSeat(seat) {
 		});
 	});
 	return out;
+}
+
+/** Экипированная карта класса Wizard в main/side (для непотребства door73). */
+function findWizardClassDoorIdEquippedForSeat(seat) {
+	const s = Number(seat);
+	if (!Number.isFinite(s) || s < 0) {
+		return "";
+	}
+	for (const id of collectEquippedClassDoorIdsForSeat(s)) {
+		const door = window.doors?.find((d) => d.name === id);
+		if (door && String(door.kind || "") === "Wizard") {
+			return id;
+		}
+	}
+	return "";
 }
 
 function collectEquippedSuperMunchkinDoorIdsForSeat(seat) {
@@ -1266,6 +1479,72 @@ function syncDoorCardMoveToDiscard(cardId) {
 	if (el && String(el.dataset?.changeSexUsedNotDiscarded || "") === "1") {
 		el.dataset.changeSexUsedNotDiscarded = "";
 	}
+}
+
+function syncTreasureCardMoveToZone(cardId, zoneId, targetId = null) {
+	const id = String(cardId || "").trim();
+	const zid = String(zoneId || "").trim();
+	if (!id || !zid || !document.getElementById(id)) {
+		return;
+	}
+	applyMoveCardLocally({
+		method: "moveCard",
+		cardId: id,
+		zoneId: zid,
+		targetId: targetId || null,
+	});
+	socket.emit("message", {
+		method: "moveCard",
+		cardId: id,
+		zoneId: zid,
+		targetId: targetId || null,
+	});
+}
+
+function syncTreasureCardMoveToDiscard(cardId) {
+	const z = document.getElementById("zone_treasure_drop");
+	let targetId = null;
+	if (z) {
+		const els = Array.from(z.querySelectorAll(".card"));
+		for (let i = els.length - 1; i >= 0; i--) {
+			const id = els[i]?.id;
+			if (!id || id === "card") {
+				continue;
+			}
+			if (id === cardId) {
+				continue;
+			}
+			targetId = id;
+			break;
+		}
+	}
+	syncTreasureCardMoveToZone(cardId, "zone_treasure_drop", targetId);
+}
+
+function findEquippedFootwearTreasureIdForSeat(seat) {
+	const s = Number(seat);
+	if (!Number.isFinite(s) || s < 0) {
+		return null;
+	}
+	const { main, side } = getMainAndSideZoneElementsForSeat(s) || {};
+	for (const zoneEl of [main, side]) {
+		if (!zoneEl) {
+			continue;
+		}
+		const els = Array.from(zoneEl.querySelectorAll(".card"));
+		// Сверху вниз: сбрасываем «верхнюю» обувку, если их почему-то несколько.
+		for (let i = els.length - 1; i >= 0; i--) {
+			const id = els[i]?.id;
+			if (!id || !String(id).includes("treasure")) {
+				continue;
+			}
+			const tr = window.treasures?.find((t) => t && t.name === id);
+			if (tr && (Number(tr.footwear) || 0) > 0) {
+				return id;
+			}
+		}
+	}
+	return null;
 }
 
 /** Для проклятий с модалкой выбора. */
@@ -2369,6 +2648,101 @@ function applyFriendshipPotionResolve(cardId) {
 	}, 2000);
 }
 
+/** card0156: при попадании на поле боя убивает door68 (card0068), если тот в бою. */
+const HALITOSIS_SPECIAL = "Potion of halitosis";
+const HALITOSIS_TARGET_MONSTER_ID = "door68";
+
+function applyHalitosisKillDoor68Resolve(potionCardId) {
+	const potId = String(potionCardId || "").trim();
+	const potEl = potId ? document.getElementById(potId) : null;
+	const actorSeat = Number(potEl?.dataset?.halitosisActorSeat);
+	if (potEl) {
+		potEl.dataset.halitosisScheduled = "";
+		potEl.dataset.halitosisActorSeat = "";
+	}
+	if (!battleActive) {
+		return;
+	}
+	const ctx0 = getMonsterBattleContext();
+	if (!ctx0.monsters.some((m) => m.cardId === HALITOSIS_TARGET_MONSTER_ID)) {
+		return;
+	}
+	if (!document.getElementById(HALITOSIS_TARGET_MONSTER_ID)) {
+		return;
+	}
+	const fightSeat = getMonsterFightSeat();
+	if (fightSeat == null || fightSeat === undefined) {
+		return;
+	}
+	const remainingAfterKill = ctx0.monsters.filter((m) => m.cardId !== HALITOSIS_TARGET_MONSTER_ID).length;
+	const doorRow = window.doors?.find((d) => d.name === HALITOSIS_TARGET_MONSTER_ID);
+	const baseLevelGain = Number(doorRow?.level) || 0;
+	const seatToLevelMap = getSeatToLevelMap();
+	const activeLevelSelector = seatToLevelMap[fightSeat];
+	const activeLevel = activeLevelSelector ? getNumericText(activeLevelSelector) : 0;
+	const activeIsWarrior = isSeatWarriorClassActive(fightSeat);
+	const monsterPower = getEffectiveMonsterPower();
+	let victoryBonusLevels = 0;
+	const ab = getMonsterAbilitiesByCardId(HALITOSIS_TARGET_MONSTER_ID);
+	if (ab) {
+		const ids = Array.isArray(ab?.bonusLevelIfEquippedTreasureIds) ? ab.bonusLevelIfEquippedTreasureIds : [];
+		const bonus = Number(ab?.bonusLevelIfEquippedTreasureBonus) || 0;
+		if (bonus > 0 && ids.some((tid) => seatHasEquippedTreasureId(fightSeat, tid))) {
+			victoryBonusLevels += bonus;
+		}
+		if (ab.bonusLevelIfOwnLevelEnough) {
+			const ownLevelEnough = activeIsWarrior ? (activeLevel >= monsterPower) : (activeLevel > monsterPower);
+			if (ownLevelEnough) {
+				victoryBonusLevels += Number(ab.bonusLevelIfOwnLevelEnoughBonus) || 1;
+			}
+		}
+	}
+	const levelDelta = baseLevelGain + victoryBonusLevels;
+
+	moveCardToDiscardById(potId);
+	moveCardToDiscardById(HALITOSIS_TARGET_MONSTER_ID);
+	setMonsterBasePower(computeMonsterZoneBasePower());
+	recalculateAllPowerDisplays();
+	updateEffectiveMonsterBonusDisplay();
+
+	const isActor = Number.isFinite(actorSeat) && actorSeat >= 0 && Number(localSeat) === Number(actorSeat);
+
+	if (remainingAfterKill > 0) {
+		if (levelDelta > 0 && isActor) {
+			emitLevelAdjust(fightSeat, levelDelta);
+		}
+		return;
+	}
+
+	const helperSeatSnapshot = acceptedHelperSeat;
+	const helperSeat = Number.isInteger(helperSeatSnapshot) ? helperSeatSnapshot : parseInt(helperSeatSnapshot, 10);
+	let helperLevel = null;
+	let helperLevelGain = 0;
+	if (!Number.isNaN(helperSeat) && helperSeat >= 0) {
+		if (seatHasRace(helperSeat, "Elf")) {
+			helperLevelGain = 1;
+			const helperLevelSelector = seatToLevelMap[helperSeat];
+			const helperCurrentLevel = helperLevelSelector ? getNumericText(helperLevelSelector) : (levelBySeat[helperSeat] || 1);
+			helperLevel = helperCurrentLevel + helperLevelGain;
+		}
+	}
+	const fighterNextLevel = activeLevel + levelDelta;
+
+	showBattleResult("Монстр повержен");
+	if (isActor) {
+		socket.emit("message", {
+			method: "CombatResolved",
+			winner: "player",
+			seat: fightSeat,
+			level: fighterNextLevel,
+			helperSeat: helperSeatSnapshot,
+			helperLevel,
+			helperLevelGain,
+			text: "Монстр повержен",
+		});
+	}
+}
+
 function endBattleNoWinnerAndDropBattlefield(message, ms = 2000) {
 	MoveMonstersToDrop();
 	battleActive = false;
@@ -2815,6 +3189,66 @@ function scheduleFriendshipPotionIfNeeded(cardId, zoneEl) {
 	}, 1000);
 }
 
+function scheduleHalitosisPotionIfNeeded(cardId, zoneEl, playedBySeatRaw) {
+	if (!cardId || !zoneEl) {
+		return;
+	}
+	if (!isTreasureSpecial(cardId, HALITOSIS_SPECIAL)) {
+		return;
+	}
+	const isBattleBonusZone = zoneEl.id === "zone_monster" || zoneEl.id === "zone3";
+	if (!isBattleBonusZone) {
+		return;
+	}
+	if (!battleActive || !getMonsterBattleContext().hasMonster) {
+		return;
+	}
+	const ctx = getMonsterBattleContext();
+	if (!ctx.monsters.some((m) => m.cardId === HALITOSIS_TARGET_MONSTER_ID)) {
+		return;
+	}
+	const el = document.getElementById(cardId);
+	if (!el) {
+		return;
+	}
+	if (el.dataset?.halitosisScheduled) {
+		return;
+	}
+	el.dataset.halitosisScheduled = "1";
+	let actorSeat = Number(playedBySeatRaw);
+	if (!Number.isFinite(actorSeat) || actorSeat < 0) {
+		actorSeat = Number(currentTurnSeat);
+	}
+	el.dataset.halitosisActorSeat = String(actorSeat);
+	setTimeout(() => {
+		const curEl = document.getElementById(cardId);
+		if (!curEl) {
+			return;
+		}
+		const parentId = curEl.parentElement?.id || "";
+		const stillOnBattlefield = parentId === "zone_monster" || parentId === "zone3";
+		if (!stillOnBattlefield) {
+			curEl.dataset.halitosisScheduled = "";
+			curEl.dataset.halitosisActorSeat = "";
+			return;
+		}
+		if (!battleActive || !getMonsterBattleContext().hasMonster) {
+			curEl.dataset.halitosisScheduled = "";
+			curEl.dataset.halitosisActorSeat = "";
+			return;
+		}
+		const ctx2 = getMonsterBattleContext();
+		if (!ctx2.monsters.some((m) => m.cardId === HALITOSIS_TARGET_MONSTER_ID)) {
+			curEl.dataset.halitosisScheduled = "";
+			curEl.dataset.halitosisActorSeat = "";
+			return;
+		}
+		if (Number(localSeat) === Number(actorSeat)) {
+			socket.emit("message", { method: "HalitosisKillDoor68Resolve", potionCardId: cardId });
+		}
+	}, 1000);
+}
+
 function hideMatePickModal() {
 	const existing = document.getElementById("mate-pick-monster-modal");
 	if (existing) {
@@ -3254,6 +3688,17 @@ function applyBadStaffLevelFromNetwork(res) {
 		// Остаётся в экипировке; штраф к кубику — по наличию карты в зоне.
 	} else if (badStaff.type === "income tax") {
 		// Отдельный поток IncomeTaxStart / IncomeTaxInitiatorPick.
+	} else if (badStaff.type === "lose_all_equipped_classes_or_levels") {
+		const levels = Number(badStaff.levels) || 3;
+		if (Number(localSeat) === Number(seat)) {
+			const classIds = collectEquippedClassDoorIdsForSeat(seat);
+			if (classIds.length > 0) {
+				classIds.forEach((id) => syncDoorCardMoveToDiscard(id));
+			} else if (levels > 0) {
+				emitLevelAdjust(seat, -levels);
+			}
+		}
+		moveBadStaffCardToDiscard(cardId);
 	} else {
 		applyBadStaffToSeat(seat, badStaff);
 		moveBadStaffCardToDiscard(cardId);
@@ -4317,6 +4762,149 @@ function getMonsterBattleContext() {
 	return { hasMonster, levelSum, removerSum, badStaffSum, monsters };
 }
 
+/** Id «корневой» карты-монстра (не Mate-обёртки) для элемента в зоне боя. */
+function getEffectiveMonsterRootDoorIdFromBattleZoneCardEl(el) {
+	const id = String(el?.id || "").trim();
+	if (!id) {
+		return "";
+	}
+	const door = window.doors?.find((d) => d.name === id);
+	if (!door) {
+		return "";
+	}
+	if (String(door.race || "") === "monster") {
+		return id;
+	}
+	if (String(door.special || "").trim() === "Mate") {
+		return String(el.dataset?.mateSourceMonsterId || "").trim();
+	}
+	return "";
+}
+
+/** Монстр с dismissBattleHelpersWhileOnField (напр. card0065 / door65) на поле боя. */
+function monsterBattlefieldDismissesBattleHelpers() {
+	const zone = document.getElementById("zone_monster") || document.querySelector(".zone_monster");
+	if (!zone) {
+		return false;
+	}
+	const els = zone.querySelectorAll(".card");
+	for (let i = 0; i < els.length; i += 1) {
+		const rootId = getEffectiveMonsterRootDoorIdFromBattleZoneCardEl(els[i]);
+		if (!rootId) {
+			continue;
+		}
+		const ab = getMonsterAbilitiesByCardId(rootId);
+		if (ab && ab.dismissBattleHelpersWhileOnField) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * На поле боя есть монстр с combatPowerFromLevelOnly (card0066 / door66).
+ * Сила участников боя без бонусов с экипированных сокровищ, без бонусов с дверей в main (снятие) и без суммы силы карт в zone3 (зона бонусов);
+ * классовые бонусы в бою (ярость воина, изгнание клира, yuppie water) не считаются.
+ * Учитываются: уровень (и штрафы вроде change sex / вора в recalculateMyBonusDisplay), доппельгангер при одиночном бою
+ * (удваивает только базу с персонажа — карта может лежать в zone3, но сумма силы с карт в zone3 в бою не входит),
+ * сила помощника по тем же правилам.
+ */
+function monsterBattlefieldLevelOnlyCombatPower() {
+	const zone = document.getElementById("zone_monster") || document.querySelector(".zone_monster");
+	if (!zone) {
+		return false;
+	}
+	const els = zone.querySelectorAll(".card");
+	for (let i = 0; i < els.length; i += 1) {
+		const rootId = getEffectiveMonsterRootDoorIdFromBattleZoneCardEl(els[i]);
+		if (!rootId) {
+			continue;
+		}
+		const ab = getMonsterAbilitiesByCardId(rootId);
+		if (ab && ab.combatPowerFromLevelOnly) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * На поле боя есть монстр card0074 / door74: уровень участника боя не входит в силу (только экипировка и пр.),
+ * действует на ведущего и на помощника.
+ */
+function monsterBattlefieldExcludesLevelFromCombatPower() {
+	const zone = document.getElementById("zone_monster") || document.querySelector(".zone_monster");
+	if (!zone) {
+		return false;
+	}
+	const els = zone.querySelectorAll(".card");
+	for (let i = 0; i < els.length; i += 1) {
+		const rootId = getEffectiveMonsterRootDoorIdFromBattleZoneCardEl(els[i]);
+		if (!rootId) {
+			continue;
+		}
+		const ab = getMonsterAbilitiesByCardId(rootId);
+		if (ab && ab.combatPowerExcludesLevel) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * Сумма штрафов «−X за каждого эльфа в бою» от монстров в zone_monster (напр. card0079 / door79).
+ * @returns {number} сумма X по всем таким монстрам на поле
+ */
+function getMonsterBattlefieldElfCombatPenaltyPerElfSum() {
+	const zone = document.getElementById("zone_monster") || document.querySelector(".zone_monster");
+	if (!zone) {
+		return 0;
+	}
+	let sum = 0;
+	const els = zone.querySelectorAll(".card");
+	for (let i = 0; i < els.length; i += 1) {
+		const rootId = getEffectiveMonsterRootDoorIdFromBattleZoneCardEl(els[i]);
+		if (!rootId) {
+			continue;
+		}
+		const ab = getMonsterAbilitiesByCardId(rootId);
+		const p = Number(ab?.battleElfCombatPenaltyEach);
+		if (Number.isFinite(p) && p > 0) {
+			sum += p;
+		}
+	}
+	return sum;
+}
+
+/** Пока на поле такой монстр — снимаем принятую помощь и ожидания; ведущий шлёт DissolveBattleHelp для сети. */
+function applyDismissBattleHelpersIfMonsterOnField() {
+	if (!battleActive || !getMonsterBattleContext().hasMonster) {
+		return;
+	}
+	if (!monsterBattlefieldDismissesBattleHelpers()) {
+		return;
+	}
+	let cleared = false;
+	if (acceptedHelperSeat != null) {
+		acceptedHelperSeat = null;
+		cleared = true;
+	}
+	if (pendingHelpSeats && pendingHelpSeats.size > 0) {
+		pendingHelpSeats.clear();
+		cleared = true;
+	}
+	if (!cleared) {
+		return;
+	}
+	hideAllAcceptHelpButtons();
+	const fightSeat = getMonsterFightSeat();
+	if (Number.isFinite(Number(fightSeat)) && Number(localSeat) === Number(fightSeat)) {
+		socket.emit("message", { method: "DissolveBattleHelp", fightSeat });
+	}
+	scheduleTurnStateSync();
+	applyTurnHighlight();
+}
+
 /** Участник текущего боя с монстром: ведущий ход или принятый помощник (пока в зоне есть монстр). */
 function isSeatParticipantInCurrentMonsterBattle(seat) {
 	if (seat == null || seat < 0) {
@@ -5158,71 +5746,121 @@ function startEscapeGluePromptFromOwner({ escapedSeat, monsterCardId, viaInstant
 	return true;
 }
 
+/** Смерть после провала смывки; эмитит только владелец очереди смывки (ownerSeat). */
+function triggerDeathAfterFailedEscape(deadSeat, escapeQueueOwnerSeat = null) {
+	const dead = Number(deadSeat);
+	const ownerSeat = escapeQueueOwnerSeat != null && Number.isFinite(Number(escapeQueueOwnerSeat))
+		? Number(escapeQueueOwnerSeat)
+		: escapeOwnerSeat;
+	if (!Number.isFinite(dead) || dead < 0 || ownerSeat == null || Number(localSeat) !== Number(ownerSeat)) {
+		return;
+	}
+	removeSeatFromEscapeQueue(dead);
+	let nextOwner = ownerSeat;
+	if (Number(dead) === Number(ownerSeat) && Array.isArray(escapeQueue) && escapeQueue.length > 0) {
+		nextOwner = escapeQueue[0];
+		escapeOwnerSeat = nextOwner;
+		socket.emit("message", {
+			method: "EscapeOwnerTransfer",
+			ownerSeat: nextOwner,
+		});
+		escapeQueueIndex = 0;
+	}
+	const lootCardIds = collectDeathLootCardIds(dead);
+	const lootersOrder = computeLootersOrder(dead);
+	resumeEscapeAfterLoot = Array.isArray(escapeQueue) && escapeQueue.length > 0;
+	deathLootAwaitingEscapeFinish = resumeEscapeAfterLoot;
+	socket.emit("message", {
+		method: "DeathStart",
+		deadSeat: dead,
+		ownerSeat: nextOwner,
+		lootCardIds,
+		lootersOrder,
+		text: "Смерть!",
+	});
+	if (!resumeEscapeAfterLoot) {
+		finishEscapeSequenceAndBroadcast();
+	}
+}
+
 function emitEscapeRollResultAndAdvance(payload) {
 	// Важно: продвигать очередь смывки и публиковать результат должен только владелец очереди.
 	if (Number(localSeat) !== Number(escapeOwnerSeat)) {
 		return;
 	}
 	socket.emit("message", payload);
+	// Некоторые монстры наказывают даже при успешной смывке (например card0053: -1 уровень).
+	if (payload?.escaped) {
+		const monId = String(payload.monsterCardId || "").trim();
+		if (monId) {
+			const ab = getMonsterAbilitiesByCardId(monId);
+			const loss = Number(ab?.loseLevelOnEscape) || 0;
+			if (loss > 0) {
+				const adjSeat = escapeRollPenaltySeatFromPayload(payload);
+				if (Number.isFinite(adjSeat)) {
+					socket.emit("message", { method: "LevelAdjust", seat: adjSeat, delta: -loss });
+				}
+			}
+			const minLvForSuccessPenalty = Number(ab?.loseLevelsOnEscapeSuccessMinPlayerLevel);
+			const lossOnSuccess = Number(ab?.loseLevelsOnEscapeSuccessAmount) || 0;
+			if (Number.isFinite(minLvForSuccessPenalty) && lossOnSuccess > 0) {
+				const adjSeat2 = escapeRollPenaltySeatFromPayload(payload);
+				if (Number.isFinite(adjSeat2)) {
+					const curLv = Math.max(1, Number(levelBySeat[adjSeat2]) || 1);
+					if (curLv >= minLvForSuccessPenalty) {
+						socket.emit("message", { method: "LevelAdjust", seat: adjSeat2, delta: -lossOnSuccess });
+					}
+				}
+			}
+		}
+	}
 	// Смерть: если смывка не удалась и bad stuff = death, то смывка обрывается,
 	// после смерти начинается грабёж; смывка помощника (если есть) начнётся после грабежа.
 	const bad = normalizeBadStaff(payload?.badStaffPenalty);
 	if (!payload?.escaped && bad && String(bad.type || "") === "death") {
-		// Важно: смывку по текущей реализации считает только владелец очереди (escapeOwnerSeat),
-		// и он же должен запускать смерть/грабёж, даже если умер помощник.
-		// Иногда payload.seat может быть не тем (например, при рассинхроне/ручном вызове) —
-		// а текущий смывающийся seat у владельца очереди уже известен точно.
 		const deadSeat = (escapeCurrentSeat != null && !Number.isNaN(Number(escapeCurrentSeat)))
 			? Number(escapeCurrentSeat)
-			: parseInt(payload.seat, 10);
-		const ownerSeat = escapeOwnerSeat;
-		if (!Number.isNaN(deadSeat) && deadSeat >= 0 && ownerSeat != null && Number(localSeat) === Number(ownerSeat)) {
-			// Удаляем умершего из очереди смывки.
-			removeSeatFromEscapeQueue(deadSeat);
-
-			// Если умер владелец очереди, передаём владение следующему (обычно помощнику).
-			let nextOwner = ownerSeat;
-			if (Number(deadSeat) === Number(ownerSeat) && Array.isArray(escapeQueue) && escapeQueue.length > 0) {
-				nextOwner = escapeQueue[0];
-				escapeOwnerSeat = nextOwner;
-				socket.emit("message", {
-					method: "EscapeOwnerTransfer",
-					ownerSeat: nextOwner,
-				});
-				escapeQueueIndex = 0;
-			}
-			const lootCardIds = collectDeathLootCardIds(deadSeat);
-			const lootersOrder = computeLootersOrder(deadSeat);
-			// Если остались участники (помощник), смывку продолжим после грабежа.
-			resumeEscapeAfterLoot =
-				Array.isArray(escapeQueue)
-				&& escapeQueue.length > 0;
-			deathLootAwaitingEscapeFinish = resumeEscapeAfterLoot;
-
-			// Сначала грабёж.
-			socket.emit("message", {
-				method: "DeathStart",
-				deadSeat,
-				ownerSeat: nextOwner,
-				lootCardIds,
-				lootersOrder,
-				text: "Смерть!",
-			});
-
-			// Если больше некому смываться, сразу завершаем очередь смывки.
-			if (!resumeEscapeAfterLoot) {
-				finishEscapeSequenceAndBroadcast();
+			: escapeRollPenaltySeatFromPayload(payload);
+		const monIdDeath = String(payload.monsterCardId || escapeCurrentMonsterCardId || "").trim();
+		const abDeath = getMonsterAbilitiesByCardId(monIdDeath);
+		if (abDeath?.deathBadStaffWizardDiscardsClassOnly && Number.isFinite(deadSeat) && deadSeat >= 0) {
+			updateCharacterStatesFromBoard();
+			if (isSeatWizardClassActive(deadSeat)) {
+				const wizId = findWizardClassDoorIdEquippedForSeat(deadSeat);
+				if (wizId) {
+					syncDoorCardMoveToDiscard(wizId);
+					setTimeout(() => {
+						runNextEscapeAttemptAndBroadcast();
+					}, 1200);
+					return;
+				}
 			}
 		}
-		// Не продвигаем очередь смывки для умершего.
+		triggerDeathAfterFailedEscape(deadSeat);
+		return;
+	}
+
+	const badPenalty = normalizeBadStaff(payload?.badStaffPenalty);
+	if (!payload?.escaped && badPenalty?.type === "lose_hand_or_lose_levels") {
+		// Ждём выбор жертвы в модалке; очередь продолжит владелец после EscapeLoseHandOrLevelsResolve.
+		return;
+	}
+	if (!payload?.escaped && badPenalty?.type === "escape_dice_death_or_levels") {
+		// Ждём бросок кубика на непотребство (EscapeBadStaffDiceRoll).
 		return;
 	}
 
 	// Flask of glue: после успешной смывки ждём ответов игроков (без таймера), прежде чем продолжать смывку.
 	if (payload?.escaped) {
-		const escapedSeat = Number(payload.seat);
+		const escapedSeat = escapeRollPenaltySeatFromPayload(payload);
 		const viaInstantWall = Boolean(payload.viaInstantWall);
 		const monInput = String(payload.monsterCardId || "").trim();
+		if (!Number.isFinite(escapedSeat)) {
+			setTimeout(() => {
+				runNextEscapeAttemptAndBroadcast();
+			}, 1200);
+			return;
+		}
 		if (!startEscapeGluePromptFromOwner({
 			escapedSeat,
 			monsterCardId: monInput,
@@ -7307,8 +7945,8 @@ function promptLoadedDieAfterRoll({ seat, rawRoll, onFinalize }) {
 			socket.emit("message", { method: "LoadedDieDiscard", seat: s, cardId: dieCardId });
 			const finalPicked = applyDicePenaltyForSeat(seat, picked);
 			onFinalize?.(finalPicked);
-			// Если это "обычный" бросок (не смывка/не кража), синхронизируем отображение кубика у остальных игроков.
-			if (!escapeActive && !thiefTheftBoardDicePending && Number(finalPicked) !== Number(rawRoll)) {
+			// Синхронизация кубика на столе, если итог отличается от первого броска (в т.ч. во время смывки).
+			if (!thiefTheftBoardDicePending && Number(finalPicked) !== Number(rawRoll)) {
 				socket.emit("message", { method: "RandDice", digit: Number(finalPicked) });
 			}
 		});
@@ -8268,6 +8906,7 @@ function applyEscapeRatOnStickFromNetwork({ ratCardId, monsterCardId, actingSeat
 		const payload = {
 			method: "EscapeRollResult",
 			seat: act,
+			escapePenaltySeat: act,
 			rawRoll: 6,
 			equipRemover: getSeatEquipmentRemover(act),
 			monsterRemover: escapeMonsterRemover,
@@ -8400,6 +9039,78 @@ function setCurrentEscapeMonsterById(cardId) {
 	escapeMonsterBadStaff = normalizeBadStaff(selected.badStaff);
 }
 
+/**
+ * Расширяемые способности монстров.
+ * ВАЖНО: не используем поле door.special, т.к. там могут быть теги (например Undead).
+ * Держим отдельную «надстройку» для уникальных эффектов.
+ */
+function getMonsterAbilitiesByCardId(cardId) {
+	const id = String(cardId || "").trim();
+	if (!id) {
+		return null;
+	}
+	const door = window.doors?.find((d) => d && d.name === id);
+	const abilities = door && typeof door === "object" ? door.monsterAbilities : null;
+	if (abilities && typeof abilities === "object") {
+		return abilities;
+	}
+	return null;
+}
+
+function seatHasEquippedTreasureId(seat, treasureId) {
+	const s = Number(seat);
+	const id = String(treasureId || "").trim();
+	if (!Number.isFinite(s) || s < 0 || !id) {
+		return false;
+	}
+	const el = document.getElementById(id);
+	if (!el) {
+		return false;
+	}
+	const { main, side } = getMainAndSideZoneElementsForSeat(s) || {};
+	return Boolean((main && main.contains(el)) || (side && side.contains(el)));
+}
+
+/** Автоуспех смывки: monsterAbilities.autoEscape или уровень смывающегося ≤ escapeAutoSuccessMaxPlayerLevel (door76). */
+function isEscapeAutoSuccessForMonster(cardId, escapingSeat) {
+	const id = String(cardId || "").trim();
+	if (!id) {
+		return false;
+	}
+	const ab = getMonsterAbilitiesByCardId(id);
+	if (ab && ab.autoEscape) {
+		return true;
+	}
+	const maxLv = Number(ab?.escapeAutoSuccessMaxPlayerLevel);
+	if (!Number.isFinite(maxLv) || maxLv < 1) {
+		return false;
+	}
+	if (escapingSeat === null || escapingSeat === undefined || escapingSeat === "") {
+		return false;
+	}
+	const s = Number(escapingSeat);
+	if (!Number.isFinite(s) || s < 0) {
+		return false;
+	}
+	const cur = Math.max(1, Number(levelBySeat[s]) || 1);
+	if (cur > maxLv) {
+		return false;
+	}
+	if (ab?.escapeAutoSuccessExcludeRaceElf && seatHasRace(s, "Elf")) {
+		return false;
+	}
+	return true;
+}
+
+function isCurrentEscapeMonsterAutoFailEscape() {
+	const id = String(escapeCurrentMonsterCardId || "").trim();
+	if (!id) {
+		return false;
+	}
+	const ab = getMonsterAbilitiesByCardId(id);
+	return Boolean(ab && ab.autoFailEscape);
+}
+
 function selectMonsterAndStartEscapeTurn(cardId, seat) {
 	setCurrentEscapeMonsterById(cardId);
 	escapeAttemptNumber = 0;
@@ -8412,6 +9123,27 @@ function selectMonsterAndStartEscapeTurn(cardId, seat) {
 		index: escapeQueueIndex,
 		isRetry: false,
 	});
+	// Авто-смывка от некоторых монстров: сразу публикуем успешный результат (без броска кубика).
+	if (isEscapeAutoSuccessForMonster(cardId, seat)) {
+		setTimeout(() => {
+			const payload = {
+				method: "EscapeRollResult",
+				seat: Number(seat),
+				escapePenaltySeat: Number(seat),
+				rawRoll: 6,
+				equipRemover: getSeatEquipmentRemover(Number(seat)),
+				monsterRemover: escapeMonsterRemover,
+				totalRoll: ESCAPE_TARGET_ROLL,
+				escaped: true,
+				badStaffPenalty: null,
+				monsterCardId: escapeCurrentMonsterCardId,
+				viaAutoEscapeMonster: true,
+			};
+			if (Number(localSeat) === Number(escapeOwnerSeat)) {
+				emitEscapeRollResultAndAdvance(payload);
+			}
+		}, 80);
+	}
 }
 
 function finishEscapeSequenceAndBroadcast() {
@@ -8455,6 +9187,7 @@ function runNextEscapeAttemptAndBroadcast() {
 			const payload = {
 				method: "EscapeRollResult",
 				seat: Number(seat),
+				escapePenaltySeat: Number(seat),
 				rawRoll: 6,
 				equipRemover: getSeatEquipmentRemover(Number(seat)),
 				monsterRemover: escapeMonsterRemover,
@@ -8573,9 +9306,11 @@ function resolveEscapeRollAndBroadcast(seat, rawRoll) {
 		method: "RandDice",
 		digit: rawRoll,
 	});
+	const penaltySeatNum = Math.floor(Number(seat));
 	const resultPayload = {
 		method: "EscapeRollResult",
-		seat,
+		seat: penaltySeatNum,
+		escapePenaltySeat: penaltySeatNum,
 		rawRoll,
 		equipRemover,
 		monsterRemover: escapeMonsterRemover,
@@ -8586,12 +9321,12 @@ function resolveEscapeRollAndBroadcast(seat, rawRoll) {
 	};
 	// После провала смывки всегда даём игроку окно "помочь смывке" (пока: Волшебник и Халфлинг).
 	if (!escaped) {
-		escapeFailAidPending = { seat, payload: resultPayload, attemptNumber: escapeAttemptNumber };
+		escapeFailAidPending = { seat: penaltySeatNum, payload: resultPayload, attemptNumber: escapeAttemptNumber };
 		socket.emit("message", { method: "EscapeCloseAidModals" });
 		setTimeout(() => {
 			socket.emit("message", {
 				method: "EscapeFailAidPrompt",
-				seat,
+				seat: penaltySeatNum,
 				attemptNumber: escapeAttemptNumber,
 				payload: resultPayload,
 			});
@@ -8641,7 +9376,24 @@ function resolveCombatAndBroadcast() {
 		const seatToLevelMap = getSeatToLevelMap();
 		const activeLevelSelector = seatToLevelMap[fightSeat];
 		const activeLevel = activeLevelSelector ? getNumericText(activeLevelSelector) : 0;
-		const nextLevel = activeLevel + levelSum;
+		// Доп. эффекты победы над конкретными монстрами (monsterAbilities), например +1 уровень за экипировку.
+		let victoryBonusLevels = 0;
+		monsters.forEach((m) => {
+			const ab = getMonsterAbilitiesByCardId(m?.cardId);
+			const ids = Array.isArray(ab?.bonusLevelIfEquippedTreasureIds) ? ab.bonusLevelIfEquippedTreasureIds : [];
+			const bonus = Number(ab?.bonusLevelIfEquippedTreasureBonus) || 0;
+			if (bonus > 0 && ids.some((tid) => seatHasEquippedTreasureId(fightSeat, tid))) {
+				victoryBonusLevels += bonus;
+			}
+			// card0061: +1 уровень, если для победы хватило собственного Уровня (с учётом правила Воина).
+			if (ab && ab.bonusLevelIfOwnLevelEnough) {
+				const ownLevelEnough = activeIsWarrior ? (activeLevel >= monsterPower) : (activeLevel > monsterPower);
+				if (ownLevelEnough) {
+					victoryBonusLevels += Number(ab.bonusLevelIfOwnLevelEnoughBonus) || 1;
+				}
+			}
+		});
+		const nextLevel = activeLevel + levelSum + victoryBonusLevels;
 		let helperLevel = null;
 		let helperLevelGain = 0;
 		if (!Number.isNaN(helperSeat) && helperSeat >= 0) {
@@ -8691,19 +9443,30 @@ function resolveCombatAndBroadcast() {
 function recalculateMyBonusDisplay() {
 	const seatToPowerMap = getSeatToPowerMap();
 	const powerSeat = battleActive ? getMonsterFightSeat() : currentTurnSeat;
+	const levelOnlyMonster = battleActive && monsterBattlefieldLevelOnlyCombatPower();
+	const excludeCombatLevel = battleActive && monsterBattlefieldExcludesLevelFromCombatPower();
 	const activePowerSelector = seatToPowerMap[powerSeat];
-	const activeCharacterPower = activePowerSelector ? getNumericText(activePowerSelector) : 0;
-	const zone3BonusPower = getTreasurePowerSum('.zone3');
+	const ch = powerSeat != null ? characterBySeat[powerSeat] : null;
+	const equipPow = Number(ch?.equipmentPower) || 0;
+	let activeCharacterPower = activePowerSelector ? getNumericText(activePowerSelector) : 0;
+	if (excludeCombatLevel && powerSeat != null && isSeatParticipantInCurrentMonsterBattle(powerSeat)) {
+		activeCharacterPower = equipPow;
+	}
+	// При door66 зона бонусов игрока (zone3) не даёт цифры к силе; доппельгангер по-прежнему срабатывает по факту карты в zone3.
+	const zone3BonusPower = levelOnlyMonster ? 0 : getTreasurePowerSum('.zone3');
 	const doppelInZone3 = Boolean(document.querySelector(".zone3 #treasure47"));
 	const doppelDoublingActive = battleActive
 		&& acceptedHelperSeat === null
 		&& doppelInZone3;
-	const ch = powerSeat != null ? characterBySeat[powerSeat] : null;
-	const equipPow = Number(ch?.equipmentPower) || 0;
 	let activeCombatPower = activeCharacterPower;
 	let zone3CombatPower = zone3BonusPower;
 	if (doppelDoublingActive) {
-		activeCombatPower = activeCharacterPower + equipPow;
+		// Обычно: +equipPow удваивает вклад экипировки. При door66 экипировка в силе не считается — удваиваем всю базу с персонажа (в т.ч. уровень).
+		if (levelOnlyMonster) {
+			activeCombatPower = 2 * activeCharacterPower;
+		} else {
+			activeCombatPower = activeCharacterPower + equipPow;
+		}
 		zone3CombatPower = 2 * zone3BonusPower;
 	}
 	// Change sex: -5 к силе в одном бою (когда игрок участвует в бою).
@@ -8716,19 +9479,21 @@ function recalculateMyBonusDisplay() {
 	let yuppieWaterBonusPower = 0;
 	const activeIsWarrior = String(characterBySeat[powerSeat]?.kind || "") === "Warrior";
 	const activeIsCleric = String(characterBySeat[powerSeat]?.kind || "") === "Cleric";
-	if (battleActive && powerSeat != null) {
+	if (battleActive && powerSeat != null && !levelOnlyMonster) {
 		frenzyBonusPower += activeIsWarrior ? (Number(warriorFrenzyBonusBySeat[powerSeat]) || 0) : 0;
 		exorcismBonusPower += activeIsCleric ? ((Number(clericExorcismBonusBySeat[powerSeat]) || 0) * 3) : 0;
 	}
 	if (battleActive && acceptedHelperSeat !== null) {
 		helpersBonusPower += getSeatCombatPower(acceptedHelperSeat);
-		const helperIsWarrior = String(characterBySeat[acceptedHelperSeat]?.kind || "") === "Warrior";
-		const helperIsCleric = String(characterBySeat[acceptedHelperSeat]?.kind || "") === "Cleric";
-		frenzyBonusPower += helperIsWarrior ? (Number(warriorFrenzyBonusBySeat[acceptedHelperSeat]) || 0) : 0;
-		exorcismBonusPower += helperIsCleric ? ((Number(clericExorcismBonusBySeat[acceptedHelperSeat]) || 0) * 3) : 0;
+		if (!levelOnlyMonster) {
+			const helperIsWarrior = String(characterBySeat[acceptedHelperSeat]?.kind || "") === "Warrior";
+			const helperIsCleric = String(characterBySeat[acceptedHelperSeat]?.kind || "") === "Cleric";
+			frenzyBonusPower += helperIsWarrior ? (Number(warriorFrenzyBonusBySeat[acceptedHelperSeat]) || 0) : 0;
+			exorcismBonusPower += helperIsCleric ? ((Number(clericExorcismBonusBySeat[acceptedHelperSeat]) || 0) * 3) : 0;
+		}
 	}
 	// Yuppie water в zone3: +2 каждому эльфу в этом бою.
-	if (battleActive && Boolean(document.querySelector(".zone3 #treasure51")) && powerSeat != null) {
+	if (battleActive && !levelOnlyMonster && Boolean(document.querySelector(".zone3 #treasure51")) && powerSeat != null) {
 		let elfCount = 0;
 		if (seatHasRace(powerSeat, "Elf")) {
 			elfCount += 1;
@@ -8737,6 +9502,16 @@ function recalculateMyBonusDisplay() {
 			elfCount += 1;
 		}
 		yuppieWaterBonusPower = 2 * elfCount;
+	}
+	let door79ElfBattleDebuff = 0;
+	const elfPenaltyEach = battleActive ? getMonsterBattlefieldElfCombatPenaltyPerElfSum() : 0;
+	if (elfPenaltyEach > 0 && powerSeat != null) {
+		if (seatHasRace(powerSeat, "Elf") && isSeatParticipantInCurrentMonsterBattle(powerSeat)) {
+			door79ElfBattleDebuff += elfPenaltyEach;
+		}
+		if (acceptedHelperSeat !== null && seatHasRace(acceptedHelperSeat, "Elf")) {
+			door79ElfBattleDebuff += elfPenaltyEach;
+		}
 	}
 	let trimDebuffActive = 0;
 	let trimDebuffHelper = 0;
@@ -8747,7 +9522,8 @@ function recalculateMyBonusDisplay() {
 		trimDebuffHelper = Number(thiefBackstabDebuffBySeat[acceptedHelperSeat]) || 0;
 	}
 	const myBonusValue = activeCombatPower + zone3CombatPower - trimDebuffActive
-		+ (helpersBonusPower - trimDebuffHelper) + frenzyBonusPower + exorcismBonusPower + yuppieWaterBonusPower;
+		+ (helpersBonusPower - trimDebuffHelper) + frenzyBonusPower + exorcismBonusPower + yuppieWaterBonusPower
+		- door79ElfBattleDebuff;
 
 	setPowerText('.MyBonus', myBonusValue);
 	return myBonusValue;
@@ -9439,6 +10215,13 @@ function reopenEphemeralUiAfterTurnPhaseRestore() {
 			escapeRollInProgress = false;
 		}
 	}
+	if (escapeBadStaffDicePending && Number.isFinite(Number(escapeBadStaffDicePending.penaltySeat))) {
+		const ps = Number(escapeBadStaffDicePending.penaltySeat);
+		showBattleResult("Смывка не удалась. Брось кубик, чтобы узнать эффект непотребства.");
+		if (localSeat != null && Number(localSeat) === ps) {
+			escapeRollInProgress = false;
+		}
+	}
 	const queueIdSet = new Set((escapeMonsterQueue || []).map((m) => String(m?.cardId || "")));
 	const rawPickMonsters = escapeMonsterPickSession && Array.isArray(escapeMonsterPickSession.monsters)
 		? escapeMonsterPickSession.monsters
@@ -9582,6 +10365,7 @@ function serializeTurnPhaseForServer() {
 		escapeAttemptNumber: Number(escapeAttemptNumber) || 0,
 		escapeHalflingRetryUsedForCurrentAttempt: Boolean(escapeHalflingRetryUsedForCurrentAttempt),
 		escapeHalflingRetryPending: cloneTurnStateJson(escapeHalflingRetryPending),
+		escapeBadStaffDicePending: cloneTurnStateJson(escapeBadStaffDicePending),
 		escapeWizardFlightPending: cloneTurnStateJson(escapeWizardFlightPending),
 		escapeMonsterPickSession:
 			escapeWaitingForRoll || escapeCurrentMonsterCardId != null
@@ -9639,6 +10423,14 @@ function applyTurnPhaseFromServer(tp) {
 	escapeAttemptNumber = Number(tp.escapeAttemptNumber) || 0;
 	escapeHalflingRetryUsedForCurrentAttempt = Boolean(tp.escapeHalflingRetryUsedForCurrentAttempt);
 	escapeHalflingRetryPending = cloneTurnStateJson(tp.escapeHalflingRetryPending);
+	escapeBadStaffDicePending =
+		tp.escapeBadStaffDicePending && typeof tp.escapeBadStaffDicePending === "object"
+			&& Number.isFinite(Number(tp.escapeBadStaffDicePending.penaltySeat))
+			? {
+				penaltySeat: Number(tp.escapeBadStaffDicePending.penaltySeat),
+				deathAtOrBelow: Number(tp.escapeBadStaffDicePending.deathAtOrBelow) || 2,
+			}
+			: null;
 	escapeWizardFlightPending = cloneTurnStateJson(tp.escapeWizardFlightPending);
 	escapeMonsterPickSession =
 		tp.escapeMonsterPickSession && typeof tp.escapeMonsterPickSession === "object" && tp.escapeMonsterPickSession.seat != null && tp.escapeMonsterPickSession.seat !== ""
@@ -10641,12 +11433,18 @@ function updateEffectiveMonsterBonusDisplay() {
 }
 
 function getSeatCombatPower(seat) {
+	// При door66 сила на счётчике уже без экипировки (updateCharacterStatesFromBoard); штрафы вроде change sex учитываются ниже.
+	// При door74 уровень не входит в силу в бою — берём только equipmentPower.
 	// Берем уже пересчитанную отображаемую силу по месту игрока.
 	// Это гарантирует одинаковое значение у всех клиентов, независимо от локальной перестановки зон.
 	const seatToPowerMap = getSeatToPowerMap();
 	const powerSelector = seatToPowerMap[seat];
+	const excludeCombatLevel = battleActive && monsterBattlefieldExcludesLevelFromCombatPower()
+		&& isSeatParticipantInCurrentMonsterBattle(seat);
 	if (powerSelector) {
-		let base = getNumericText(powerSelector);
+		let base = excludeCombatLevel
+			? (Number(characterBySeat[seat]?.equipmentPower) || 0)
+			: getNumericText(powerSelector);
 		if (battleActive && changeSexActiveBySeat.has(seat) && isSeatParticipantInCurrentMonsterBattle(seat)) {
 			base -= 5;
 		}
@@ -10843,11 +11641,16 @@ function updateCharacterStatesFromBoard() {
 		// Теперь, когда race/kind уже актуальны, считаем силу от шмоток (часть может зависеть от расы).
 		const malignMirrorRestrict = Boolean(malignMirrorActiveBySeat.has(seat))
 			&& isSeatParticipantInCurrentMonsterBattle(seat);
+		const levelOnlyCombatRestrict = monsterBattlefieldLevelOnlyCombatPower()
+			&& isSeatParticipantInCurrentMonsterBattle(seat);
 		const equippedTreasures = mainCards
 			.map((cardEl) => {
 				const t = window.treasures?.find((tr) => tr.name === cardEl.id);
 				if (!t) {
 					return null;
+				}
+				if (levelOnlyCombatRestrict) {
+					return { ...t, power: 0, powerByRace: null };
 				}
 				const isHireling = isTreasureSpecial(cardEl.id, "Hireling");
 				const isArmor = Number(t.body) === 1;
@@ -10873,7 +11676,7 @@ function updateCharacterStatesFromBoard() {
 			})
 			.filter(Boolean);
 		character.applyEquipmentCards(equippedTreasures);
-		character.remover += doorRemoverBonus;
+		character.remover += levelOnlyCombatRestrict ? 0 : doorRemoverBonus;
 	}
 }
 
@@ -10968,15 +11771,17 @@ function updateHelpUi() {
 	const fightSeat = getMonsterFightSeat();
 	const alreadyOffered = localSeat !== null && localSeat !== undefined && pendingHelpSeats.has(localSeat);
 	const helpAlreadyAccepted = acceptedHelperSeat !== null;
+	const helpDismissMonster = monsterBattlefieldDismissesBattleHelpers();
 	const canOffer = battleActive
 		&& localSeat !== null
 		&& localSeat !== undefined
 		&& Number(localSeat) !== Number(fightSeat)
 		&& !alreadyOffered
-		&& !helpAlreadyAccepted;
+		&& !helpAlreadyAccepted
+		&& !helpDismissMonster;
 	offerHelpButton.style.display = canOffer ? 'flex' : 'none';
 
-	if (battleActive && localSeat === fightSeat && acceptedHelperSeat === null) {
+	if (battleActive && localSeat === fightSeat && acceptedHelperSeat === null && !helpDismissMonster) {
 		pendingHelpSeats.forEach(seat => {
 			const btn = ensureAcceptHelpButtonForSeat(seat);
 			if (btn) {
@@ -11023,6 +11828,9 @@ export function recalculateAllPowerDisplays() {
 			changeSexActiveBySeat.delete(seat);
 		}
 	}
+
+	// Монстры вроде card0065: снять помощь до активации проклятий по участникам боя.
+	applyDismissBattleHelpersIfMonsterOnField();
 
 	// До пересчёта силы актуализируем состояние проклятия Malign mirrror по текущему бою.
 	// Это важно, потому что сама сила/шмотки считаются внутри updateCharacterStatesFromBoard.
@@ -11132,6 +11940,48 @@ function setupMunchkinDiceAfterGameStart() {
 							seat: localSeat,
 							value: Number(finalRoll),
 						});
+					},
+				});
+			}, 1000);
+			return;
+		}
+		if (escapeBadStaffDicePending) {
+			if (escapeRollInProgress) {
+				return;
+			}
+			const ps = Number(escapeBadStaffDicePending.penaltySeat);
+			if (localSeat == null || !Number.isFinite(ps) || Number(localSeat) !== ps) {
+				return;
+			}
+			const deathAtOrBelow = Number(escapeBadStaffDicePending.deathAtOrBelow) || 2;
+			escapeRollInProgress = true;
+			const interval = setInterval(() => {
+				const preview = Math.floor((Math.random() * 6) + 1);
+				diceContainer.innerHTML = "";
+				diceContainer.appendChild(createDice(preview));
+			}, 50);
+			setTimeout(() => {
+				clearInterval(interval);
+				const rawRoll = Math.floor((Math.random() * 6) + 1);
+				diceContainer.innerHTML = "";
+				diceContainer.appendChild(createDice(rawRoll));
+				const ownerSnap = escapeOwnerSeat != null && Number.isFinite(Number(escapeOwnerSeat))
+					? Number(escapeOwnerSeat)
+					: null;
+				promptLoadedDieAfterRoll({
+					seat: ps,
+					rawRoll,
+					onFinalize: (finalRoll) => {
+						const adj = applyDicePenaltyForSeat(ps, Number(finalRoll));
+						socket.emit("message", { method: "RandDice", digit: adj });
+						socket.emit("message", {
+							method: "EscapeBadStaffDiceRoll",
+							penaltySeat: ps,
+							rawRoll: adj,
+							deathAtOrBelow,
+							escapeQueueOwnerSeat: ownerSnap,
+						});
+						escapeRollInProgress = false;
 					},
 				});
 			}, 1000);
@@ -11671,6 +12521,15 @@ socket.on("message", response => {
 			scheduleFriendshipPotionIfNeeded(card.id, zone);
 		}
 
+		// Potion of halitosis (treasure61): на поле боя убивает door68 (card0068).
+		if (card && zone) {
+			if (isTreasureSpecial(card.id, "Potion of halitosis") && zone.id === "zone_treasure_drop") {
+				card.dataset.halitosisScheduled = "";
+				card.dataset.halitosisActorSeat = "";
+			}
+			scheduleHalitosisPotionIfNeeded(card.id, zone, response.playedBySeat);
+		}
+
 		// Wand of dowsing: основная экипировка, зона монстра или зона бонусов игрока (zone3) на поле боя.
 		if (card && zone) {
 			scheduleWandOfDowsingIfNeeded(card.id, zone, response.playedBySeat);
@@ -11692,6 +12551,10 @@ socket.on("message", response => {
 			}
 			if (isTreasureSpecial(card.id, "Transferral potion")) {
 				card.dataset.transferralPotionScheduled = "";
+			}
+			if (isTreasureSpecial(card.id, "Potion of halitosis")) {
+				card.dataset.halitosisScheduled = "";
+				card.dataset.halitosisActorSeat = "";
 			}
 		}
 
@@ -11849,6 +12712,13 @@ socket.on("message", response => {
 		}
 		applyFriendshipPotionResolve(cardId);
 	}
+	if (response.method === "HalitosisKillDoor68Resolve") {
+		const potionCardId = String(response.potionCardId || "");
+		if (!potionCardId) {
+			return;
+		}
+		applyHalitosisKillDoor68Resolve(potionCardId);
+	}
 	if (response.method === "WandOfDowsingResolve") {
 		const wandCardId = String(response.wandCardId || "");
 		const pickedCardId = String(response.pickedCardId || "");
@@ -11982,6 +12852,9 @@ socket.on("message", response => {
 	if (response.method === "OfferHelp") {
 		const helperSeat = parseInt(response.helperSeat, 10);
 		const turnSeat = parseInt(response.turnSeat, 10);
+		if (monsterBattlefieldDismissesBattleHelpers()) {
+			return;
+		}
 		// ВАЖНО: acceptedHelperSeat/pendingHelpSeats должны синхронизироваться на всех клиентах,
 		// даже если локальный battleActive временно не проставлен (например, у помощника).
 		// Принимаем факт боя/ведущего из сообщения, не полагаясь на локальные battle-флаги.
@@ -11991,6 +12864,9 @@ socket.on("message", response => {
 		}
 	}
 	if (response.method === "AcceptHelp") {
+		if (monsterBattlefieldDismissesBattleHelpers()) {
+			return;
+		}
 		const helperSeat = parseInt(response.helperSeat, 10);
 		const turnSeat = parseInt(response.turnSeat, 10);
 		if (!Number.isNaN(helperSeat) && !Number.isNaN(turnSeat) && acceptedHelperSeat === null) {
@@ -12008,6 +12884,15 @@ socket.on("message", response => {
 			tryActivateMalignMirrorForSeat(helperSeat);
 			recalculateAllPowerDisplays();
 		}
+	}
+	if (response.method === "DissolveBattleHelp") {
+		pendingHelpSeats.clear();
+		acceptedHelperSeat = null;
+		hideAllAcceptHelpButtons();
+		scheduleTurnStateSync();
+		recalculateAllPowerDisplays();
+		updateHelpUi();
+		applyTurnHighlight();
 	}
 	if (response.method === "CombatResolved") {
 		const resolvedSeat = parseInt(response.seat, 10);
@@ -12415,10 +13300,66 @@ socket.on("message", response => {
 		}
 		flushTurnStateSyncToServer();
 		maybeTryOpenEscapeAidOptionsModal();
+
+		// Авто-смывка от некоторых монстров (например card0045): срабатывает и в сценарии выбора из нескольких монстров,
+		// где EscapeTurnStart эмитится напрямую (минуя selectMonsterAndStartEscapeTurn).
+		if (!Number.isNaN(seat) && escapeWaitingForRoll && isEscapeAutoSuccessForMonster(escapeCurrentMonsterCardId, seat)) {
+			setTimeout(() => {
+				// Только владелец очереди смывки публикует результат, иначе будут дубли.
+				if (Number(localSeat) !== Number(escapeOwnerSeat)) {
+					return;
+				}
+				// Если ожидание броска уже снято (например другим эффектом) — не дублируем.
+				if (!escapeWaitingForRoll || !escapeActive) {
+					return;
+				}
+				const payload = {
+					method: "EscapeRollResult",
+					seat: Number(seat),
+					escapePenaltySeat: Number(seat),
+					rawRoll: 6,
+					equipRemover: getSeatEquipmentRemover(Number(seat)),
+					monsterRemover: escapeMonsterRemover,
+					totalRoll: ESCAPE_TARGET_ROLL,
+					escaped: true,
+					badStaffPenalty: null,
+					monsterCardId: escapeCurrentMonsterCardId,
+					viaAutoEscapeMonster: true,
+				};
+				emitEscapeRollResultAndAdvance(payload);
+			}, 80);
+		}
+
+		// Есть монстры, от которых нельзя смыться: смывка автоматически проваливается (без броска).
+		if (!Number.isNaN(seat) && escapeWaitingForRoll && isCurrentEscapeMonsterAutoFailEscape()) {
+			setTimeout(() => {
+				if (Number(localSeat) !== Number(escapeOwnerSeat)) {
+					return;
+				}
+				if (!escapeWaitingForRoll || !escapeActive) {
+					return;
+				}
+				const payload = {
+					method: "EscapeRollResult",
+					seat: Number(seat),
+					escapePenaltySeat: Number(seat),
+					rawRoll: 1,
+					equipRemover: getSeatEquipmentRemover(Number(seat)),
+					monsterRemover: escapeMonsterRemover,
+					totalRoll: 0,
+					escaped: false,
+					badStaffPenalty: escapeMonsterBadStaff,
+					monsterCardId: escapeCurrentMonsterCardId,
+					viaAutoFailEscapeMonster: true,
+				};
+				emitEscapeRollResultAndAdvance(payload);
+			}, 80);
+		}
 	}
 	if (response.method === "EscapeCloseAidModals") {
 		hideEscapeAidOptionsModal(true);
 		hideEscapeRatMonsterPickModal();
+		hideEscapeLoseHandOrLevelsModal();
 	}
 	if (response.method === "EscapeFailAidPrompt") {
 		const seat = parseInt(response.seat, 10);
@@ -12448,6 +13389,10 @@ socket.on("message", response => {
 		escapeFailAidPending = null;
 		emitEscapeRollResultAndAdvance(pendingPayload);
 	}
+	if (response.method === "EscapeLoseHandOrLevelsResolve") {
+		hideEscapeLoseHandOrLevelsModal();
+		applyEscapeLoseHandOrLevelsResolveFromNetwork(response);
+	}
 	if (response.method === "EscapeInvisibilityPotionApply") {
 		const actingSeat = Number(response.actingSeat);
 		const cardId = String(response.cardId || "");
@@ -12468,11 +13413,13 @@ socket.on("message", response => {
 		adjustCardWidth(".opponent3hand");
 		UpdatebackImgTreasure();
 		if (Number(localSeat) === Number(escapeOwnerSeat) && escapeActive && Number.isFinite(actingSeat) && Number(actingSeat) === Number(escapeCurrentSeat)) {
+			const fleeSeat = Math.floor(Number(escapeCurrentSeat));
 			const payload = {
 				method: "EscapeRollResult",
-				seat: actingSeat,
+				seat: fleeSeat,
+				escapePenaltySeat: fleeSeat,
 				rawRoll: 6,
-				equipRemover: getSeatEquipmentRemover(actingSeat),
+				equipRemover: getSeatEquipmentRemover(fleeSeat),
 				monsterRemover: escapeMonsterRemover,
 				totalRoll: ESCAPE_TARGET_ROLL,
 				escaped: true,
@@ -12779,7 +13726,7 @@ socket.on("message", response => {
 		updateWizardFlightUi();
 		escapeWaitingForRoll = false;
 		escapeRollInProgress = false;
-		const seat = parseInt(response.seat, 10);
+		const penaltySeat = escapeRollPenaltySeatFromPayload(response);
 		const rawRoll = Number(response.rawRoll);
 		const equipRemover = Number(response.equipRemover) || 0;
 		const monsterRemover = Number(response.monsterRemover) || 0;
@@ -12787,17 +13734,78 @@ socket.on("message", response => {
 		const escaped = Boolean(response.escaped);
 		const monsterCardId = String(response.monsterCardId || "");
 		const badStaffPenalty = normalizeBadStaff(response.badStaffPenalty);
-		if (!Number.isNaN(seat) && Number.isFinite(rawRoll) && Number.isFinite(totalRoll)) {
-			showBattleResult(escaped ? "Смывка удалась!" : "Смывка не удалась");
-			if (!escaped && badStaffPenalty) {
-				applyBadStaffToSeat(seat, badStaffPenalty);
+		if (Number.isFinite(penaltySeat) && penaltySeat >= 0 && Number.isFinite(rawRoll) && Number.isFinite(totalRoll)) {
+			if (!escaped && badStaffPenalty && badStaffPenalty.type === "escape_dice_death_or_levels") {
+				showBattleResult("Смывка не удалась. Брось кубик, чтобы узнать эффект непотребства.");
+				escapeBadStaffDicePending = {
+					penaltySeat: Number(penaltySeat),
+					deathAtOrBelow: Number(badStaffPenalty.deathAtOrBelow) || 2,
+				};
+				scheduleTurnStateSync();
+			} else {
+				showBattleResult(escaped ? "Смывка удалась!" : "Смывка не удалась");
+				if (!escaped && badStaffPenalty) {
+					// Побочные эффекты непотребства монстра (уровень/сброс экипировки) публикует только владелец очереди смывки.
+					if (badStaffPenalty.type !== "lose_hand_or_lose_levels" && badStaffPenalty.type !== "escape_dice_death_or_levels") {
+						applyEscapeBadStaffPenaltyFromOwner(penaltySeat, badStaffPenalty);
+					}
+				}
+			}
+		}
+		// Непотребство «рука или уровни»: модалка только у смывающегося.
+		if (!escaped && badStaffPenalty && badStaffPenalty.type === "lose_hand_or_lose_levels") {
+			if (localSeat !== null && localSeat !== undefined && Number(localSeat) === Number(penaltySeat)) {
+				const loss = Number(badStaffPenalty.levels) || 2;
+				openEscapeLoseHandOrLevelsModal({ seat: penaltySeat, levelLoss: loss });
 			}
 		}
 		// Flask of glue обрабатывается через EscapeGluePrompt (без таймеров).
 	}
+	if (response.method === "EscapeBadStaffDiceRoll") {
+		const penaltySeat = Number(response.penaltySeat);
+		const deathAtOrBelow = Number(response.deathAtOrBelow) || 2;
+		const rawRoll = applyDicePenaltyForSeat(penaltySeat, Number(response.rawRoll));
+		const msgOwner = response.escapeQueueOwnerSeat != null && response.escapeQueueOwnerSeat !== ""
+			? Number(response.escapeQueueOwnerSeat)
+			: NaN;
+		const queueOwner = Number.isFinite(msgOwner) && !Number.isNaN(msgOwner)
+			? msgOwner
+			: (escapeOwnerSeat != null && Number.isFinite(Number(escapeOwnerSeat))
+				? Number(escapeOwnerSeat)
+				: penaltySeat);
+		const mustApply = Number(localSeat) === queueOwner;
+		escapeBadStaffDicePending = null;
+		escapeRollInProgress = false;
+		scheduleTurnStateSync();
+		if (Number.isFinite(penaltySeat) && penaltySeat >= 0 && Number.isFinite(rawRoll) && rawRoll >= 1 && rawRoll <= 6) {
+			if (rawRoll <= deathAtOrBelow) {
+				showBattleResult(`Непотребство: ${rawRoll} — смерть.`);
+			} else {
+				showBattleResult(`Непотребство: ${rawRoll}. Потеря уровней: ${rawRoll}.`);
+			}
+		}
+		if (!mustApply) {
+			return;
+		}
+		if (!Number.isFinite(penaltySeat) || penaltySeat < 0 || !Number.isFinite(rawRoll) || rawRoll < 1 || rawRoll > 6) {
+			setTimeout(() => {
+				runNextEscapeAttemptAndBroadcast();
+			}, 1200);
+			return;
+		}
+		if (rawRoll <= deathAtOrBelow) {
+			triggerDeathAfterFailedEscape(penaltySeat, queueOwner);
+			return;
+		}
+		emitLevelAdjust(penaltySeat, -rawRoll);
+		setTimeout(() => {
+			runNextEscapeAttemptAndBroadcast();
+		}, 1200);
+	}
 	if (response.method === "EscapeSequenceFinished") {
 		hideEscapeAidOptionsModal(true);
 		hideEscapeRatMonsterPickModal();
+		hideEscapeLoseHandOrLevelsModal();
 		removeInstantWallWaitingBanners();
 		removeInstantWallSoloAidWaitingBanner();
 		instantWallSoloAidWaitingEmitted = false;
@@ -12823,6 +13831,7 @@ socket.on("message", response => {
 		escapeHalflingRetryUsedForCurrentAttempt = false;
 		escapeHalflingRetryPending = null;
 		escapeWizardFlightPending = null;
+		escapeBadStaffDicePending = null;
 		escapeInstantWallGate = null;
 		escapeInstantWallOfferPending = null;
 		escapeInstantWallAutoSeats = new Set();
@@ -13069,11 +14078,8 @@ socket.on("message", response => {
 			deckTreasure: window.treasures,
 		};
 		socket.emit("message",shuffleDeck);
-		// Тестовая раздача: два хотельных кольца в руку первого игрока.
-		socket.emit("message", { method: "MateTestDeal", seat: 0, cardId: "treasure42" });
-		socket.emit("message", { method: "MateTestDeal", seat: 0, cardId: "treasure43" });
-		
-		
+		// Тестовая раздача: card0079 (door79) в руку первого игрока.
+		socket.emit("message", { method: "MateTestDeal", seat: 0, cardId: "door79" });
   }
 	if (response.method === "2Players") {
 		//console.log("второй или третий ")
@@ -13572,7 +14578,7 @@ const treasure57 = new Card_treasure("treasure57", "Pollymorth Potion",  "../img
 const treasure58 = new Card_treasure("treasure58", "Transferral potion", "../img/treasure1/card0153.png", "../img/treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "Transferral potion", 0, null, true);
 const treasure59 = new Card_treasure("treasure59", "",  "../img/treasure1/card0154.png", "../img/treasure1/cardBack_Treasure.png", 5, 300, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure60 = new Card_treasure("treasure60", "",  "../img/treasure1/card0155.png", "../img/treasure1/cardBack_Treasure.png", 2, 200, 0, 0, 0, 0, 0, 0, "", 0, null, true);
-const treasure61 = new Card_treasure("treasure61", "",  "../img/treasure1/card0156.png", "../img/treasure1/cardBack_Treasure.png", 2, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
+const treasure61 = new Card_treasure("treasure61", "Potion of halitosis", "../img/treasure1/card0156.png", "../img/treasure1/cardBack_Treasure.png", 2, 100, 0, 0, 0, 0, 0, 0, "Potion of halitosis", 0, null, true);
 const treasure62 = new Card_treasure("treasure62", "",  "../img/treasure1/card0157.png", "../img/treasure1/cardBack_Treasure.png", 3, 100, 0, 0, 0, 0, 0, 0, "", 0, null, true);
 const treasure63 = new Card_treasure("treasure63", "Friendship potion",  "../img/treasure1/card0158.png", "../img/treasure1/cardBack_Treasure.png", 0, 200, 0, 0, 0, 0, 0, 0, "Friendship potion", 0, null, true);
 const treasure64 = new Card_treasure("treasure64", "",  "../img/treasure1/card0159.png", "../img/treasure1/cardBack_Treasure.png", 0, -1, 0, 0, 0, 0, 0, 0, "", 0, null, true);
@@ -13649,14 +14655,22 @@ const door42 = new Card_door("door42", "",  "../img/doors1/card0042.png", "../im
 const door43 = new Card_door("door43", "",  "../img/doors1/card0043.png", "../img/doors1/cardBack_Doors.png", 10, "", "", "bonus_power_monster");
 const door44 = new Card_door("door44", "",  "../img/doors1/card0044.png", "../img/doors1/cardBack_Doors.png", 5, "", "", "bonus_power_monster");
 const door45 = new Card_door("door45", "",  "../img/doors1/card0045.png", "../img/doors1/cardBack_Doors.png", 1, "monster", "", "", 1, 0);
+// card0045: особенность монстра — авто-смывка (побег всегда успешен без броска кубика).
+door45.monsterAbilities = { autoEscape: true };
 const door46 = new Card_door("door46", "",  "../img/doors1/card0046.png", "../img/doors1/cardBack_Doors.png", 1, "monster", "", "", 1, { type: "lose_levels", levels: 1 }, 1);
-const door47 = new Card_door("door47", "",  "../img/doors1/card0047.png", "../img/doors1/cardBack_Doors.png", 1, "monster", "", "", 1, { type: "lose_levels", levels: 1 }, 0, 0, { type: "Elf", power: 4 });
+const door47 = new Card_door("door47", "",  "../img/doors1/card0047.png", "../img/doors1/cardBack_Doors.png", 1, "monster", "", "", 1, { type: "discard_footwear_or_lose_level" }, 0, 0, { type: "Elf", power: 4 });
 const door48 = new Card_door("door48", "",  "../img/doors1/card0048.png", "../img/doors1/cardBack_Doors.png", 1, "monster", "", "", 1, 0);
+// card0048: от монстра нельзя смыться — смывка автоматически проваливается.
+door48.monsterAbilities = { autoFailEscape: true };
 const door49 = new Card_door("door49", "",  "../img/doors1/card0049.png", "../img/doors1/cardBack_Doors.png", 1, "monster", "", "", 1, { type: "lose_levels", levels: 1 }, 0, 0, { type: "Cleric", power: 3});
 const door50 = new Card_door("door50", "",  "../img/doors1/card0050.png", "../img/doors1/cardBack_Doors.png", 2, "monster", "", "", 1, { type: "lose_levels", levels: 2 }, -1);
 const door51 = new Card_door("door51", "",  "../img/doors1/card0051.png", "../img/doors1/cardBack_Doors.png", 2, "monster", "", "", 1, 0, 1);
 const door52 = new Card_door("door52", "",  "../img/doors1/card0052.png", "../img/doors1/cardBack_Doors.png", 2, "monster", "", "", 1, { type: "lose_levels", levels: 1 }, 0, { type: "fire", bonus_level: 1});
-const door53 = new Card_door("door53", "",  "../img/doors1/card0053.png", "../img/doors1/cardBack_Doors.png", 2, "monster", "", "Undead", 1, { type: "lose_levels", levels: 2 });
+// card0052: если монстра победить и у победителя экипировано card0100 (treasure5) или card0118 (treasure23) — +1 уровень.
+door52.monsterAbilities = { bonusLevelIfEquippedTreasureIds: ["treasure5", "treasure23"], bonusLevelIfEquippedTreasureBonus: 1 };
+const door53 = new Card_door("door53", "",  "../img/doors1/card0053.png", "../img/doors1/cardBack_Doors.png", 2, "monster", "", "Undead", 1, { type: "lose_levels", levels: 3 });
+// card0053: даже при успешной смывке игрок теряет 1 уровень.
+door53.monsterAbilities = { loseLevelOnEscape: 1 };
 const door54 = new Card_door("door54", "",  "../img/doors1/card0054.png", "../img/doors1/cardBack_Doors.png", 2, "monster", "", "", 1, { type: "lose_levels", levels: 2 });
 const door55 = new Card_door("door55", "",  "../img/doors1/card0055.png", "../img/doors1/cardBack_Doors.png", 4, "monster", "", "", 1, 0, 0, 0, { type: "Elf", power: 5 });
 const door56 = new Card_door("door56", "",  "../img/doors1/card0056.png", "../img/doors1/cardBack_Doors.png", 4, "monster", "", "", 1, 0, -2);
@@ -13665,26 +14679,66 @@ const door58 = new Card_door("door58", "",  "../img/doors1/card0058.png", "../im
 const door59 = new Card_door("door59", "",  "../img/doors1/card0059.png", "../img/doors1/cardBack_Doors.png", 6, "monster", "", "", 1, 0);
 const door60 = new Card_door("door60", "",  "../img/doors1/card0060.png", "../img/doors1/cardBack_Doors.png", 6, "monster", "", "", 1, 0, 0, 0, { type: "Warrior", power: 6});
 const door61 = new Card_door("door61", "",  "../img/doors1/card0061.png", "../img/doors1/cardBack_Doors.png", 6, "monster", "", "", 1, 0, 0, { type: "level", bonus_level: 1} );
-const door62 = new Card_door("door62", "",  "../img/doors1/card0062.png", "../img/doors1/cardBack_Doors.png", 6, "monster", "", "", 1, { type: "lose_levels", levels: 2 }, 0, 0, { type: "Wizard", power: 6});
-const door63 = new Card_door("door63", "",  "../img/doors1/card0063.png", "../img/doors1/cardBack_Doors.png", 8, "monster", "", "", 1, { type: "lose_levels", levels: 3 });
+// card0061: получи +1 уровень, если для победы хватило собственного Уровня (>= для Воина, иначе >), против силы монстра с бонусами.
+door61.monsterAbilities = { bonusLevelIfOwnLevelEnough: true, bonusLevelIfOwnLevelEnoughBonus: 1 };
+const door62 = new Card_door("door62", "",  "../img/doors1/card0062.png", "../img/doors1/cardBack_Doors.png", 6, "monster", "", "", 1, { type: "lose_hand_or_lose_levels", levels: 2 }, 0, 0, { type: "Wizard", power: 6});
+// card0063: сбросить все экипированные классы; если классов нет — потерять 3 уровня.
+const door63 = new Card_door("door63", "",  "../img/doors1/card0063.png", "../img/doors1/cardBack_Doors.png", 8, "monster", "", "", 1, { type: "lose_all_equipped_classes_or_levels", levels: 3 });
 const door64 = new Card_door("door64", "",  "../img/doors1/card0064.png", "../img/doors1/cardBack_Doors.png", 8, "monster", "", "", 1, { type: "lose_levels", levels: 1 }, 0, 0, { type: "Elf", power: 6});
 const door65 = new Card_door("door65", "",  "../img/doors1/card0065.png", "../img/doors1/cardBack_Doors.png", 8, "monster", "", "", 1, { type: "lose_levels", levels: 3 });
-const door66 = new Card_door("door66", "",  "../img/doors1/card0066.png", "../img/doors1/cardBack_Doors.png", 8, "monster", "", "", 1, 0);
-const door67 = new Card_door("door67", "",  "../img/doors1/card0067.png", "../img/doors1/cardBack_Doors.png", 10, "monster", "", "", 1, 0, 0, 0, { type: "Dwarf", power: 6});
+// card0065: на поле боя снимает помощников; у остальных не показывается «предложить помощь».
+door65.monsterAbilities = { dismissBattleHelpersWhileOnField: true };
+const door66 = new Card_door("door66", "",  "../img/doors1/card0066.png", "../img/doors1/cardBack_Doors.png", 8, "monster", "", "", 1, { type: "level_to_table_minimum" });
+// card0066: см. monsterBattlefieldLevelOnlyCombatPower — что входит в силу при этом монстре.
+door66.monsterAbilities = { combatPowerFromLevelOnly: true };
+// card0067: непотребство — кубик; 1–2 смерть, 3–6 потеря уровней по значению кубика (см. EscapeBadStaffDiceRoll).
+const door67 = new Card_door("door67", "",  "../img/doors1/card0067.png", "../img/doors1/cardBack_Doors.png", 10, "monster", "", "", 1, { type: "escape_dice_death_or_levels", deathAtOrBelow: 2 }, 0, 0, { type: "Dwarf", power: 6});
 const door68 = new Card_door("door68", "",  "../img/doors1/card0068.png", "../img/doors1/cardBack_Doors.png", 10, "monster", "", "", 1, { type: "lose_levels", levels: 3 });
+// card0068: от монстра нельзя смыться — смывка сразу проваливается (непотребство).
+door68.monsterAbilities = { autoFailEscape: true };
 const door69 = new Card_door("door69", "",  "../img/doors1/card0069.png", "../img/doors1/cardBack_Doors.png", 10, "monster", "", "", 1, 0);
 const door70 = new Card_door("door70", "",  "../img/doors1/card0070.png", "../img/doors1/cardBack_Doors.png", 12, "monster", "", "", 1, 0, 0, 0, { type: "Dwarf, Halfling", power: 3});
 const door71 = new Card_door("door71", "",  "../img/doors1/card0071.png", "../img/doors1/cardBack_Doors.png", 12, "monster", "", "", 1, { type: "lose_levels", levels: 2 }, 0, 0, { type: "Cleric", power: 4});
+// card0071: непотребство lose_levels 2; для эльфа — 3 уровня.
+door71.monsterAbilities = { escapeLoseLevelsElfLevels: 3 };
 const door72 = new Card_door("door72", "",  "../img/doors1/card0072.png", "../img/doors1/cardBack_Doors.png", 12, "monster", "", "", 1, { type: "lose_levels", levels: 3 });
 const door73 = new Card_door("door73", "",  "../img/doors1/card0073.png", "../img/doors1/cardBack_Doors.png", 14, "monster", "", "", 1, { type: "death" }, 0, 0, { type: "Warrior", power: 4});
+// card0073: смерть; волшебник не умирает — сбрасывается только карта класса Wizard.
+door73.monsterAbilities = { deathBadStaffWizardDiscardsClassOnly: true };
 const door74 = new Card_door("door74", "",  "../img/doors1/card0074.png", "../img/doors1/cardBack_Doors.png", 14, "monster", "", "", 1, 0);
+// card0074: в бою уровень участника не добавляется к силе (только экипировка и т.д.), для ведущего и помощника.
+door74.monsterAbilities = { combatPowerExcludesLevel: true };
 const door75 = new Card_door("door75", "",  "../img/doors1/card0075.png", "../img/doors1/cardBack_Doors.png", 14, "monster", "", "", 1, { type: "death" });
-const door76 = new Card_door("door76", "",  "../img/doors1/card0076.png", "../img/doors1/cardBack_Doors.png", 16, "monster", "", "Undead", 2, 0);
+const door76 = new Card_door("door76", "",  "../img/doors1/card0076.png", "../img/doors1/cardBack_Doors.png", 16, "monster", "", "Undead", 2, { type: "lose_levels", levels: 2 });
+// card0076: при уровне ≤3 смывка автоматическая; при уровне ≥4 после успешной смывки −2 уровня.
+door76.monsterAbilities = {
+	escapeAutoSuccessMaxPlayerLevel: 3,
+	loseLevelsOnEscapeSuccessMinPlayerLevel: 4,
+	loseLevelsOnEscapeSuccessAmount: 2,
+};
 const door77 = new Card_door("door77", "",  "../img/doors1/card0077.png", "../img/doors1/cardBack_Doors.png", 16, "monster", "", "", 2, 0);
+// card0077: при уровне ≤3 смывка автоматическая.
+door77.monsterAbilities = { escapeAutoSuccessMaxPlayerLevel: 3 };
 const door78 = new Card_door("door78", "",  "../img/doors1/card0078.png", "../img/doors1/cardBack_Doors.png", 16, "monster", "", "Undead", 2, { type: "lose_levels", levels: 9 });
+// card0078: как card0076 — авто при уровне ≤3; при уровне ≥4 после успешной смывки −2 уровня.
+door78.monsterAbilities = {
+	escapeAutoSuccessMaxPlayerLevel: 3,
+	loseLevelsOnEscapeSuccessMinPlayerLevel: 4,
+	loseLevelsOnEscapeSuccessAmount: 2,
+};
 const door79 = new Card_door("door79", "",  "../img/doors1/card0079.png", "../img/doors1/cardBack_Doors.png", 18, "monster", "", "", 2, { type: "death" });
+// card0079: каждый эльф в бою −4 к силе; авто-смывка при уровне ≤4, кроме эльфов.
+door79.monsterAbilities = {
+	battleElfCombatPenaltyEach: 4,
+	escapeAutoSuccessMaxPlayerLevel: 4,
+	escapeAutoSuccessExcludeRaceElf: true,
+};
 const door80 = new Card_door("door80", "",  "../img/doors1/card0080.png", "../img/doors1/cardBack_Doors.png", 18, "monster", "", "", 2, { type: "death" });
+// card0080: при уровне ≤4 смывка автоматическая.
+door80.monsterAbilities = { escapeAutoSuccessMaxPlayerLevel: 4 };
 const door81 = new Card_door("door81", "",  "../img/doors1/card0081.png", "../img/doors1/cardBack_Doors.png", 20, "monster", "", "", 2, { type: "death" });
+// card0081: при уровне ≤5 смывка автоматическая.
+door81.monsterAbilities = { escapeAutoSuccessMaxPlayerLevel: 5 };
 const door82 = new Card_door("door82", "Half-breed",  "../img/doors1/card0082.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Half-breed");
 const door83 = new Card_door("door83", "Half-breed",  "../img/doors1/card0083.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Half-breed");
 const door84 = new Card_door("door84", "Super Munchkin",  "../img/doors1/card0084.png", "../img/doors1/cardBack_Doors.png", 0, "", "", "Super Munchkin");

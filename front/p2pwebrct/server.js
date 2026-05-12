@@ -45,6 +45,10 @@ function getOrInitRoomGameState(roomID) {
 function clampSeatInRoom(roomID, seat) {
   const prev = roomStates.get(roomID) || {};
   const numPlayers = Math.max(1, Math.min(3, Number(prev.num) || 3));
+  // Важно: Number(null) === 0 — без проверки «пустого» места штрафы могли уходить не туда.
+  if (seat === null || seat === undefined || seat === '') {
+    return null;
+  }
   const s = Number(seat);
   if (!Number.isFinite(s) || s < 0 || s >= numPlayers) return null;
   return Math.floor(s);
@@ -160,6 +164,7 @@ function patchRoomDiscards(roomID, cardIds) {
   });
 
   patchRoomCardEntries(roomID, entries);
+  return entries;
 }
 
 function isCardInDoorOrTreasureDiscard(roomID, cardId) {
@@ -338,6 +343,7 @@ io.on('connection', socket => {
       "DivineInterventionResolve",
       "OutToLunchResolve",
       "FriendshipPotionResolve",
+      "HalitosisKillDoor68Resolve",
       "PotionResolve",
       "PotionResolveSingleMonster",
       "IllusionResolve",
@@ -346,6 +352,7 @@ io.on('connection', socket => {
       "WandOfDowsingResolve",
       "OfferHelp",
       "AcceptHelp",
+      "DissolveBattleHelp",
       "EscapeSequenceStart",
       "EscapeMonsterPickStart",
       "EscapeMonsterChosen",
@@ -356,6 +363,7 @@ io.on('connection', socket => {
       "EscapeMagicLampBanish",
       "EscapeFailAidPrompt",
       "EscapeFailAidSkip",
+      "EscapeLoseHandOrLevelsResolve",
       "InstantWallHelperPrompt",
       "InstantWallHelperWaiting",
       "InstantWallSoloAidWaiting",
@@ -366,6 +374,7 @@ io.on('connection', socket => {
       "InstantWallOfferWaiting",
       "InstantWallOfferDecision",
       "EscapeRollResult",
+      "EscapeBadStaffDiceRoll",
       "EscapeOwnerTransfer",
       "EscapeHalflingRetryPrompt",
       "EscapeHalflingRetryDecision",
@@ -521,6 +530,44 @@ io.on('connection', socket => {
         setLevelBySeatInGame(game, seat, cur + delta);
         const latest = roomStates.get(roomID) || {};
         roomStates.set(roomID, { ...latest, game });
+      }
+    }
+
+    if (moveData.method === "EscapeLoseHandOrLevelsResolve") {
+      const seat = clampSeatInRoom(roomID, moveData.escapePenaltySeat ?? moveData.seat);
+      const choice = String(moveData.choice || '').trim();
+      if (seat != null) {
+        const room = roomID;
+        if (choice === 'lose_levels') {
+          const loss = Math.max(1, Math.floor(Number(moveData.levelLoss) || 2));
+          const game = getOrInitRoomGameState(roomID);
+          const cur = getLevelBySeatFromGame(game, seat);
+          setLevelBySeatInGame(game, seat, cur - loss);
+          const latest = roomStates.get(roomID) || {};
+          roomStates.set(roomID, { ...latest, game });
+          // Единый путь обновления UI и согласованности с остальными штрафами (как LevelAdjust с клиента).
+          queueMicrotask(() => {
+            io.to(room).emit('message', { method: 'LevelAdjust', seat, delta: -loss });
+          });
+        } else if (choice === 'discard_hand') {
+          const ids = Array.isArray(moveData.cardIds) ? moveData.cardIds.map((x) => String(x || '').trim()).filter(Boolean) : [];
+          if (ids.length) {
+            const entries = patchRoomDiscards(roomID, ids);
+            queueMicrotask(() => {
+              (Array.isArray(entries) ? entries : []).forEach((e) => {
+                const cardId = String(e?.cardId || '').trim();
+                const zoneId = String(e?.zoneId || '').trim();
+                if (!cardId || !zoneId) return;
+                io.to(room).emit('message', {
+                  method: 'moveCard',
+                  cardId,
+                  targetId: e?.targetId ? String(e.targetId) : null,
+                  zoneId,
+                });
+              });
+            });
+          }
+        }
       }
     }
 
