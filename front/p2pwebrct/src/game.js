@@ -19,6 +19,18 @@ export function getLocalSeatForSocket() {
 let currentTurnSeat = 0;
 const levelBySeat = [1, 1, 1];
 const STEAL_LEVEL_CARD_NAME = "Steal a level";
+const WINNING_LEVEL = 10;
+
+/** Положительный прирост без «разрешения победы» не доводит уровень выше 9 (10-й только бой / божественное вмешательство). */
+function applyLevelDeltaWithWinRule(cur, delta, allowWinningLevel) {
+	const c = Math.max(1, Math.floor(Number(cur) || 1));
+	const d = Number(delta) || 0;
+	let next = Math.max(1, c + d);
+	if (d > 0 && !allowWinningLevel && next >= WINNING_LEVEL) {
+		next = WINNING_LEVEL - 1;
+	}
+	return next;
+}
 
 // Curse state: Malign mirrror (door38)
 // Pending: applied to seat, will activate when seat participates in a battle.
@@ -1782,13 +1794,13 @@ function applyChangeRaceCurseToSeat(seat, curseCardId) {
 	recalculateAllPowerDisplays();
 }
 
-function emitLevelAdjust(seat, delta) {
+function emitLevelAdjust(seat, delta, allowWinningLevel = false) {
 	const s = Number(seat);
 	const d = Number(delta) || 0;
 	if (!Number.isFinite(s) || s < 0 || !Number.isFinite(d) || d === 0) {
 		return;
 	}
-	socket.emit("message", { method: "LevelAdjust", seat: s, delta: d });
+	socket.emit("message", { method: "LevelAdjust", seat: s, delta: d, allowWinningLevel: Boolean(allowWinningLevel) });
 }
 
 function resolveLoseYourClassCurse({ seat, curseCardId, chosenClassCardId }) {
@@ -2107,7 +2119,7 @@ function enforceHirelingFollowInvariant() {
 	});
 }
 
-function applyDivineInterventionResolve(cardId) {
+function applyDivineInterventionResolve(cardId, clericSeatsFromNetwork) {
 	const card = document.getElementById(cardId);
 	if (card) {
 		// Разрешаем повторное применение после сброса/перемещения.
@@ -2116,11 +2128,20 @@ function applyDivineInterventionResolve(cardId) {
 	if (card) {
 		moveBadStaffCardToDiscard(cardId);
 	}
-	// Всем клирикам +1 уровень
-	for (let s = 0; s < 3; s++) {
-		if (isSeatClericClassActive(s)) {
+	const seats = Array.isArray(clericSeatsFromNetwork)
+		? clericSeatsFromNetwork.map((x) => Number(x)).filter((s) => Number.isFinite(s) && s >= 0 && s <= 2)
+		: null;
+	if (seats && seats.length) {
+		seats.forEach((s) => {
 			const cur = Number(levelBySeat[s] ?? 1) || 1;
-			setLevelBySeat(s, cur + 1);
+			setLevelBySeat(s, applyLevelDeltaWithWinRule(cur, 1, true));
+		});
+	} else {
+		for (let s = 0; s < 3; s++) {
+			if (isSeatClericClassActive(s)) {
+				const cur = Number(levelBySeat[s] ?? 1) || 1;
+				setLevelBySeat(s, applyLevelDeltaWithWinRule(cur, 1, true));
+			}
 		}
 	}
 	recalculateAllPowerDisplays();
@@ -2162,7 +2183,13 @@ function scheduleDivineInterventionIfNeeded(cardId, zoneEl) {
 			curEl.dataset.divineScheduled = "";
 			return;
 		}
-		socket.emit("message", { method: "DivineInterventionResolve", cardId });
+		const clericSeats = [];
+		for (let s = 0; s < 3; s++) {
+			if (isSeatClericClassActive(s)) {
+				clericSeats.push(s);
+			}
+		}
+		socket.emit("message", { method: "DivineInterventionResolve", cardId, clericSeats });
 	}, 1000);
 }
 
@@ -2709,7 +2736,7 @@ function applyHalitosisKillDoor68Resolve(potionCardId) {
 
 	if (remainingAfterKill > 0) {
 		if (levelDelta > 0 && isActor) {
-			emitLevelAdjust(fightSeat, levelDelta);
+			emitLevelAdjust(fightSeat, levelDelta, true);
 		}
 		return;
 	}
@@ -4424,7 +4451,7 @@ function applyTreasureLevelToSeat(seat, levelGain) {
 		current = 1;
 	}
 	current = Math.max(1, current);
-	const next = Math.max(1, current + gain);
+	const next = applyLevelDeltaWithWinRule(current, gain, false);
 	setLevelBySeat(seat, next);
 	recalculateAllPowerDisplays();
 }
@@ -4631,7 +4658,8 @@ function applyTreasureSellResult(seat, cardIds, totalCost) {
 		if (current == null || Number.isNaN(current)) {
 			current = 1;
 		}
-		setLevelBySeat(parsedSeat, Math.max(1, current + levelGain));
+		const next = applyLevelDeltaWithWinRule(Math.max(1, current), levelGain, false);
+		setLevelBySeat(parsedSeat, next);
 	}
 
 	recalculateAllPowerDisplays();
@@ -4682,7 +4710,7 @@ function applyTreasure65LevelSwap(fromSeat, toSeat) {
 	if (toLevel == null || Number.isNaN(toLevel)) {
 		toLevel = 1;
 	}
-	setLevelBySeat(fromSeat, Math.max(1, fromLevel + 1));
+	setLevelBySeat(fromSeat, Math.max(1, applyLevelDeltaWithWinRule(fromLevel, 1, false)));
 	setLevelBySeat(toSeat, Math.max(1, toLevel - 1));
 	recalculateAllPowerDisplays();
 }
@@ -4723,7 +4751,7 @@ export function scheduleTreasure65IfNeeded(cardId, zoneEl) {
 	}, 1000);
 }
 
-function getMonsterBattleContext() {
+export function getMonsterBattleContext() {
 	const zoneCards = document.querySelectorAll('.zone_monster .card');
 	let levelSum = 0;
 	let hasMonster = false;
@@ -9584,6 +9612,7 @@ function setCurrentTurn(seat, shouldBroadcast = false) {
 	updateThiefTrimUi();
 	updateThiefTheftUi();
 	updateTurnActionButtons(false);
+	wireEndTurnButtonClick();
 
 	if (shouldBroadcast) {
 		const updateTurnData = {
@@ -9617,6 +9646,11 @@ function getLocalHandCardCount() {
 	return myHand ? myHand.querySelectorAll('.card').length : 0;
 }
 
+/** Бой с монстром в зоне (таймер/пас): «Завершить ход» в этой фазе не показываем. */
+function isMonsterBattleUi() {
+	return Boolean(battleActive && getMonsterBattleContext().hasMonster);
+}
+
 function updateTurnActionButtons(isTimerRunning) {
 	const foldButton = document.getElementById('fold');
 	const endTurnButton = document.getElementById('end-turn');
@@ -9624,10 +9658,21 @@ function updateTurnActionButtons(isTimerRunning) {
 		return;
 	}
 	const isMyTurn = Number(localSeat) === Number(currentTurnSeat);
+	const inBattle = isMonsterBattleUi();
+	// Как было: «Пас» видят все игроки, пока идёт таймер (очередь пасов).
 	const showFold = isTimerRunning && !turnAwaitingManualEnd;
-	const showEndTurn = !isTimerRunning && isMyTurn && turnAwaitingManualEnd;
+	// «Завершить ход» у ходящего вне боя — и до таймера, и после (не только при turnAwaitingManualEnd).
+	const showEndTurn = isMyTurn && !inBattle && !isTimerRunning;
 	foldButton.style.display = showFold ? "flex" : "none";
 	endTurnButton.style.display = showEndTurn ? "flex" : "none";
+}
+
+/** Клик «Завершить ход» должен быть привязан всегда: раньше он вешался только в {@link timer} и при RoomState — до первого боя кнопка не работала. */
+function wireEndTurnButtonClick() {
+	const el = document.getElementById("end-turn");
+	if (el) {
+		el.onclick = tryCompleteManualTurnEnd;
+	}
 }
 
 /** Завершение хода вне боя (ручной конец хода). Должно работать и без вызова {@link timer}, иначе после refresh нет onclick. */
@@ -9635,7 +9680,7 @@ function tryCompleteManualTurnEnd() {
 	if (Number(localSeat) !== Number(currentTurnSeat)) {
 		return;
 	}
-	if (!turnAwaitingManualEnd) {
+	if (isMonsterBattleUi()) {
 		return;
 	}
 	const handCount = getLocalHandCardCount();
@@ -9916,20 +9961,21 @@ function applyRoomStateFromServer(state) {
 		}
 		applyTurnHighlight();
 		if (g.timerRunning && Number(g.turnStartedAt) > 0 && Number(g.turnDurationMs) > 0) {
-			const remainingMs = Number(g.turnDurationMs) - (Date.now() - Number(g.turnStartedAt));
-			const remainingSec = Math.max(1, Math.ceil(remainingMs / 1000));
-			updateTurnActionButtons(true);
-			timer(remainingSec, true);
+			if (!getMonsterBattleContext().hasMonster) {
+				updateTurnActionButtons(false);
+			} else {
+				const remainingMs = Number(g.turnDurationMs) - (Date.now() - Number(g.turnStartedAt));
+				const remainingSec = Math.max(1, Math.ceil(remainingMs / 1000));
+				updateTurnActionButtons(true);
+				timer(remainingSec, true);
+			}
 		} else {
 			updateTurnActionButtons(false);
 		}
 		lastTurnStateSyncJson = JSON.stringify(serializeTurnPhaseForServer());
 	}
 
-	const endTurnEl = document.getElementById("end-turn");
-	if (endTurnEl) {
-		endTurnEl.onclick = tryCompleteManualTurnEnd;
-	}
+	wireEndTurnButtonClick();
 
 	// После refresh нужно заново инициализировать интерактивный UI (кубик/кнопки/продажа),
 	// т.к. обработчик StartGame на этом клиенте не выполнялся.
@@ -12154,6 +12200,128 @@ function applyThreePlayerLayoutSeat2AsInJoinMessage() {
 	zone_opponent3_side.classList.add("zone5");
 }
 
+let gameVictoryModalEl = null;
+
+function closeGameVictoryModal() {
+	if (gameVictoryModalEl) {
+		gameVictoryModalEl.remove();
+		gameVictoryModalEl = null;
+	}
+}
+
+function openGameVictoryModal(winners) {
+	closeGameVictoryModal();
+	const seats = Array.isArray(winners) ? winners.map((x) => Number(x)).filter((s) => Number.isFinite(s) && s >= 0 && s <= 2) : [];
+	const names = seats.map((s) => `Игрок ${s + 1}`);
+	const wrap = document.createElement("div");
+	wrap.id = "game-victory-modal";
+	wrap.className = "sell-treasures-modal";
+	const panel = document.createElement("div");
+	panel.className = "sell-treasures-panel";
+	panel.style.minWidth = "min(92vw, 560px)";
+	panel.style.maxWidth = "min(92vw, 640px)";
+	panel.style.width = "100%";
+	panel.style.boxSizing = "border-box";
+	const title = document.createElement("div");
+	title.className = "sell-treasures-topbar";
+	title.textContent = "Игра окончена!";
+	title.style.width = "100%";
+	title.style.boxSizing = "border-box";
+	title.style.display = "flex";
+	title.style.alignItems = "center";
+	title.style.justifyContent = "center";
+	title.style.textAlign = "center";
+	title.style.whiteSpace = "nowrap";
+	title.style.fontSize = "clamp(1.55rem, 4.5vw, 2.15rem)";
+	title.style.fontWeight = "800";
+	title.style.letterSpacing = "0.02em";
+	const body = document.createElement("div");
+	body.style.padding = "18px 20px";
+	body.style.fontSize = "clamp(1.15rem, 3.2vw, 1.55rem)";
+	body.style.lineHeight = "1.45";
+	body.style.fontWeight = "600";
+	body.style.textAlign = "center";
+	body.textContent = names.length
+		? (names.length === 1 ? `Победитель: ${names[0]}.` : `Победители: ${names.join(", ")}.`)
+		: "Игра завершена.";
+	const btnRow = document.createElement("div");
+	btnRow.style.padding = "12px 16px 22px";
+	btnRow.style.display = "flex";
+	btnRow.style.flexDirection = "column";
+	btnRow.style.gap = "12px";
+	btnRow.style.alignItems = "stretch";
+	const btn = document.createElement("button");
+	btn.type = "button";
+	btn.className = "sell-treasures-btn";
+	btn.textContent = "Играть заново";
+	btn.onclick = () => {
+		socket.emit("message", { method: "RestartGame" });
+	};
+	const btnHome = document.createElement("button");
+	btnHome.type = "button";
+	btnHome.className = "sell-treasures-btn";
+	btnHome.textContent = "Вернуться на главную страницу";
+	btnHome.style.fontWeight = "600";
+	btnHome.onclick = () => {
+		window.location.assign("/");
+	};
+	btnRow.appendChild(btn);
+	btnRow.appendChild(btnHome);
+	panel.appendChild(title);
+	panel.appendChild(body);
+	panel.appendChild(btnRow);
+	wrap.appendChild(panel);
+	document.body.appendChild(wrap);
+	gameVictoryModalEl = wrap;
+}
+
+function resetLocalTableForRestart() {
+	closeGameVictoryModal();
+	clearAllNonPlaceholderCards();
+	hideBattleResult();
+	try {
+		clearInterval(countdownInterval);
+	} catch {
+		// ignore
+	}
+	battleTurnSeat = null;
+	battleActive = false;
+	pendingHelpSeats.clear();
+	acceptedHelperSeat = null;
+	monsterFightSeat = null;
+	deathLootActive = false;
+	deathLootState = null;
+	resumeEscapeAfterLoot = false;
+	deathLootAwaitingEscapeFinish = false;
+	resetEscapeStateNow();
+	escapeInstantWallGate = null;
+	escapeInstantWallOfferPending = null;
+	instantWallSoloAidWaitingEmitted = false;
+	escapeInstantWallAutoSeats.clear();
+	escapeFailAidPending = null;
+	escapeBadStaffDicePending = null;
+	escapeGluePromptState = null;
+	escapeGlueWaitingKey = null;
+	escapeMonsterPickSession = null;
+	malignMirrorPendingBySeat.clear();
+	malignMirrorActiveBySeat.clear();
+	changeSexPendingBySeat.clear();
+	changeSexActiveBySeat.clear();
+	incomeTaxSession = null;
+	turnAwaitingManualEnd = false;
+	loseYourClassPendingBySeat.clear();
+	for (let i = 0; i < 3; i += 1) {
+		halflingDoubleSellUsedBySeat[i] = false;
+		warriorFrenzyUsedBySeat[i] = 0;
+		warriorFrenzyBonusBySeat[i] = 0;
+		clericExorcismUsedBySeat[i] = 0;
+		clericExorcismBonusBySeat[i] = 0;
+		victimThiefTrimUsedBySeat[i] = 0;
+		thiefBackstabDebuffBySeat[i] = 0;
+		setLevelBySeat(i, 1);
+	}
+}
+
 let gameStarted = false;
 // mercTestDealt removed (no test deal)
 socket.on("message", response => {
@@ -12693,10 +12861,11 @@ socket.on("message", response => {
 	}
 	if (response.method === "DivineInterventionResolve") {
 		const cardId = String(response.cardId || "");
+		const clericSeats = Array.isArray(response.clericSeats) ? response.clericSeats : null;
 		if (!cardId) {
 			return;
 		}
-		applyDivineInterventionResolve(cardId);
+		applyDivineInterventionResolve(cardId, clericSeats);
 	}
 	if (response.method === "OutToLunchResolve") {
 		const cardId = String(response.cardId || "");
@@ -12957,17 +13126,16 @@ socket.on("message", response => {
 		if (response.winner === "player") {
 			MoveMonstersToDrop();
 			turnAwaitingManualEnd = true;
-			updateTurnActionButtons(false);
 		} else if (response.winner === "none") {
 			MoveMonstersToDrop();
 			turnAwaitingManualEnd = true;
-			updateTurnActionButtons(false);
 		} else if (!Number.isNaN(resolvedSeat) && localSeat === resolvedSeat) {
 			escapeMonsterBadStaff = normalizeBadStaff(response.monsterBadStaff);
 			escapeMonsterQueue = Array.isArray(response.monsterQueue) ? response.monsterQueue.slice() : [];
 			startEscapeSequenceAndBroadcast(response.seat, response.helperSeat, response.monsterRemover);
 		}
 		recalculateAllPowerDisplays();
+		updateTurnActionButtons(false);
 	}
 	if (response.method === "DeathStart") {
 		const deadSeat = parseInt(response.deadSeat, 10);
@@ -13933,13 +14101,15 @@ socket.on("message", response => {
 	if (response.method === "LevelAdjust") {
 		const seat = Number(response.seat);
 		const delta = Number(response.delta) || 0;
+		const allowWinningLevel = Boolean(response.allowWinningLevel);
 		if (Number.isFinite(seat) && seat >= 0 && Number.isFinite(delta) && delta !== 0) {
 			let cur = levelBySeat[seat];
 			if (cur == null || Number.isNaN(cur)) {
 				cur = 1;
 			}
 			cur = Math.max(1, cur);
-			setLevelBySeat(seat, Math.max(1, cur + delta));
+			const next = allowWinningLevel ? Math.max(1, cur + delta) : applyLevelDeltaWithWinRule(cur, delta, false);
+			setLevelBySeat(seat, next);
 			recalculateAllPowerDisplays();
 		}
 	}
@@ -13975,9 +14145,10 @@ socket.on("message", response => {
 		setMonsterBasePower(CurrentPower);
 	}
 	if (response.method === "UpdateTimer") {
-		// const timerElement = document.getElementById('timer');
-		// timerElement.textContent = ""
-		timer()
+		if (!getMonsterBattleContext().hasMonster) {
+			return;
+		}
+		timer();
 	}
 
 	if (response.method === "DeathLootPick") {
@@ -14078,8 +14249,6 @@ socket.on("message", response => {
 			deckTreasure: window.treasures,
 		};
 		socket.emit("message",shuffleDeck);
-		// Тестовая раздача: card0079 (door79) в руку первого игрока.
-		socket.emit("message", { method: "MateTestDeal", seat: 0, cardId: "door79" });
   }
 	if (response.method === "2Players") {
 		//console.log("второй или третий ")
@@ -14159,7 +14328,14 @@ socket.on("message", response => {
 		// });
 	}
 
-	if (response.method === "StartGame" && gameStarted == false) {
+	if (response.method === "GameVictory") {
+		const winners = Array.isArray(response.winners) ? response.winners : [];
+		openGameVictoryModal(winners);
+	}
+	if (response.method === "StartGame" && (!gameStarted || response.restarted)) {
+		if (response.restarted) {
+			resetLocalTableForRestart();
+		}
 		// Сервер-авторитет присылает колоды: по ним создаём DOM карт.
 		if (Array.isArray(response.deckDoors)) {
 			window.doors = response.deckDoors;
@@ -14189,8 +14365,10 @@ socket.on("message", response => {
 		// Тестовую раздачу наёмничка убрали.
 		recalculateAllPowerDisplays();
 		applyTurnHighlight();
-		window.button.remove();
-		window.button = null;
+		if (window.button) {
+			window.button.remove();
+			window.button = null;
+		}
 		UpdatebackImgDoor()
 		UpdatebackImgTreasure()
 		UpdateZones();
@@ -14220,12 +14398,18 @@ socket.on("message", response => {
 		updateThiefTrimUi();
 		gameStarted = true;
 		ensureRoomOpenModalsMutationObserver();
+		wireEndTurnButtonClick();
 		if (localSeat === 0) {
 			setRandomFirstTurn();
 		}
 
 		setupMunchkinDiceAfterGameStart();
 
+		try {
+			window.dispatchEvent(new Event("munchkin:zonesChanged"));
+		} catch {
+			// ignore
+		}
 	}
 	if (response.method === "EscapeRatOnStickApply") {
 		applyEscapeRatOnStickFromNetwork({
@@ -14963,6 +15147,9 @@ let battleTurnSeat = null;
 let timerSecondsRemaining = 0;
 let timerRunning = false;
 export function timer(initialSeconds = 30, restoring = false) {
+  if (!getMonsterBattleContext().hasMonster) {
+    return;
+  }
   const timerElement = document.getElementById('timer');
   const foldButton = document.getElementById('fold'); 
   const endTurnButton = document.getElementById('end-turn');
@@ -15104,6 +15291,11 @@ export function timer(initialSeconds = 30, restoring = false) {
   if (offerHelpButton) {
 	offerHelpButton.onclick = handleOfferHelpClick;
   }
+
+  if (timerElement) {
+	timerElement.textContent = formatTime(secondsRemaining);
+  }
+  updateTurnActionButtons(true);
 
   const finishTurn = () => {
 		if (turnResolved) {

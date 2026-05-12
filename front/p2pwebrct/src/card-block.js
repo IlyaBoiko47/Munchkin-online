@@ -1,6 +1,5 @@
 import { UpdateZones } from './увеличение карточек во время игры.js';
-import { UpdatebackImgTreasure, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, scheduleWanderingMonsterIfNeeded, scheduleCheatIfNeeded, scheduleMagicLampIfNeeded, schedulePollymorthPotionIfNeeded, scheduleIllusionIfNeeded, scheduleMateIfNeeded, canLocalPlayMagicLampToBattleZone, canPlaceTreasureInPlayerEquipment, canPlaceDoorInPlayerEquipment, canPlaceDopplegangerTreasureInBonusZone, canPlaceYuppieWaterTreasureInBonusZone, getLocalSeatForSocket } from './game.js';
-import { UpdatebackImgDoor } from './game.js';
+import { UpdatebackImgTreasure, UpdatebackImgDoor, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, scheduleWanderingMonsterIfNeeded, scheduleCheatIfNeeded, scheduleMagicLampIfNeeded, schedulePollymorthPotionIfNeeded, scheduleIllusionIfNeeded, scheduleMateIfNeeded, canLocalPlayMagicLampToBattleZone, canPlaceTreasureInPlayerEquipment, canPlaceDoorInPlayerEquipment, canPlaceDopplegangerTreasureInBonusZone, canPlaceYuppieWaterTreasureInBonusZone, getLocalSeatForSocket, getMonsterBattleContext } from './game.js';
 import socket from './socket/index.js';
 //import {socket} from './game.js';
 // console.log("card работает");
@@ -95,7 +94,7 @@ function dragend_handler(e) {
 	}
 	// Если drop не сработал (мышь отпустили вне зоны), но во время dragover карта уже "заехала" в последнюю зону —
 	// считаем это валидным переносом и отправляем moveCard так же, как в drop_handler.
-	if (currentDrag && !dropHandled && lastHoverZone && dragFromSnapshot?.parent) {
+	if (currentDrag && !dropHandled && lastHoverZone && dragFromSnapshot?.parent && currentDrag.isConnected) {
 		const zone = lastHoverZone;
 		const target = lastHoverTargetCard;
 
@@ -210,7 +209,7 @@ function dragstart_handler(e) {
 	dropHandled = false;
 	// console.log(zone);
 
-	if (zone.classList.contains('zone3')) {
+	if (zone?.classList.contains('zone3') && currentDrag) {
 	// Получаем значение power из currentDrag
 		const CardID = currentDrag.id;
 		const foundCard = window.treasures.find(card => card.name === CardID);
@@ -238,7 +237,7 @@ function dragstart_handler(e) {
 		}
 
 	}
-	if (zone.classList.contains('zone_monster')) {
+	if (zone?.classList.contains('zone_monster') && currentDrag) {
 	// Получаем значение power из currentDrag
 		const CardID = currentDrag.id;
 
@@ -247,6 +246,7 @@ function dragstart_handler(e) {
 			foundCard = window.treasures.find(card => card.name === CardID);
 		};
 		// Если карта найдена, записываем значение power в переменную
+		if (foundCard) {
 		let power = foundCard.power;
 		if (power>0) {
 			// Находим элемент с классом .MyBonus
@@ -265,6 +265,7 @@ function dragstart_handler(e) {
 				power: newValue
 			};
 			socket.emit("message",messageUpdateData);
+		}
 		}
 	}
   
@@ -331,6 +332,20 @@ function drop_handler(e) {
   dropHandled = true;
   const target = e.target.closest('.card');
   const zone = e.target.closest('.cards-zone');
+  // После рестарта стола карта могла быть удалена из DOM, либо drop пришёл вне игровой зоны — без зоны/карты не продолжаем (иначе zone.id падает).
+  if (!zone || !currentDrag || !currentDrag.isConnected) {
+    if (currentDrag) {
+      try {
+        currentDrag.style.filter = '';
+      } catch {
+        // ignore
+      }
+    }
+    currentDrag = null;
+    lastHoverZone = null;
+    lastHoverTargetCard = null;
+    return;
+  }
   const invalidTreasureEquip = currentDrag && zone && !canPlaceTreasureInPlayerEquipment(currentDrag, zone);
   const invalidDoorEquip = currentDrag && zone && !canPlaceDoorInPlayerEquipment(currentDrag, zone);
   const invalidMonsterToBattle = currentDrag && zone && !canPlaceCardIntoMonsterBattleZone(currentDrag, zone);
@@ -434,24 +449,7 @@ function drop_handler(e) {
   }
 
 
-  if (zone.classList.contains('zone3') && currentDrag) {
-	// const timerElement = document.getElementById('timer');
-	// timerElement.textContent = ""
-	timer();
-	const messageUpdateData = {
-		method: "UpdateTimer",
-	};
-	socket.emit("message",messageUpdateData);
-  }
   if (zone.classList.contains('zone_monster') && currentDrag) {
-		// const timerElement = document.getElementById('timer');
-		// timerElement.textContent = ""
-		timer();
-		const messageUpdateData = {
-			method: "UpdateTimer",
-		};
-		socket.emit("message",messageUpdateData);
-
 		const CardID = currentDrag.id;
 
 		let foundCard = window.doors.find(card => card.name === CardID);
@@ -460,6 +458,7 @@ function drop_handler(e) {
 		};
 
 		// Если карта найдена, записываем значение power в переменную
+		if (foundCard) {
 		let power = foundCard.power;
 		if (power>0) {
 		  // Находим элемент с классом .MyPower
@@ -477,6 +476,7 @@ function drop_handler(e) {
 		  };
 		  socket.emit("message",messageUpdateData);
 	    }
+		}
 		
   }
   adjustCardWidth('.myhand');
@@ -509,6 +509,11 @@ function drop_handler(e) {
 		moveData.playedBySeat = Number(seatPlayed);
 	}
 	socket.emit("message", moveData);
+
+	if (currentDrag && currentDrag.isConnected && (zone.id === "zone3" || zone.id === "zone_monster") && getMonsterBattleContext().hasMonster) {
+		timer();
+		socket.emit("message", { method: "UpdateTimer" });
+	}
 
   if (currentDrag && zone) {
     scheduleBadStaffIfNeeded(currentDrag.id, zone);

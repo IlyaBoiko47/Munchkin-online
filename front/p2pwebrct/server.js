@@ -25,6 +25,136 @@ const roomStates = new Map();
 // roomID -> Map(token -> seat)
 const roomSeatsByToken = new Map();
 
+/** 10-й уровень только с победы в бою или «божественного вмешательства». */
+const WINNING_LEVEL_THRESHOLD = 10;
+
+function cloneAndShuffleDeck(deck) {
+  const copy = Array.isArray(deck) ? deck.slice() : [];
+  shuffleArrayInPlace(copy);
+  return copy;
+}
+
+/** Новый уровень при запрещённых источниках (карты «+уровень», «укради уровень», продажа и т.д.): не выше 9. */
+function applyLevelDeltaRespectingWinRule(cur, delta, allowWinningLevel) {
+  const c = Math.max(1, Math.floor(Number(cur) || 1));
+  const d = Number(delta) || 0;
+  let next = Math.max(1, c + d);
+  if (d > 0 && !allowWinningLevel && next >= WINNING_LEVEL_THRESHOLD) {
+    next = WINNING_LEVEL_THRESHOLD - 1;
+  }
+  return next;
+}
+
+function collectWinningSeatsFromLevels(levelBySeat) {
+  if (!Array.isArray(levelBySeat)) {
+    return [];
+  }
+  const out = [];
+  levelBySeat.forEach((lvl, i) => {
+    if (Number(lvl) >= WINNING_LEVEL_THRESHOLD) {
+      out.push(i);
+    }
+  });
+  return out;
+}
+
+function checkGameVictory(roomID) {
+  const prev = roomStates.get(roomID);
+  if (!prev || !prev.game) {
+    return;
+  }
+  const game = prev.game;
+  if (game.gameFinished) {
+    return;
+  }
+  const winners = collectWinningSeatsFromLevels(game.levelBySeat);
+  if (winners.length === 0) {
+    return;
+  }
+  game.gameFinished = true;
+  roomStates.set(roomID, { ...prev, game });
+  io.to(roomID).emit('message', { method: 'GameVictory', winners });
+}
+
+/**
+ * Старт/перезапуск стола: StartGame + раздача + регистрация остатка колод в state.cards.
+ */
+function dealFromShuffledDecks(roomID, state, doors, treasures, numPlayers, opts) {
+  const restarted = Boolean(opts && opts.restarted);
+  startedRooms.add(roomID);
+  state.started = true;
+  state.cards = {};
+  state.monsterBonusAttachments = {};
+  state.deckDoors = doors;
+  state.deckTreasure = treasures;
+  state.num = numPlayers;
+  state.game = getOrInitRoomGameState(roomID);
+  if (state.game && typeof state.game === 'object') {
+    state.game.turnPhase = {};
+    state.game.timerRunning = false;
+    state.game.levelBySeat = [1, 1, 1];
+    state.game.gameFinished = false;
+    state.game.warriorFrenzyUsedBySeat = [0, 0, 0];
+    state.game.warriorFrenzyBonusBySeat = [0, 0, 0];
+    state.game.clericExorcismUsedBySeat = [0, 0, 0];
+    state.game.clericExorcismBonusBySeat = [0, 0, 0];
+    state.game.victimThiefTrimUsedBySeat = [0, 0, 0];
+    state.game.thiefBackstabDebuffBySeat = [0, 0, 0];
+    state.game.openModalsBySeat = {};
+    state.game.myBonus = 0;
+    state.game.monsterBasePower = 0;
+  }
+
+  io.to(roomID).emit("message", {
+    method: "StartGame",
+    num: numPlayers,
+    deckDoors: doors,
+    deckTreasure: treasures,
+    restarted,
+  });
+
+  const doorHandZoneForIndex = (i) => {
+    if (numPlayers === 2) return (i % 2 === 0) ? "myhand" : "opponenthand";
+    if (numPlayers === 3) return (i % 3 === 0) ? "myhand" : (i % 3 === 1) ? "opponent2hand" : "opponent3hand";
+    return "myhand";
+  };
+  const treasureHandZoneForIndex = doorHandZoneForIndex;
+
+  const dealCount = 4 * numPlayers;
+
+  for (let i = 0; i < dealCount && i < doors.length; i += 1) {
+    const cardId = String(doors[i]?.name || doors[i]?.id || doors[i]);
+    if (!cardId) continue;
+    const zoneId = doorHandZoneForIndex(i);
+    state.cards[cardId] = { zoneId, targetId: null };
+    io.to(roomID).emit("message", { method: "moveCard", cardId, targetId: null, zoneId, fromZoneId: "zone_doors" });
+  }
+  for (let i = 0; i < dealCount && i < treasures.length; i += 1) {
+    const cardId = String(treasures[i]?.name || treasures[i]?.id || treasures[i]);
+    if (!cardId) continue;
+    const zoneId = treasureHandZoneForIndex(i);
+    state.cards[cardId] = { zoneId, targetId: null };
+    io.to(roomID).emit("message", { method: "moveCard", cardId, targetId: null, zoneId, fromZoneId: "zone_treasure" });
+  }
+
+  let prevDoorInDeck = null;
+  for (let i = dealCount; i < doors.length; i += 1) {
+    const cardId = String(doors[i]?.name || doors[i]?.id || doors[i]);
+    if (!cardId) continue;
+    state.cards[cardId] = { zoneId: 'zone_doors', targetId: prevDoorInDeck };
+    prevDoorInDeck = cardId;
+  }
+  let prevTreasureInDeck = null;
+  for (let i = dealCount; i < treasures.length; i += 1) {
+    const cardId = String(treasures[i]?.name || treasures[i]?.id || treasures[i]);
+    if (!cardId) continue;
+    state.cards[cardId] = { zoneId: 'zone_treasure', targetId: prevTreasureInDeck };
+    prevTreasureInDeck = cardId;
+  }
+
+  roomStates.set(roomID, state);
+}
+
 function getOrInitRoomGameState(roomID) {
   const prev = roomStates.get(roomID) || {};
   const game = (prev.game && typeof prev.game === 'object') ? prev.game : {};
@@ -38,6 +168,7 @@ function getOrInitRoomGameState(roomID) {
   if (!Array.isArray(game.thiefBackstabDebuffBySeat)) game.thiefBackstabDebuffBySeat = [0, 0, 0];
   if (typeof game.myBonus !== 'number') game.myBonus = 0;
   if (typeof game.monsterBasePower !== 'number') game.monsterBasePower = 0;
+  if (typeof game.gameFinished !== 'boolean') game.gameFinished = false;
   roomStates.set(roomID, { ...prev, game });
   return game;
 }
@@ -167,6 +298,83 @@ function patchRoomDiscards(roomID, cardIds) {
   return entries;
 }
 
+/** Fisher–Yates shuffle in place. */
+function shuffleArrayInPlace(arr) {
+  const a = Array.isArray(arr) ? arr : [];
+  for (let i = a.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = a[i];
+    a[i] = a[j];
+    a[j] = t;
+  }
+  return a;
+}
+
+/**
+ * Если колода пуста, а в сбросе есть карты того же типа — перемешиваем сброс и кладём в колоду.
+ * @param {'doors'|'treasure'} deckKind
+ */
+function maybeRefillDeckFromDiscard(roomID, deckKind) {
+  const prev = roomStates.get(roomID);
+  if (!prev || !prev.started) {
+    return;
+  }
+  const cards = prev.cards && typeof prev.cards === 'object' ? prev.cards : {};
+  const deckZoneId = deckKind === 'doors' ? 'zone_doors' : 'zone_treasure';
+  const dropZoneId = deckKind === 'doors' ? 'zone_doors_drop' : 'zone_treasure_drop';
+  const idMatches = (id) => {
+    const s = String(id || '').trim();
+    if (!s || s === 'card') {
+      return false;
+    }
+    return deckKind === 'doors' ? s.includes('door') : s.includes('treasure');
+  };
+
+  let inDeck = 0;
+  Object.keys(cards).forEach((id) => {
+    const p = cards[id];
+    if (p && String(p.zoneId || '') === deckZoneId && idMatches(id)) {
+      inDeck += 1;
+    }
+  });
+  if (inDeck > 0) {
+    return;
+  }
+
+  const discardIds = [];
+  Object.keys(cards).forEach((id) => {
+    const p = cards[id];
+    if (p && String(p.zoneId || '') === dropZoneId && idMatches(id)) {
+      discardIds.push(id);
+    }
+  });
+  if (discardIds.length === 0) {
+    return;
+  }
+
+  shuffleArrayInPlace(discardIds);
+
+  const entries = [];
+  let prevId = null;
+  discardIds.forEach((cardId) => {
+    entries.push({ cardId, zoneId: deckZoneId, targetId: prevId });
+    prevId = cardId;
+  });
+  patchRoomCardEntries(roomID, entries);
+  const room = roomID;
+  queueMicrotask(() => {
+    entries.forEach((e) => {
+      io.to(room).emit('message', {
+        method: 'moveCard',
+        cardId: e.cardId,
+        targetId: e.targetId,
+        zoneId: e.zoneId,
+        fromZoneId: dropZoneId,
+      });
+    });
+  });
+}
+
 function isCardInDoorOrTreasureDiscard(roomID, cardId) {
   const prev = roomStates.get(roomID) || {};
   const cards = prev.cards && typeof prev.cards === 'object' ? prev.cards : {};
@@ -236,6 +444,28 @@ io.on('connection', socket => {
     const roomSize = (io.sockets.adapter.rooms.get(roomID) || new Set()).size;
     moveData.num = roomSize;
 
+    const prevForFinish = roomStates.get(roomID);
+    const gameForFinish = prevForFinish?.game;
+    if (moveData.method === 'moveCard' && gameForFinish && gameForFinish.gameFinished === true) {
+      return;
+    }
+
+    if (moveData.method === 'RestartGame') {
+      const prev = roomStates.get(roomID) || {};
+      const gFin = prev.game && typeof prev.game === 'object' ? prev.game : getOrInitRoomGameState(roomID);
+      if (!gFin.gameFinished) {
+        return;
+      }
+      const doors = cloneAndShuffleDeck(Array.isArray(prev.deckDoors) ? prev.deckDoors : []);
+      const treasures = cloneAndShuffleDeck(Array.isArray(prev.deckTreasure) ? prev.deckTreasure : []);
+      const numPlayers = Math.max(2, Math.min(3, Number(prev.num) || Number(roomSize) || 2));
+      roomStates.set(roomID, { ...prev, started: true });
+      const state = roomStates.get(roomID);
+      dealFromShuffledDecks(roomID, state, doors, treasures, numPlayers, { restarted: true });
+      shareRoomsInfo();
+      return;
+    }
+
     if (moveData.method === "shuffleDeck") {
       // Сохраняем перетасованные колоды, чтобы можно было восстановить карты после refresh.
       const prev = roomStates.get(roomID) || {};
@@ -250,53 +480,7 @@ io.on('connection', socket => {
       const state = roomStates.get(roomID) || {};
       const numPlayers = Number(state.num) || Number(roomSize) || 0;
       if (numPlayers >= 2 && Array.isArray(state.deckDoors) && Array.isArray(state.deckTreasure)) {
-        startedRooms.add(roomID);
-        state.started = true;
-        state.cards = {};
-        state.monsterBonusAttachments = {};
-        state.game = getOrInitRoomGameState(roomID);
-        if (state.game && typeof state.game === 'object') {
-          state.game.turnPhase = {};
-        }
-        roomStates.set(roomID, state);
-
-        io.to(roomID).emit("message", {
-          method: "StartGame",
-          num: numPlayers,
-          deckDoors: state.deckDoors,
-          deckTreasure: state.deckTreasure,
-        });
-
-        const doorHandZoneForIndex = (i) => {
-          // ВАЖНО: используем исходные id зон из DOM (myhand/opponenthand/opponent2hand/opponent3hand),
-          // потому что клиентская верстка/логика уже завязана на них.
-          // Попытка перейти на hand0/hand1/hand2 приводит к разному отображению на разных клиентах.
-          if (numPlayers === 2) return (i % 2 === 0) ? "myhand" : "opponenthand";
-          if (numPlayers === 3) return (i % 3 === 0) ? "myhand" : (i % 3 === 1) ? "opponent2hand" : "opponent3hand";
-          return "myhand";
-        };
-        const treasureHandZoneForIndex = doorHandZoneForIndex;
-
-        const dealCount = 4 * numPlayers;
-        const doors = state.deckDoors || [];
-        const treasures = state.deckTreasure || [];
-
-        for (let i = 0; i < dealCount && i < doors.length; i++) {
-          const cardId = String(doors[i]?.name || doors[i]?.id || doors[i]);
-          if (!cardId) continue;
-          const zoneId = doorHandZoneForIndex(i);
-          state.cards[cardId] = { zoneId, targetId: null };
-          io.to(roomID).emit("message", { method: "moveCard", cardId, targetId: null, zoneId, fromZoneId: "zone_doors" });
-        }
-        for (let i = 0; i < dealCount && i < treasures.length; i++) {
-          const cardId = String(treasures[i]?.name || treasures[i]?.id || treasures[i]);
-          if (!cardId) continue;
-          const zoneId = treasureHandZoneForIndex(i);
-          state.cards[cardId] = { zoneId, targetId: null };
-          io.to(roomID).emit("message", { method: "moveCard", cardId, targetId: null, zoneId, fromZoneId: "zone_treasure" });
-        }
-
-        roomStates.set(roomID, state);
+        dealFromShuffledDecks(roomID, state, state.deckDoors, state.deckTreasure, numPlayers, { restarted: false });
         shareRoomsInfo();
       }
       return;
@@ -428,6 +612,9 @@ io.on('connection', socket => {
         delete nextMba[cid];
       }
       roomStates.set(roomID, { ...prev, cards: nextCards, monsterBonusAttachments: nextMba, started: startedRooms.has(roomID) || prev.started });
+
+      maybeRefillDeckFromDiscard(roomID, 'doors');
+      maybeRefillDeckFromDiscard(roomID, 'treasure');
     }
 
     if (moveData.method === "MonsterBonusAttach") {
@@ -496,6 +683,7 @@ io.on('connection', socket => {
       }
       // после боя таймер не идёт
       game.timerRunning = false;
+      queueMicrotask(() => checkGameVictory(roomID));
     }
 
     if (moveData.method === "TreasureLevel") {
@@ -504,8 +692,9 @@ io.on('connection', socket => {
       const gain = Number(moveData.level);
       if (Number.isFinite(seat) && seat >= 0 && seat <= 2 && Number.isFinite(gain) && gain > 0) {
         const cur = Number(game.levelBySeat[seat] || 1) || 1;
-        game.levelBySeat[seat] = Math.max(1, Math.floor(cur + gain));
+        game.levelBySeat[seat] = applyLevelDeltaRespectingWinRule(cur, gain, false);
       }
+      queueMicrotask(() => checkGameVictory(roomID));
     }
 
     if (moveData.method === "BadStaffLevel") {
@@ -525,11 +714,14 @@ io.on('connection', socket => {
       const game = getOrInitRoomGameState(roomID);
       const seat = clampSeatInRoom(roomID, moveData.seat);
       const delta = Number(moveData.delta) || 0;
+      const allowWinningLevel = Boolean(moveData.allowWinningLevel);
       if (seat != null && Number.isFinite(delta) && delta !== 0) {
         const cur = getLevelBySeatFromGame(game, seat);
-        setLevelBySeatInGame(game, seat, cur + delta);
+        const next = applyLevelDeltaRespectingWinRule(cur, delta, allowWinningLevel);
+        setLevelBySeatInGame(game, seat, next);
         const latest = roomStates.get(roomID) || {};
         roomStates.set(roomID, { ...latest, game });
+        queueMicrotask(() => checkGameVictory(roomID));
       }
     }
 
@@ -581,9 +773,10 @@ io.on('connection', socket => {
       ) {
         const fromLevel = Number(game.levelBySeat[fromSeat] || 1) || 1;
         const toLevel = Number(game.levelBySeat[toSeat] || 1) || 1;
-        game.levelBySeat[fromSeat] = Math.max(1, Math.floor(fromLevel + 1));
+        game.levelBySeat[fromSeat] = applyLevelDeltaRespectingWinRule(fromLevel, 1, false);
         game.levelBySeat[toSeat] = Math.max(1, Math.floor(toLevel - 1));
       }
+      queueMicrotask(() => checkGameVictory(roomID));
     }
 
     if (moveData.method === "ThiefTheftRoll") {
@@ -704,8 +897,31 @@ io.on('connection', socket => {
     }
 
     if (moveData.method === "DivineInterventionResolve") {
+      const seatMap = roomSeatsByToken.get(roomID);
+      const token = String(socket.data.playerToken || '');
+      const actorSeat = seatMap && token ? seatMap.get(token) : null;
+      if (Number(actorSeat) !== 0) {
+        return;
+      }
+      const prev = roomStates.get(roomID) || {};
+      if (prev.game && prev.game.gameFinished === true) {
+        return;
+      }
       const cid = String(moveData.cardId || '').trim();
-      if (cid) patchRoomDiscards(roomID, [cid]);
+      const clericSeats = Array.isArray(moveData.clericSeats)
+        ? moveData.clericSeats.map((x) => Number(x)).filter((s) => Number.isFinite(s) && s >= 0 && s <= 2)
+        : [];
+      const game = getOrInitRoomGameState(roomID);
+      clericSeats.forEach((s) => {
+        const cur = getLevelBySeatFromGame(game, s);
+        setLevelBySeatInGame(game, s, applyLevelDeltaRespectingWinRule(cur, 1, true));
+      });
+      const latest = roomStates.get(roomID) || {};
+      roomStates.set(roomID, { ...latest, game });
+      if (cid) {
+        patchRoomDiscards(roomID, [cid]);
+      }
+      queueMicrotask(() => checkGameVictory(roomID));
     }
 
     if (moveData.method === "PotionResolve") {
