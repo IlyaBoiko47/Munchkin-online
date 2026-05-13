@@ -14,6 +14,32 @@ const {version, validate} = require('uuid');
 const ACTIONS = require('./src/socket/actions');
 const PORT = Number(process.env.PORT) || 3001;
 const HOST = process.env.HOST || '0.0.0.0';
+/** Максимум игроков за столом (2–4). */
+const MAX_ROOM_PLAYERS = 4;
+
+function maxSeatIndexForRoom(roomID) {
+  const prev = roomStates.get(roomID) || {};
+  const n = Math.max(2, Math.min(MAX_ROOM_PLAYERS, Number(prev.num) || 2));
+  return n - 1;
+}
+
+function normalizeSeatArraysForNum(game, numPlayers) {
+  const n = Math.max(2, Math.min(MAX_ROOM_PLAYERS, Math.floor(Number(numPlayers) || 2)));
+  const pad = (arr, fill) => {
+    const a = Array.isArray(arr) ? arr.slice() : [];
+    while (a.length < n) {
+      a.push(fill);
+    }
+    return a.slice(0, n);
+  };
+  game.levelBySeat = pad(game.levelBySeat, 1).map((x) => Math.max(1, Math.floor(Number(x) || 1)));
+  game.warriorFrenzyUsedBySeat = pad(game.warriorFrenzyUsedBySeat, 0).map((x) => Number(x) || 0);
+  game.warriorFrenzyBonusBySeat = pad(game.warriorFrenzyBonusBySeat, 0).map((x) => Number(x) || 0);
+  game.clericExorcismUsedBySeat = pad(game.clericExorcismUsedBySeat, 0).map((x) => Number(x) || 0);
+  game.clericExorcismBonusBySeat = pad(game.clericExorcismBonusBySeat, 0).map((x) => Number(x) || 0);
+  game.victimThiefTrimUsedBySeat = pad(game.victimThiefTrimUsedBySeat, 0).map((x) => Number(x) || 0);
+  game.thiefBackstabDebuffBySeat = pad(game.thiefBackstabDebuffBySeat, 0).map((x) => Number(x) || 0);
+}
 
 // Комнаты, в которых уже стартовала игра (чтобы скрывать их из списка подключения).
 // Как только комната станет пустой — убираем флаг.
@@ -92,17 +118,11 @@ function dealFromShuffledDecks(roomID, state, doors, treasures, numPlayers, opts
   if (state.game && typeof state.game === 'object') {
     state.game.turnPhase = {};
     state.game.timerRunning = false;
-    state.game.levelBySeat = [1, 1, 1];
     state.game.gameFinished = false;
-    state.game.warriorFrenzyUsedBySeat = [0, 0, 0];
-    state.game.warriorFrenzyBonusBySeat = [0, 0, 0];
-    state.game.clericExorcismUsedBySeat = [0, 0, 0];
-    state.game.clericExorcismBonusBySeat = [0, 0, 0];
-    state.game.victimThiefTrimUsedBySeat = [0, 0, 0];
-    state.game.thiefBackstabDebuffBySeat = [0, 0, 0];
     state.game.openModalsBySeat = {};
     state.game.myBonus = 0;
     state.game.monsterBasePower = 0;
+    normalizeSeatArraysForNum(state.game, numPlayers);
   }
 
   io.to(roomID).emit("message", {
@@ -116,6 +136,13 @@ function dealFromShuffledDecks(roomID, state, doors, treasures, numPlayers, opts
   const doorHandZoneForIndex = (i) => {
     if (numPlayers === 2) return (i % 2 === 0) ? "myhand" : "opponenthand";
     if (numPlayers === 3) return (i % 3 === 0) ? "myhand" : (i % 3 === 1) ? "opponent2hand" : "opponent3hand";
+    if (numPlayers === 4) {
+      const r = i % 4;
+      if (r === 0) return "myhand";
+      if (r === 1) return "opponent2hand";
+      if (r === 2) return "opponent3hand";
+      return "opponenthand";
+    }
     return "myhand";
   };
   const treasureHandZoneForIndex = doorHandZoneForIndex;
@@ -159,13 +186,8 @@ function getOrInitRoomGameState(roomID) {
   const prev = roomStates.get(roomID) || {};
   const game = (prev.game && typeof prev.game === 'object') ? prev.game : {};
   // Дефолты для восстановления после refresh.
-  if (!Array.isArray(game.levelBySeat)) game.levelBySeat = [1, 1, 1];
-  if (!Array.isArray(game.warriorFrenzyUsedBySeat)) game.warriorFrenzyUsedBySeat = [0, 0, 0];
-  if (!Array.isArray(game.warriorFrenzyBonusBySeat)) game.warriorFrenzyBonusBySeat = [0, 0, 0];
-  if (!Array.isArray(game.clericExorcismUsedBySeat)) game.clericExorcismUsedBySeat = [0, 0, 0];
-  if (!Array.isArray(game.clericExorcismBonusBySeat)) game.clericExorcismBonusBySeat = [0, 0, 0];
-  if (!Array.isArray(game.victimThiefTrimUsedBySeat)) game.victimThiefTrimUsedBySeat = [0, 0, 0];
-  if (!Array.isArray(game.thiefBackstabDebuffBySeat)) game.thiefBackstabDebuffBySeat = [0, 0, 0];
+  const nPlayers = Math.max(2, Math.min(MAX_ROOM_PLAYERS, Number(prev.num) || 2));
+  normalizeSeatArraysForNum(game, nPlayers);
   if (typeof game.myBonus !== 'number') game.myBonus = 0;
   if (typeof game.monsterBasePower !== 'number') game.monsterBasePower = 0;
   if (typeof game.gameFinished !== 'boolean') game.gameFinished = false;
@@ -175,7 +197,7 @@ function getOrInitRoomGameState(roomID) {
 
 function clampSeatInRoom(roomID, seat) {
   const prev = roomStates.get(roomID) || {};
-  const numPlayers = Math.max(1, Math.min(3, Number(prev.num) || 3));
+  const numPlayers = Math.max(1, Math.min(MAX_ROOM_PLAYERS, Number(prev.num) || 3));
   // Важно: Number(null) === 0 — без проверки «пустого» места штрафы могли уходить не туда.
   if (seat === null || seat === undefined || seat === '') {
     return null;
@@ -194,7 +216,12 @@ function getLevelBySeatFromGame(game, seat) {
 function setLevelBySeatInGame(game, seat, level) {
   const s = Number(seat);
   const next = Math.max(1, Math.floor(Number(level) || 1));
-  if (!Array.isArray(game.levelBySeat)) game.levelBySeat = [1, 1, 1];
+  if (!Array.isArray(game.levelBySeat)) {
+    game.levelBySeat = [];
+  }
+  while (game.levelBySeat.length <= s) {
+    game.levelBySeat.push(1);
+  }
   game.levelBySeat[s] = next;
 }
 
@@ -214,6 +241,13 @@ function handZoneIdForSeatInRoom(roomID, seat) {
   if (!Number.isFinite(s) || s < 0 || numPlayers <= 0) return 'myhand';
   if (numPlayers === 2) return (s % 2 === 0) ? 'myhand' : 'opponenthand';
   if (numPlayers === 3) return (s % 3 === 0) ? 'myhand' : ((s % 3 === 1) ? 'opponent2hand' : 'opponent3hand');
+  if (numPlayers === 4) {
+    const r = s % 4;
+    if (r === 0) return 'myhand';
+    if (r === 1) return 'opponent2hand';
+    if (r === 2) return 'opponent3hand';
+    return 'opponenthand';
+  }
   return 'myhand';
 }
 
@@ -458,7 +492,7 @@ io.on('connection', socket => {
       }
       const doors = cloneAndShuffleDeck(Array.isArray(prev.deckDoors) ? prev.deckDoors : []);
       const treasures = cloneAndShuffleDeck(Array.isArray(prev.deckTreasure) ? prev.deckTreasure : []);
-      const numPlayers = Math.max(2, Math.min(3, Number(prev.num) || Number(roomSize) || 2));
+      const numPlayers = Math.max(2, Math.min(MAX_ROOM_PLAYERS, Number(prev.num) || Number(roomSize) || 2));
       roomStates.set(roomID, { ...prev, started: true });
       const state = roomStates.get(roomID);
       dealFromShuffledDecks(roomID, state, doors, treasures, numPlayers, { restarted: true });
@@ -635,7 +669,7 @@ io.on('connection', socket => {
       const seat = Number.isFinite(Number(seatFromToken))
         ? Number(seatFromToken)
         : Number(moveData.seat);
-      if (Number.isFinite(seat) && seat >= 0 && seat <= 2) {
+      if (Number.isFinite(seat) && seat >= 0 && seat <= maxSeatIndexForRoom(roomID)) {
         const game = getOrInitRoomGameState(roomID);
         if (!game.openModalsBySeat || typeof game.openModalsBySeat !== 'object') {
           game.openModalsBySeat = {};
@@ -673,12 +707,12 @@ io.on('connection', socket => {
       const game = getOrInitRoomGameState(roomID);
       const seat = Number(moveData.seat);
       const level = Number(moveData.level);
-      if (Number.isFinite(seat) && seat >= 0 && seat <= 2 && Number.isFinite(level) && level > 0) {
+      if (Number.isFinite(seat) && seat >= 0 && seat <= maxSeatIndexForRoom(roomID) && Number.isFinite(level) && level > 0) {
         game.levelBySeat[seat] = Math.max(1, Math.floor(level));
       }
       const helperSeat = Number(moveData.helperSeat);
       const helperLevel = Number(moveData.helperLevel);
-      if (Number.isFinite(helperSeat) && helperSeat >= 0 && helperSeat <= 2 && Number.isFinite(helperLevel) && helperLevel > 0) {
+      if (Number.isFinite(helperSeat) && helperSeat >= 0 && helperSeat <= maxSeatIndexForRoom(roomID) && Number.isFinite(helperLevel) && helperLevel > 0) {
         game.levelBySeat[helperSeat] = Math.max(1, Math.floor(helperLevel));
       }
       // после боя таймер не идёт
@@ -690,7 +724,7 @@ io.on('connection', socket => {
       const game = getOrInitRoomGameState(roomID);
       const seat = Number(moveData.seat);
       const gain = Number(moveData.level);
-      if (Number.isFinite(seat) && seat >= 0 && seat <= 2 && Number.isFinite(gain) && gain > 0) {
+      if (Number.isFinite(seat) && seat >= 0 && seat <= maxSeatIndexForRoom(roomID) && Number.isFinite(gain) && gain > 0) {
         const cur = Number(game.levelBySeat[seat] || 1) || 1;
         game.levelBySeat[seat] = applyLevelDeltaRespectingWinRule(cur, gain, false);
       }
@@ -768,8 +802,8 @@ io.on('connection', socket => {
       const fromSeat = Number(moveData.fromSeat);
       const toSeat = Number(moveData.toSeat);
       if (
-        Number.isFinite(fromSeat) && fromSeat >= 0 && fromSeat <= 2
-        && Number.isFinite(toSeat) && toSeat >= 0 && toSeat <= 2
+        Number.isFinite(fromSeat) && fromSeat >= 0 && fromSeat <= maxSeatIndexForRoom(roomID)
+        && Number.isFinite(toSeat) && toSeat >= 0 && toSeat <= maxSeatIndexForRoom(roomID)
       ) {
         const fromLevel = Number(game.levelBySeat[fromSeat] || 1) || 1;
         const toLevel = Number(game.levelBySeat[toSeat] || 1) || 1;
@@ -783,7 +817,7 @@ io.on('connection', socket => {
       const game = getOrInitRoomGameState(roomID);
       const seat = Number(moveData.seat);
       const v = Number(moveData.value);
-      if (Number.isFinite(seat) && seat >= 0 && seat <= 2 && Number.isFinite(v) && v > 0 && v < 4) {
+      if (Number.isFinite(seat) && seat >= 0 && seat <= maxSeatIndexForRoom(roomID) && Number.isFinite(v) && v > 0 && v < 4) {
         const cur = Number(game.levelBySeat[seat] || 1) || 1;
         game.levelBySeat[seat] = Math.max(1, Math.floor(cur - 1));
       }
@@ -792,7 +826,7 @@ io.on('connection', socket => {
     if (moveData.method === "WarriorFrenzyApply") {
       const game = getOrInitRoomGameState(roomID);
       const seat = Number(moveData.seat);
-      if (Number.isFinite(seat) && seat >= 0 && seat <= 2) {
+      if (Number.isFinite(seat) && seat >= 0 && seat <= maxSeatIndexForRoom(roomID)) {
         const already = Number(game.warriorFrenzyUsedBySeat[seat] || 0) || 0;
         const remaining = Math.max(0, 3 - already);
         const gain = Math.max(0, Math.min(remaining, Array.isArray(moveData.cardIds) ? moveData.cardIds.length : 0));
@@ -805,7 +839,7 @@ io.on('connection', socket => {
     if (moveData.method === "ClericExorcismApply") {
       const game = getOrInitRoomGameState(roomID);
       const seat = Number(moveData.seat);
-      if (Number.isFinite(seat) && seat >= 0 && seat <= 2) {
+      if (Number.isFinite(seat) && seat >= 0 && seat <= maxSeatIndexForRoom(roomID)) {
         const already = Number(game.clericExorcismUsedBySeat[seat] || 0) || 0;
         const remaining = Math.max(0, 3 - already);
         const gain = Math.max(0, Math.min(remaining, Array.isArray(moveData.cardIds) ? moveData.cardIds.length : 0));
@@ -820,7 +854,7 @@ io.on('connection', socket => {
       const assignments = Array.isArray(moveData.assignments) ? moveData.assignments : [];
       assignments.forEach((a) => {
         const victimSeat = Number(a?.victimSeat);
-        if (Number.isFinite(victimSeat) && victimSeat >= 0 && victimSeat <= 2) {
+        if (Number.isFinite(victimSeat) && victimSeat >= 0 && victimSeat <= maxSeatIndexForRoom(roomID)) {
           game.victimThiefTrimUsedBySeat[victimSeat] = 1;
           game.thiefBackstabDebuffBySeat[victimSeat] = (Number(game.thiefBackstabDebuffBySeat[victimSeat] || 0) || 0) + 2;
         }
@@ -848,7 +882,7 @@ io.on('connection', socket => {
     if (moveData.method === "ThiefTheftTake") {
       const thiefSeat = Number(moveData.thiefSeat);
       const cardId = String(moveData.cardId || '').trim();
-      if (Number.isFinite(thiefSeat) && thiefSeat >= 0 && thiefSeat <= 2 && cardId) {
+      if (Number.isFinite(thiefSeat) && thiefSeat >= 0 && thiefSeat <= maxSeatIndexForRoom(roomID) && cardId) {
         patchRoomCardEntries(roomID, [{ cardId, zoneId: handZoneIdForSeatInRoom(roomID, thiefSeat), targetId: null }]);
       }
     }
@@ -909,7 +943,7 @@ io.on('connection', socket => {
       }
       const cid = String(moveData.cardId || '').trim();
       const clericSeats = Array.isArray(moveData.clericSeats)
-        ? moveData.clericSeats.map((x) => Number(x)).filter((s) => Number.isFinite(s) && s >= 0 && s <= 2)
+        ? moveData.clericSeats.map((x) => Number(x)).filter((s) => Number.isFinite(s) && s >= 0 && s <= maxSeatIndexForRoom(roomID))
         : [];
       const game = getOrInitRoomGameState(roomID);
       clericSeats.forEach((s) => {
@@ -1026,7 +1060,7 @@ io.on('connection', socket => {
     if (moveData.method === "MateTestDeal") {
       const seat = Number(moveData.seat);
       const cardId = String(moveData.cardId || '').trim();
-      if (Number.isFinite(seat) && seat >= 0 && seat <= 2 && cardId) {
+      if (Number.isFinite(seat) && seat >= 0 && seat <= maxSeatIndexForRoom(roomID) && cardId) {
         patchRoomCardEntries(roomID, [{ cardId, zoneId: handZoneIdForSeatInRoom(roomID, seat), targetId: null }]);
       }
     }
@@ -1057,7 +1091,7 @@ io.on('connection', socket => {
       const potionId = String(moveData.potionCardId || '').trim();
       const newFighter = Number(moveData.newFighterSeat);
       const prev = roomStates.get(roomID) || {};
-      const numPlayers = Math.max(1, Math.min(3, Number(prev.num) || 3));
+      const numPlayers = Math.max(1, Math.min(MAX_ROOM_PLAYERS, Number(prev.num) || 3));
       if (
         potionId === TRANSFERRAL_POTION_CARD_ID
         && Number.isFinite(newFighter)
@@ -1300,6 +1334,39 @@ function matchClientsInRoom(roomID) {
   const seatMap = roomSeatsByToken.get(roomID) || new Map();
   roomSeatsByToken.set(roomID, seatMap);
 
+  if (clientCount === 4) {
+    const [firstClientId, secondClientId, thirdClientId, fourthClientId] = clients;
+    const s1 = io.sockets.sockets.get(firstClientId);
+    const s2 = io.sockets.sockets.get(secondClientId);
+    const s3 = io.sockets.sockets.get(thirdClientId);
+    const s4 = io.sockets.sockets.get(fourthClientId);
+    if (s1?.data?.playerToken) seatMap.set(String(s1.data.playerToken), 0);
+    if (s2?.data?.playerToken) seatMap.set(String(s2.data.playerToken), 1);
+    if (s3?.data?.playerToken) seatMap.set(String(s3.data.playerToken), 2);
+    if (s4?.data?.playerToken) seatMap.set(String(s4.data.playerToken), 3);
+    io.to(firstClientId).emit("message", {
+      method: "1",
+      fl: false,
+      num: clientCount,
+    });
+    io.to(secondClientId).emit("message", {
+      method: "4Players",
+      fl: "p1",
+      num: clientCount,
+    });
+    io.to(thirdClientId).emit("message", {
+      method: "4Players",
+      fl: "p2",
+      num: clientCount,
+    });
+    io.to(fourthClientId).emit("message", {
+      method: "4Players",
+      fl: "p3",
+      num: clientCount,
+    });
+    return;
+  }
+
   if (clientCount === 2) {
     const [firstClientId, secondClientId] = clients;
     const s1 = io.sockets.sockets.get(firstClientId);
@@ -1342,6 +1409,7 @@ function matchClientsInRoom(roomID) {
       fl: "3player",
       num: clientCount
     });
+    return;
   }
 }
 

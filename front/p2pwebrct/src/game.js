@@ -17,7 +17,7 @@ export function getLocalSeatForSocket() {
 }
 
 let currentTurnSeat = 0;
-const levelBySeat = [1, 1, 1];
+const levelBySeat = [1, 1, 1, 1];
 const STEAL_LEVEL_CARD_NAME = "Steal a level";
 const WINNING_LEVEL = 10;
 
@@ -178,6 +178,7 @@ const characterBySeat = [
 	new PlayerCharacterState(0),
 	new PlayerCharacterState(1),
 	new PlayerCharacterState(2),
+	new PlayerCharacterState(3),
 ];
 window.characterBySeat = characterBySeat;
 let battleActive = false;
@@ -237,15 +238,15 @@ let deathLootActive = false;
 let deathLootState = null;
 let resumeEscapeAfterLoot = false;
 let deathLootAwaitingEscapeFinish = false;
-const halflingDoubleSellUsedBySeat = [false, false, false];
-const warriorFrenzyUsedBySeat = [0, 0, 0];
-const warriorFrenzyBonusBySeat = [0, 0, 0];
-const clericExorcismUsedBySeat = [0, 0, 0];
-const clericExorcismBonusBySeat = [0, 0, 0];
+const halflingDoubleSellUsedBySeat = [false, false, false, false];
+const warriorFrenzyUsedBySeat = [0, 0, 0, 0];
+const warriorFrenzyBonusBySeat = [0, 0, 0, 0];
+const clericExorcismUsedBySeat = [0, 0, 0, 0];
+const clericExorcismBonusBySeat = [0, 0, 0, 0];
 /** В этом бою жертва уже «подрезана» (1 карта = один раз). */
-const victimThiefTrimUsedBySeat = [0, 0, 0];
+const victimThiefTrimUsedBySeat = [0, 0, 0, 0];
 /** −2 в бою к силе жертвы; остаётся до конца боя, даже если вор снял класс. */
-const thiefBackstabDebuffBySeat = [0, 0, 0];
+const thiefBackstabDebuffBySeat = [0, 0, 0, 0];
 const THIEF_THEFT_SUCCESS_ROLL = 4;
 /** Сброшена карта кражи; ждём клик по общему кубику .dice-container. */
 let thiefTheftBoardDicePending = false;
@@ -326,6 +327,18 @@ function setZoneInteractivityByPlayers(numPlayers) {
 		enabledZoneIds.add('zone_opponent3_side');
 	}
 
+	if (numPlayers === 4) {
+		enabledZoneIds.add('opponenthand');
+		enabledZoneIds.add('zone_opponent');
+		enabledZoneIds.add('zone_opponent_side');
+		enabledZoneIds.add('opponent2hand');
+		enabledZoneIds.add('zone_opponent2');
+		enabledZoneIds.add('zone_opponent2_side');
+		enabledZoneIds.add('opponent3hand');
+		enabledZoneIds.add('zone_opponent3');
+		enabledZoneIds.add('zone_opponent3_side');
+	}
+
 	allZoneIds.forEach(id => {
 		const zone = document.getElementById(id);
 		if (!zone) {
@@ -383,21 +396,36 @@ function updatePlayersUiVisibility(numPlayers) {
 		setDisplay('.level-top-right', 'block');
 		setDisplay('.top-right', 'block');
 	}
+
+	if (numPlayers === 4) {
+		// Три оппонента: слева, справа и по центру сверху.
+		setDisplay('.image-top-left', 'block');
+		setDisplay('.level-top-left', 'block');
+		setDisplay('.top-left', 'block');
+
+		setDisplay('.image-top-right', 'block');
+		setDisplay('.level-top-right', 'block');
+		setDisplay('.top-right', 'block');
+
+		setDisplay('.top-center-image', 'block');
+		setDisplay('.level-top-center', 'block');
+		setDisplay('.top-center', 'flex');
+	}
 }
 
 /**
  * Сколько игроков учитывать в маппинге мест → зон (иконки, сила, уровень, рука, налог).
- * Строго num === 2 | 3 — как раньше; иначе Number(num)||window.num (после StartGame num иногда строка или ещё не записан).
+ * num === 2 | 3 | 4; иначе Number(num)||window.num (после StartGame num иногда строка или ещё не записан).
  */
 function effectiveSeatLayoutPlayerCount() {
-	if (num === 2 || num === 3) {
+	if (num === 2 || num === 3 || num === 4) {
 		return num;
 	}
 	const n = Number(num) || Number(window.num);
 	if (!Number.isFinite(n)) {
 		return 2;
 	}
-	return Math.min(3, Math.max(2, Math.floor(n)));
+	return Math.min(4, Math.max(2, Math.floor(n)));
 }
 
 function getSeatToIconMap() {
@@ -408,7 +436,18 @@ function getSeatToIconMap() {
 			: { 0: '.image-bottom-center', 1: '.top-center-image' };
 	}
 
-	if (n >= 3) {
+	if (n === 4) {
+		// По часовой стрелке от себя (низ): низ → верх-слева → верх-центр → верх-справа → снова низ.
+		// Слоты 0..3 соответствуют местам (localSeat+k)%4, чтобы на всех вкладках был один и тот же цикл 0→1→2→3.
+		const icons = ['.image-bottom-center', '.image-top-left', '.top-center-image', '.image-top-right'];
+		const map = {};
+		for (let s = 0; s < 4; s += 1) {
+			map[s] = icons[(s - localSeat + 4) % 4];
+		}
+		return map;
+	}
+
+	if (n === 3) {
 		if (localSeat === 1) {
 			return { 1: '.image-bottom-center', 2: '.image-top-right', 0: '.image-top-left' };
 		}
@@ -429,7 +468,17 @@ function getSeatToPowerMap() {
 			: { 0: '.MyPower', 1: '.PowerPlayer2' };
 	}
 
-	if (n >= 3) {
+	if (n === 4) {
+		// Тот же порядок слотов, что и в getSeatToIconMap (низ → ВЛ → ВЦ → ВП).
+		const powers = ['.MyPower', '.PowerPlayer4', '.PowerPlayer2', '.PowerPlayer3'];
+		const map = {};
+		for (let s = 0; s < 4; s += 1) {
+			map[s] = powers[(s - localSeat + 4) % 4];
+		}
+		return map;
+	}
+
+	if (n === 3) {
 		if (localSeat === 1) {
 			return { 1: '.MyPower', 2: '.PowerPlayer3', 0: '.PowerPlayer4' };
 		}
@@ -443,6 +492,20 @@ function getSeatToPowerMap() {
 }
 
 function getSeatToBattleZoneMap() {
+	const n = effectiveSeatLayoutPlayerCount();
+	// 4P: после class-swap класс .zone_opponent2 может быть не на id=zone_opponent2 — маппим по id, как в комментарии к парам main/side.
+	if (n === 4) {
+		return {
+			0: '#zone2',
+			1: '#zone_opponent2',
+			2: '#zone_opponent3',
+			3: '#zone_opponent',
+			'0': '#zone2',
+			'1': '#zone_opponent2',
+			'2': '#zone_opponent3',
+			'3': '#zone_opponent',
+		};
+	}
 	// Важно: зона экипировки должна соответствовать тому же игроку, что и вывод силы в getSeatToPowerMap.
 	// Строим маппинг от power-селекторов, чтобы избежать рассинхрона zone_opponent2/zone_opponent3.
 	const powerToZone = {
@@ -474,7 +537,16 @@ function getSeatToLevelMap() {
 			: { 0: '.level-bottom-center', 1: '.level-top-center' };
 	}
 
-	if (n >= 3) {
+	if (n === 4) {
+		const levels = ['.level-bottom-center', '.level-top-left', '.level-top-center', '.level-top-right'];
+		const map = {};
+		for (let s = 0; s < 4; s += 1) {
+			map[s] = levels[(s - localSeat + 4) % 4];
+		}
+		return map;
+	}
+
+	if (n === 3) {
 		if (localSeat === 1) {
 			return { 1: '.level-bottom-center', 2: '.level-top-right', 0: '.level-top-left' };
 		}
@@ -595,7 +667,7 @@ function bindSeatIconHoverTooltips() {
 
 function setLevelBySeat(seat, level) {
 	const v = Math.max(1, Math.floor(Number(level)) || 1);
-	if (seat >= 0 && seat <= 2) {
+	if (seat >= 0 && seat <= 3) {
 		levelBySeat[seat] = v;
 		characterBySeat[seat]?.setLevel(v);
 	}
@@ -683,9 +755,13 @@ function isSideEquipmentZoneElement(zoneEl) {
 // Пары main/side по class-селекторам, как в getSeatToBattleZoneMap (id у блоков НЕ двигаются при 2/3P swap).
 const BATTLE_MAIN_SELECTOR_TO_SIDE_SELECTOR = {
 	'.zone2': '.zone5',
+	'#zone2': '#zone5',
 	'.zone_opponent': '.zone_opponent_side',
+	'#zone_opponent': '#zone_opponent_side',
 	'.zone_opponent2': '.zone_opponent2_side',
+	'#zone_opponent2': '#zone_opponent2_side',
 	'.zone_opponent3': '.zone_opponent3_side',
+	'#zone_opponent3': '#zone_opponent3_side',
 };
 
 /**
@@ -717,7 +793,7 @@ function getHandElementForPlayerSeat(targetSeat) {
 	if (n === 2) {
 		return document.querySelector(".opponenthand");
 	}
-	if (n >= 3) {
+	if (n === 3 || n === 4) {
 		const bz = getSeatToBattleZoneMap();
 		const mainSel = bz[String(targetSeat)] ?? bz[targetSeat];
 		if (!mainSel) {
@@ -2129,7 +2205,7 @@ function applyDivineInterventionResolve(cardId, clericSeatsFromNetwork) {
 		moveBadStaffCardToDiscard(cardId);
 	}
 	const seats = Array.isArray(clericSeatsFromNetwork)
-		? clericSeatsFromNetwork.map((x) => Number(x)).filter((s) => Number.isFinite(s) && s >= 0 && s <= 2)
+		? clericSeatsFromNetwork.map((x) => Number(x)).filter((s) => Number.isFinite(s) && s >= 0 && s < effectiveSeatLayoutPlayerCount())
 		: null;
 	if (seats && seats.length) {
 		seats.forEach((s) => {
@@ -2137,7 +2213,8 @@ function applyDivineInterventionResolve(cardId, clericSeatsFromNetwork) {
 			setLevelBySeat(s, applyLevelDeltaWithWinRule(cur, 1, true));
 		});
 	} else {
-		for (let s = 0; s < 3; s++) {
+		const nSeats = effectiveSeatLayoutPlayerCount();
+		for (let s = 0; s < nSeats; s++) {
 			if (isSeatClericClassActive(s)) {
 				const cur = Number(levelBySeat[s] ?? 1) || 1;
 				setLevelBySeat(s, applyLevelDeltaWithWinRule(cur, 1, true));
@@ -2184,7 +2261,8 @@ function scheduleDivineInterventionIfNeeded(cardId, zoneEl) {
 			return;
 		}
 		const clericSeats = [];
-		for (let s = 0; s < 3; s++) {
+		const nSeats = effectiveSeatLayoutPlayerCount();
+		for (let s = 0; s < nSeats; s++) {
 			if (isSeatClericClassActive(s)) {
 				clericSeats.push(s);
 			}
@@ -4294,7 +4372,7 @@ function handleIncomeTaxInitiatorPick(res) {
 	}
 
 	// На каждом клиенте свой подсчёт по локальному DOM (без «снимка» жертвы): < эталона → сброс всех шмоток и −1 уровень, иначе → модалка выбора.
-	const nPlayersForModal = Math.min(3, Math.max(2, Number(num) || Number(window.num) || 2));
+	const nPlayersForModal = Math.min(4, Math.max(2, Number(num) || Number(window.num) || 2));
 	const insufficientSeats = [];
 	const discardIdsBySeat = {};
 	for (let s = 0; s < nPlayersForModal; s++) {
@@ -5252,7 +5330,7 @@ function appendCardToSeatHand(cardId, seat) {
 		// Для 2p достаточно взять .opponenthand, для 3p используем id по селектору зоны.
 		if (num === 2) {
 			hand = document.querySelector(".opponenthand") || hand;
-		} else if (num === 3) {
+		} else if (Number(num) === 3 || Number(num) === 4) {
 			const bz = getSeatToBattleZoneMap();
 			const mainSel = bz[String(seat)] ?? bz[seat];
 			if (mainSel?.includes("zone_opponent2") && !mainSel.includes("zone_opponent3")) {
@@ -5272,7 +5350,7 @@ function appendCardToSeatHand(cardId, seat) {
 			hand = document.querySelector(".myhand");
 		} else if (num === 2) {
 			hand = document.querySelector(".opponenthand") || document.getElementById("opponenthand");
-		} else if (num === 3) {
+		} else if (Number(num) === 3 || Number(num) === 4) {
 			// Пытаемся определить по текущей раскладке зон.
 			const bz = getSeatToBattleZoneMap();
 			const mainSel = bz[String(seat)] ?? bz[seat];
@@ -9637,6 +9715,13 @@ function advanceTurnClockwise() {
 		return;
 	}
 
+	const n = Number(num);
+	// 4 игрока: порядок мест по часовой стрелке совпадает с ростом номера места (0→1→2→3).
+	// 2 и 3 игрока оставляем прежнюю арифметику (треугольник/двоечка уже подогнаны под UI).
+	if (n === 4) {
+		setCurrentTurn((Number(currentTurnSeat) + 1) % 4, true);
+		return;
+	}
 	const nextSeat = (currentTurnSeat - 1 + num) % num;
 	setCurrentTurn(nextSeat, true);
 }
@@ -9661,8 +9746,8 @@ function updateTurnActionButtons(isTimerRunning) {
 	const inBattle = isMonsterBattleUi();
 	// Как было: «Пас» видят все игроки, пока идёт таймер (очередь пасов).
 	const showFold = isTimerRunning && !turnAwaitingManualEnd;
-	// «Завершить ход» у ходящего вне боя — и до таймера, и после (не только при turnAwaitingManualEnd).
-	const showEndTurn = isMyTurn && !inBattle && !isTimerRunning;
+	// Пока идёт смывка (очередь бросков/выбор монстра и т.д.), «Завершить ход» не показываем — после EscapeSequenceFinished снова обновляют кнопки.
+	const showEndTurn = isMyTurn && !inBattle && !isTimerRunning && !escapeActive;
 	foldButton.style.display = showFold ? "flex" : "none";
 	endTurnButton.style.display = showEndTurn ? "flex" : "none";
 }
@@ -9681,6 +9766,9 @@ function tryCompleteManualTurnEnd() {
 		return;
 	}
 	if (isMonsterBattleUi()) {
+		return;
+	}
+	if (escapeActive) {
 		return;
 	}
 	const handCount = getLocalHandCardCount();
@@ -11726,8 +11814,51 @@ function updateCharacterStatesFromBoard() {
 	}
 }
 
+/** Пересчёт позиций «Принять помощь» при смене размера окна (fixed + координаты от getBoundingClientRect). */
+let acceptHelpViewportResizeRaf = 0;
+function repositionVisibleAcceptHelpButtonsForViewport() {
+	if (!battleActive || acceptedHelperSeat !== null) {
+		return;
+	}
+	if (localSeat === null || localSeat === undefined) {
+		return;
+	}
+	if (Number(localSeat) !== Number(getMonsterFightSeat())) {
+		return;
+	}
+	if (monsterBattlefieldDismissesBattleHelpers()) {
+		return;
+	}
+	pendingHelpSeats.forEach((seat) => {
+		const btn = document.getElementById(`accept-help-seat-${seat}`);
+		if (!btn) {
+			return;
+		}
+		const cs = getComputedStyle(btn);
+		if (cs.display === 'none') {
+			return;
+		}
+		positionAcceptHelpButtonForSeat(seat, btn);
+	});
+}
+
+function scheduleRepositionAcceptHelpButtonsForViewport() {
+	if (acceptHelpViewportResizeRaf) {
+		cancelAnimationFrame(acceptHelpViewportResizeRaf);
+	}
+	acceptHelpViewportResizeRaf = requestAnimationFrame(() => {
+		acceptHelpViewportResizeRaf = 0;
+		repositionVisibleAcceptHelpButtonsForViewport();
+	});
+}
+
+if (typeof window !== 'undefined' && !window.__munchkinAcceptHelpViewportListeners) {
+	window.__munchkinAcceptHelpViewportListeners = true;
+	window.addEventListener('resize', scheduleRepositionAcceptHelpButtonsForViewport, { passive: true });
+}
+
 function hideAllAcceptHelpButtons() {
-	for (let s = 0; s < 3; s++) {
+	for (let s = 0; s < 4; s++) {
 		const btn = document.getElementById(`accept-help-seat-${s}`);
 		if (btn) {
 			btn.style.display = 'none';
@@ -11744,6 +11875,11 @@ function ensureAcceptHelpButtonForSeat(seat) {
 	}
 
 	let btn = document.getElementById(`accept-help-seat-${seat}`);
+	// Верх по центру: не вешать в .top-center (там transform — ломает fixed). В .container2 — тот же zoom 0.8, что и у остальных кнопок.
+	const anchorParent =
+		powerSelector === '.PowerPlayer2'
+			? (document.querySelector('.container2') || document.body)
+			: powerElement.parentElement;
 	if (!btn) {
 		btn = document.createElement('button');
 		btn.id = `accept-help-seat-${seat}`;
@@ -11767,7 +11903,9 @@ function ensureAcceptHelpButtonForSeat(seat) {
 				turnSeat: getMonsterFightSeat(),
 			});
 		});
-		powerElement.parentElement.appendChild(btn);
+		anchorParent.appendChild(btn);
+	} else if (btn.parentElement !== anchorParent) {
+		anchorParent.appendChild(btn);
 	}
 	return btn;
 }
@@ -11783,6 +11921,7 @@ function positionAcceptHelpButtonForSeat(seat, btn) {
 		btn.style.position = '';
 		btn.style.left = '';
 		btn.style.top = '';
+		btn.style.right = '';
 		btn.style.transform = '';
 		btn.style.zIndex = '';
 		return;
@@ -11799,12 +11938,18 @@ function positionAcceptHelpButtonForSeat(seat, btn) {
 		// Для правой верхней иконки позиционируем от правого края — проще держать симметрию.
 		btn.style.right = '46px';
 		btn.style.transform = 'translateX(50%)';
+		btn.style.top = `${rect.bottom + 28}px`;
+	} else if (iconSelector === '.top-center-image') {
+		// Та же вертикаль, что у остальных «Принять помощь»; по горизонтали чуть правее центра под иконкой.
+		btn.style.left = `${rect.left + rect.width / 2}px`;
+		btn.style.transform = 'translate(calc(-50% + 220px), 0px)';
+		btn.style.top = `${rect.bottom + 28}px`;
 	} else {
 		const left = rect.left + rect.width / 2;
 		btn.style.left = `${left}px`;
 		btn.style.transform = 'translateX(-50%)';
+		btn.style.top = `${rect.bottom + 28}px`;
 	}
-	btn.style.top = `${rect.bottom + 28}px`;
 	btn.style.zIndex = '30';
 }
 
@@ -12088,6 +12233,33 @@ function setupMunchkinDiceAfterGameStart() {
 	});
 }
 
+/** Каноника 4 игроков: id зон по seat на сервере — myhand, opponent2hand, opponent3hand, opponenthand. По столу по ЧС: низ → ВЛ → ВЦ → ВП (классы позиций подгоняем под этот порядок). */
+const FOUR_PLAYER_HAND_IDS = ['myhand', 'opponent2hand', 'opponent3hand', 'opponenthand'];
+const FOUR_PLAYER_HAND_CLASSES = ['myhand', 'opponent3hand', 'opponenthand', 'opponent2hand'];
+const FOUR_PLAYER_MAIN_IDS = ['zone2', 'zone_opponent2', 'zone_opponent3', 'zone_opponent'];
+const FOUR_PLAYER_MAIN_CLASSES = ['zone2', 'zone_opponent3', 'zone_opponent', 'zone_opponent2'];
+const FOUR_PLAYER_SIDE_IDS = ['zone5', 'zone_opponent2_side', 'zone_opponent3_side', 'zone_opponent_side'];
+const FOUR_PLAYER_SIDE_CLASSES = ['zone5', 'zone_opponent3_side', 'zone_opponent_side', 'zone_opponent2_side'];
+
+function applyFourPlayerCanonicalClassShift(localSeatIndex) {
+	const L = ((Number(localSeatIndex) % 4) + 4) % 4;
+	const apply = (ids, classes) => {
+		for (let i = 0; i < 4; i += 1) {
+			const el = document.getElementById(ids[(i + L) % 4]);
+			if (el) {
+				el.className = `${classes[i]} cards-zone`;
+			}
+		}
+	};
+	apply(FOUR_PLAYER_HAND_IDS, FOUR_PLAYER_HAND_CLASSES);
+	apply(FOUR_PLAYER_MAIN_IDS, FOUR_PLAYER_MAIN_CLASSES);
+	apply(FOUR_PLAYER_SIDE_IDS, FOUR_PLAYER_SIDE_CLASSES);
+}
+
+function resetFourPlayerLayoutToSeatZero() {
+	applyFourPlayerCanonicalClassShift(0);
+}
+
 /**
  * Каноническая раскладка стола для 3 игроков (как у хоста seat 0 до сообщения 3Players).
  * id элементов не меняются — только классы `… cards-zone`.
@@ -12211,7 +12383,7 @@ function closeGameVictoryModal() {
 
 function openGameVictoryModal(winners) {
 	closeGameVictoryModal();
-	const seats = Array.isArray(winners) ? winners.map((x) => Number(x)).filter((s) => Number.isFinite(s) && s >= 0 && s <= 2) : [];
+	const seats = Array.isArray(winners) ? winners.map((x) => Number(x)).filter((s) => Number.isFinite(s) && s >= 0 && s <= 3) : [];
 	const names = seats.map((s) => `Игрок ${s + 1}`);
 	const wrap = document.createElement("div");
 	wrap.id = "game-victory-modal";
@@ -12310,7 +12482,7 @@ function resetLocalTableForRestart() {
 	incomeTaxSession = null;
 	turnAwaitingManualEnd = false;
 	loseYourClassPendingBySeat.clear();
-	for (let i = 0; i < 3; i += 1) {
+	for (let i = 0; i < 4; i += 1) {
 		halflingDoubleSellUsedBySeat[i] = false;
 		warriorFrenzyUsedBySeat[i] = 0;
 		warriorFrenzyBonusBySeat[i] = 0;
@@ -12367,6 +12539,13 @@ socket.on("message", response => {
 			if (seat === 2) {
 				applyThreePlayerLayoutSeat2AsInJoinMessage();
 			}
+			return;
+		}
+
+		if (players === 4) {
+			resetFourPlayerLayoutToSeatZero();
+			applyFourPlayerCanonicalClassShift(seat);
+			return;
 		}
 	}
 
@@ -13394,6 +13573,7 @@ socket.on("message", response => {
 			}
 		}
 		recalculateAllPowerDisplays();
+		updateTurnActionButtons(false);
 	}
 	if (response.method === "EscapeMonsterPickStart") {
 		const seat = parseInt(response.seat, 10);
@@ -14226,8 +14406,17 @@ socket.on("message", response => {
   }
 	if (response.method === "1") {
 		//console.log("первый")
-    fl = response.fl;
+		fl = response.fl;
 		localSeat = 0;
+		const nFromMsg = Number(response.num);
+		if (Number.isFinite(nFromMsg) && nFromMsg > 0) {
+			num = nFromMsg;
+			window.num = num;
+		}
+		if (Number(num) === 4) {
+			resetFourPlayerLayoutToSeatZero();
+			applyFourPlayerCanonicalClassShift(0);
+		}
 		ensureLocalPlayerProfileChosen();
 		updatePlayersUiVisibility(num);
 		recalculateAllPowerDisplays();
@@ -14247,9 +14436,10 @@ socket.on("message", response => {
 			method: "shuffleDeck",
 			deckDoors: window.doors,
 			deckTreasure: window.treasures,
+			num: Number(num) || (Number.isFinite(nFromMsg) && nFromMsg > 0 ? nFromMsg : 2),
 		};
-		socket.emit("message",shuffleDeck);
-  }
+		socket.emit("message", shuffleDeck);
+	}
 	if (response.method === "2Players") {
 		//console.log("второй или третий ")
     fl = response.fl;
@@ -14306,6 +14496,18 @@ socket.on("message", response => {
 		} else if (localSeat === 2) {
 			applyThreePlayerLayoutSeat2AsInJoinMessage();
 		}
+		updatePlayersUiVisibility(num);
+		recalculateAllPowerDisplays();
+		applyTurnHighlight();
+	}
+	if (response.method === "4Players") {
+		fl = response.fl;
+		localSeat = fl === "p3" ? 3 : fl === "p2" ? 2 : 1;
+		ensureLocalPlayerProfileChosen();
+		num = 4;
+		window.num = num;
+		resetFourPlayerLayoutToSeatZero();
+		applyFourPlayerCanonicalClassShift(localSeat);
 		updatePlayersUiVisibility(num);
 		recalculateAllPowerDisplays();
 		applyTurnHighlight();
@@ -15094,6 +15296,31 @@ function Start_game(num_players){
             opponent2hand.appendChild(card);
           } else {
             opponent3hand.appendChild(card);
+          }
+        });
+    } else if (num_players === 4) {
+        cardsToMoveDoors.forEach((card, index) => {
+          const r = index % 4;
+          if (r === 0) {
+            myhand.appendChild(card);
+          } else if (r === 1) {
+            opponent2hand.appendChild(card);
+          } else if (r === 2) {
+            opponent3hand.appendChild(card);
+          } else {
+            opponenthand.appendChild(card);
+          }
+        });
+        cardsToMoveTreasure.forEach((card, index) => {
+          const r = index % 4;
+          if (r === 0) {
+            myhand.appendChild(card);
+          } else if (r === 1) {
+            opponent2hand.appendChild(card);
+          } else if (r === 2) {
+            opponent3hand.appendChild(card);
+          } else {
+            opponenthand.appendChild(card);
           }
         });
     }

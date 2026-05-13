@@ -2220,7 +2220,7 @@ button:hover {
 
 #offer-help{
   /* Кнопка помощи: по центру по горизонтали. */
-  top: 35%;
+  top: 61%;
   left: 50%;
   right: auto;
   transform: translate(-50%, -50%);
