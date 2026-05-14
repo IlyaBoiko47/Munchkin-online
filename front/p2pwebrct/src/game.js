@@ -1016,6 +1016,33 @@ function getHandElementForPlayerSeat(targetSeat) {
 	return null;
 }
 
+/** Владелец сокровища по зоне (main/side места или рука). */
+function getTreasureOwnerSeatFromZoneElement(zoneEl) {
+	if (!zoneEl) {
+		return null;
+	}
+	const equipSeat = getGlobalSeatForPlayZone(zoneEl);
+	if (equipSeat != null) {
+		return equipSeat;
+	}
+	const n = effectiveSeatLayoutPlayerCount();
+	for (let s = 0; s < n; s += 1) {
+		const h = getHandElementForPlayerSeat(s);
+		if (h && zoneEl === h) {
+			return s;
+		}
+	}
+	const zid = String(zoneEl.id || "");
+	const onMonsterZone = zid === "zone_monster" || zoneEl.classList?.contains?.("zone_monster");
+	if (zid === "zone3" || onMonsterZone) {
+		const fs = getMonsterFightSeat();
+		if (Number.isFinite(Number(fs)) && Number(fs) >= 0) {
+			return Number(fs);
+		}
+	}
+	return null;
+}
+
 function isTreasureSmallShmot(treasure) {
 	if (!treasure) {
 		return false;
@@ -1033,6 +1060,9 @@ function collectSmallStealableTreasuresFromSeat(victimSeat) {
 		zoneEl.querySelectorAll(".card").forEach((cardEl) => {
 			const t = window.treasures?.find((tr) => tr.name === cardEl.id);
 			if (!t || !isTreasureSmallShmot(t)) {
+				return;
+			}
+			if (isTreasureSpecial(cardEl.id, "Hireling")) {
 				return;
 			}
 			const imgEl = cardEl.querySelector(".card-item");
@@ -2362,7 +2392,8 @@ function enforceCheatAttachmentsInvariant() {
 }
 
 function enforceHirelingFollowInvariant() {
-	// Инвариант: если у Наёмничка есть прикреплённая шмотка — она всегда должна быть в той же зоне.
+	// Только починка dataset: не трогаем «разные зоны» — во время drag наёмничка DOM временно расходится
+	// с шмоткой (dragover уже вставил карту в целевую зону), и MercenaryDetach здесь ломает сброс/перенос пары.
 	document.querySelectorAll('.card').forEach((maybeHireling) => {
 		if (!maybeHireling?.id || !String(maybeHireling.id).includes("treasure")) {
 			return;
@@ -2379,22 +2410,8 @@ function enforceHirelingFollowInvariant() {
 			maybeHireling.dataset.hirelingAttachedTreasureId = "";
 			return;
 		}
-		// Поддерживаем двустороннюю ссылку.
 		if (String(attachedEl.dataset?.hirelingCardId || "") !== String(maybeHireling.id)) {
 			attachedEl.dataset.hirelingCardId = String(maybeHireling.id);
-		}
-		const hirelingZoneId = maybeHireling.parentElement?.id || "";
-		const attachedZoneId = attachedEl.parentElement?.id || "";
-		if (!hirelingZoneId || !attachedZoneId) {
-			return;
-		}
-		if (hirelingZoneId !== attachedZoneId) {
-			socket.emit("message", {
-				method: "moveCard",
-				cardId: attachedId,
-				targetId: null,
-				zoneId: hirelingZoneId,
-			});
 		}
 	});
 }
@@ -3768,7 +3785,7 @@ function moveTreasureCardToDiscard(cardId, opts) {
 	if (!id.includes('treasure')) {
 		return;
 	}
-	// Если сбрасываем Наёмничка — его шмотка должна уйти вместе с ним.
+	// Если сбрасываем Наёмничка — его шмотка уходит в сброс вместе с ним.
 	if (isTreasureSpecial(id, "Hireling")) {
 		const attachedId = String(card.dataset?.hirelingAttachedTreasureId || "");
 		if (attachedId) {
@@ -3914,12 +3931,41 @@ function refreshWishingRingBarUI() {
 	if (!Number.isFinite(my) || my < 0) {
 		return;
 	}
-	if (!a.ringSeats.includes(my)) {
+	const pendingRingSeats = a.ringSeats.filter((s) => !a.skipped.includes(s));
+	if (pendingRingSeats.length === 0) {
 		return;
 	}
-	if (a.skipped.includes(my)) {
+
+	const myStillPending = pendingRingSeats.includes(my);
+
+	const buildWaitingTitleText = () => {
+		const names = pendingRingSeats.map((s) => getSeatLabel(s));
+		if (names.length === 1) {
+			return `${names[0]} решает, применять ли хотельное кольцо.`;
+		}
+		if (names.length === 2) {
+			return `${names[0]} и ${names[1]} решают, применять ли хотельное кольцо.`;
+		}
+		const head = names.slice(0, -1).join(", ");
+		const last = names[names.length - 1];
+		return `${head} и ${last} решают, применять ли хотельное кольцо.`;
+	};
+
+	if (!myStillPending) {
+		const wrap = document.createElement("div");
+		wrap.id = "wishing-ring-curse-choice";
+		wrap.className = "wishing-ring-curse-choice is-waiting";
+		const panel = document.createElement("div");
+		panel.className = "wishing-ring-curse-choice-panel";
+		const title = document.createElement("div");
+		title.className = "wishing-ring-curse-choice-title";
+		title.textContent = buildWaitingTitleText();
+		panel.appendChild(title);
+		wrap.appendChild(panel);
+		document.body.appendChild(wrap);
 		return;
 	}
+
 	const wrap = document.createElement("div");
 	wrap.id = "wishing-ring-curse-choice";
 	wrap.className = "wishing-ring-curse-choice";
@@ -4582,7 +4628,8 @@ function handleIncomeTaxInitiatorPick(res) {
 	}
 
 	// На каждом клиенте свой подсчёт по локальному DOM (без «снимка» жертвы): < эталона → сброс всех шмоток и −1 уровень, иначе → модалка выбора.
-	const nPlayersForModal = Math.min(4, Math.max(2, Number(num) || Number(window.num) || 2));
+	// До 5 мест (раньше было Math.min(4, …) — пятый игрок не попадал в needModal и окно налога не открывалось).
+	const nPlayersForModal = effectiveSeatLayoutPlayerCount();
 	const insufficientSeats = [];
 	const discardIdsBySeat = {};
 	for (let s = 0; s < nPlayersForModal; s++) {
@@ -6629,6 +6676,9 @@ function applyThiefTheftStolenCardMove(thiefSeat, fromSeat, cardId) {
 	if (Number.isNaN(t) || Number.isNaN(f) || !cardId) {
 		return;
 	}
+	if (isTreasureSpecial(String(cardId), "Hireling")) {
+		return;
+	}
 	const tr = window.treasures?.find((x) => x.name === cardId);
 	if (tr && !isTreasureSmallShmot(tr)) {
 		return;
@@ -8567,6 +8617,35 @@ function getInvisibilityPotionTreasureCardIdsForSeat(seat) {
 	return out;
 }
 
+/** Карты «Hireling» в руке/main/side места (для модалки помощи после провала смывки — как зелье невидимости). */
+function getHirelingTreasureCardIdsForSeat(seat) {
+	const s = Number(seat);
+	if (!Number.isFinite(s) || s < 0) {
+		return [];
+	}
+	const out = [];
+	const seen = new Set();
+	const hand = getHandElementForPlayerSeat(s);
+	const { main, side } = getMainAndSideZoneElementsForSeat(s);
+	[hand, main, side].forEach((zoneEl) => {
+		if (!zoneEl) {
+			return;
+		}
+		zoneEl.querySelectorAll(".card").forEach((cardEl) => {
+			const cid = String(cardEl?.id || "");
+			if (!cid || !cid.includes("treasure") || seen.has(cid)) {
+				return;
+			}
+			if (!isTreasureSpecial(cid, "Hireling")) {
+				return;
+			}
+			seen.add(cid);
+			out.push(cid);
+		});
+	});
+	return out;
+}
+
 function getMagicLampTreasureCardIdsForSeat(seat) {
 	const s = Number(seat);
 	if (!Number.isFinite(s) || s < 0) {
@@ -8613,6 +8692,9 @@ function openEscapeFailAidModal({ seat, attemptNumber }) {
 	const invIds = getInvisibilityPotionTreasureCardIdsForSeat(s);
 	const canInvis = invIds.length > 0 && Boolean(monId);
 	const invTreasure = invIds.length ? window.treasures?.find((t) => t.name === invIds[0]) : null;
+	const hireIds = getHirelingTreasureCardIdsForSeat(s);
+	const canHire = hireIds.length > 0 && Boolean(monId);
+	const hireTreasure = hireIds.length ? window.treasures?.find((t) => t.name === hireIds[0]) : null;
 	const lampIds = getMagicLampTreasureCardIdsForSeat(s);
 	const canLamp = lampIds.length > 0 && Boolean(monId) && Number(currentTurnSeat) === Number(s);
 	const lampTreasure = lampIds.length ? window.treasures?.find((t) => t.name === lampIds[0]) : null;
@@ -8624,7 +8706,18 @@ function openEscapeFailAidModal({ seat, attemptNumber }) {
 			cardId: invIds[0],
 			img: invTreasure?.img || "",
 			imageOnly: true,
+			imgAlt: "Invisibility potion",
 			desc: "Сбрось зелье невидимости: автоматически смываешься от монстра, от которого только что не смог смыться. Карта уходит в сброс.",
+		});
+	}
+	if (canHire) {
+		entries.push({
+			key: "hire",
+			cardId: hireIds[0],
+			img: hireTreasure?.img || "",
+			imageOnly: true,
+			imgAlt: "Hireling",
+			desc: "Сбрось наёмничка: как зелье невидимости — автоматически смываешься от монстра, от которого только что не смог смыться. Наёмничек и шмотка, которую он нёс, уходят в сброс.",
 		});
 	}
 	if (canLamp) {
@@ -8633,6 +8726,7 @@ function openEscapeFailAidModal({ seat, attemptNumber }) {
 			cardId: lampIds[0],
 			img: lampTreasure?.img || "",
 			imageOnly: true,
+			imgAlt: "Magic lamp",
 			desc: "Прогоняет одного выбранного монстра.",
 		});
 	}
@@ -8687,6 +8781,19 @@ function openEscapeFailAidModal({ seat, attemptNumber }) {
 			});
 			return;
 		}
+		if (selected.key === "hire") {
+			const cardId = selected.cardId;
+			if (!cardId || !monId) {
+				return;
+			}
+			socket.emit("message", {
+				method: "EscapeHirelingApply",
+				cardId,
+				actingSeat: s,
+				monsterCardId: monId,
+			});
+			return;
+		}
 		if (selected.key === "lamp") {
 			const cardId = selected.cardId;
 			if (!cardId || !monId) {
@@ -8734,7 +8841,7 @@ function openEscapeFailAidModal({ seat, attemptNumber }) {
 			const img = document.createElement("img");
 			img.className = "wizard-taming-pick-card-img";
 			img.src = ent.img;
-			img.alt = "Invisibility potion";
+			img.alt = String(ent.imgAlt || ent.cardId || ent.key || "");
 			btn.appendChild(img);
 		} else {
 			const label = document.createElement("div");
@@ -9852,6 +9959,212 @@ function applyTurnHighlight() {
 			helperIcon.style.filter = HELPER_FILTER;
 		}
 	}
+	updateBattleEquipmentHighlight();
+}
+
+const BATTLE_EQUIPMENT_OUTLINE_CLASS = "battle-equipment-cards-outline";
+
+function clearBattleEquipmentCardOutlines() {
+	try {
+		document.querySelectorAll(`.${BATTLE_EQUIPMENT_OUTLINE_CLASS}`).forEach((el) => el.remove());
+	} catch {
+		// ignore
+	}
+}
+
+/** Визуальный bbox карты: обёртка .card в CSS крошечная, реальный размер у .card-item (и масштаб из card-block). */
+function getEquipmentCardVisualBounds(cardEl) {
+	if (!cardEl) {
+		return null;
+	}
+	let minL = Infinity;
+	let minT = Infinity;
+	let maxR = -Infinity;
+	let maxB = -Infinity;
+	const add = (node) => {
+		if (!node || node.nodeType !== 1) {
+			return;
+		}
+		const r = node.getBoundingClientRect();
+		if (!Number.isFinite(r.width) || !Number.isFinite(r.height) || r.width < 1 || r.height < 1) {
+			return;
+		}
+		minL = Math.min(minL, r.left);
+		minT = Math.min(minT, r.top);
+		maxR = Math.max(maxR, r.right);
+		maxB = Math.max(maxB, r.bottom);
+	};
+	add(cardEl);
+	add(cardEl.querySelector(".card-item"));
+	if (!Number.isFinite(minL) || minL === Infinity) {
+		return null;
+	}
+	return {
+		left: minL,
+		top: minT,
+		right: maxR,
+		bottom: maxB,
+		width: maxR - minL,
+		height: maxB - minT,
+	};
+}
+
+function collectVisibleEquipmentCardsInMainZone(mainEl) {
+	// Только карты верхнего уровня в зоне (как adjustCardWidth), без вложенных «читов» и т.п.
+	return Array.from(mainEl.querySelectorAll(":scope > .card")).filter((el) => {
+		if (!el?.id || el.id === "card") {
+			return false;
+		}
+		const b = getEquipmentCardVisualBounds(el);
+		if (!b || b.width < 8 || b.height < 8) {
+			return false;
+		}
+		try {
+			const st = window.getComputedStyle(el);
+			if (st.display === "none" || st.visibility === "hidden" || Number(st.opacity) === 0) {
+				return false;
+			}
+		} catch {
+			// ignore
+		}
+		return true;
+	});
+}
+
+/** Левый верх узла в системе координат предка (до CSS transform предка — как offsetLeft/Top). */
+function getTopLeftRelativeToAncestor(el, ancestor) {
+	if (!el || !ancestor || !ancestor.contains(el)) {
+		return null;
+	}
+	let x = 0;
+	let y = 0;
+	let n = el;
+	while (n && n !== ancestor) {
+		const p = n.offsetParent;
+		if (!p || (p !== ancestor && !ancestor.contains(p))) {
+			return null;
+		}
+		x += n.offsetLeft;
+		y += n.offsetTop;
+		n = p;
+	}
+	if (n !== ancestor) {
+		return null;
+	}
+	return { x, y };
+}
+
+/** Прямоугольник узла (.card / .card-item) в локальных координатах зоны экипировки. */
+function getEquipmentNodeBoxInMainLocal(mainEl, node) {
+	const tl = getTopLeftRelativeToAncestor(node, mainEl);
+	if (!tl) {
+		return null;
+	}
+	const w = node.offsetWidth;
+	const h = node.offsetHeight;
+	if (!Number.isFinite(w) || !Number.isFinite(h) || w < 1 || h < 1) {
+		return null;
+	}
+	return {
+		left: tl.x,
+		top: tl.y,
+		right: tl.x + w,
+		bottom: tl.y + h,
+	};
+}
+
+/** Объединение bbox всех карт экипировки в локальных координатах main (наследует rotate зоны). */
+function unionEquipmentCardBoundsInMainLocal(mainEl) {
+	const cards = collectVisibleEquipmentCardsInMainZone(mainEl);
+	let minL = Infinity;
+	let minT = Infinity;
+	let maxR = -Infinity;
+	let maxB = -Infinity;
+	for (const card of cards) {
+		const nodes = [card];
+		const item = card.querySelector(".card-item");
+		if (item) {
+			nodes.push(item);
+		}
+		for (const node of nodes) {
+			const b = getEquipmentNodeBoxInMainLocal(mainEl, node);
+			if (!b) {
+				continue;
+			}
+			minL = Math.min(minL, b.left);
+			minT = Math.min(minT, b.top);
+			maxR = Math.max(maxR, b.right);
+			maxB = Math.max(maxB, b.bottom);
+		}
+	}
+	if (!Number.isFinite(minL) || minL === Infinity) {
+		return null;
+	}
+	return { minL, minT, maxR, maxB };
+}
+
+/** Общий контур по картам: div внутри зоны, позиция в локальных координатах (вместе с зоной поворачивается). */
+function appendBattleEquipmentCardsOutlineOverlay(mainEl) {
+	const cards = collectVisibleEquipmentCardsInMainZone(mainEl);
+	if (cards.length === 0) {
+		return;
+	}
+	const u = unionEquipmentCardBoundsInMainLocal(mainEl);
+	if (!u) {
+		return;
+	}
+	const pad = 5;
+	const w = u.maxR - u.minL + pad * 2;
+	const h = u.maxB - u.minT + pad * 2;
+	if (w < 4 || h < 4) {
+		return;
+	}
+	const el = document.createElement("div");
+	el.className = BATTLE_EQUIPMENT_OUTLINE_CLASS;
+	el.setAttribute("aria-hidden", "true");
+	el.style.position = "absolute";
+	el.style.left = `${Math.round(u.minL - pad)}px`;
+	el.style.top = `${Math.round(u.minT - pad)}px`;
+	el.style.width = `${Math.round(w)}px`;
+	el.style.height = `${Math.round(h)}px`;
+	el.style.zIndex = "12";
+	mainEl.appendChild(el);
+}
+
+/** Подсветка: один общий контур по картам в main-зоне экипировки ведущего и помощника (боковая зона не участвует). */
+function updateBattleEquipmentHighlight() {
+	clearBattleEquipmentCardOutlines();
+	if (!getMonsterBattleContext().hasMonster) {
+		return;
+	}
+	const seats = new Set();
+	const fs = getMonsterFightSeat();
+	if (fs != null && fs !== undefined && !Number.isNaN(Number(fs)) && Number(fs) >= 0) {
+		seats.add(Number(fs));
+	}
+	if (acceptedHelperSeat != null && acceptedHelperSeat >= 0 && !Number.isNaN(Number(acceptedHelperSeat))) {
+		seats.add(Number(acceptedHelperSeat));
+	}
+	const mainZones = [];
+	for (const seat of seats) {
+		const zones = getMainAndSideZoneElementsForSeat(seat);
+		const main = zones?.main;
+		if (main) {
+			mainZones.push(main);
+		}
+	}
+	// После adjustCardWidth размеры .card-item обновляются на следующем кадре — контур берём после лейаута.
+	requestAnimationFrame(() => {
+		requestAnimationFrame(() => {
+			if (!getMonsterBattleContext().hasMonster) {
+				return;
+			}
+			clearBattleEquipmentCardOutlines();
+			for (const main of mainZones) {
+				appendBattleEquipmentCardsOutlineOverlay(main);
+			}
+		});
+	});
 }
 
 function setCurrentTurn(seat, shouldBroadcast = false) {
@@ -12373,6 +12686,7 @@ export function recalculateAllPowerDisplays() {
 	updateWizardFlightUi();
 	updateThiefTrimUi();
 	updateThiefTheftUi();
+	updateBattleEquipmentHighlight();
 
 	return characterBySeat[localSeat ?? 0]?.power ?? 0;
 }
@@ -13103,44 +13417,61 @@ socket.on("message", response => {
 			}
 		}
 
-		// Наёмничек: если шмотка, выданная наёмничку, ушла из main — отвязываем.
-		if (card && isMainEquipmentZoneElement(prevParent) && !isMainEquipmentZoneElement(zone)) {
+		// Наёмничек: шмотка отвязывается, если оказалась не в той же DOM-зоне, что наёмничек (рука, бой, сброс, другой стол…).
+		// В боковой зоне экипировки шмотка не «носится» наёмничком — отвязываем всегда, даже если оба визуально в side.
+		if (card) {
 			const hId = String(card.dataset?.hirelingCardId || "");
 			if (hId) {
-				// Помечаем карту как "только что снятую" — чтобы не открыть модалку "отдать ли шмотку"
-				// в результате промежуточных перемещений/инвариантов.
-				card.dataset.hirelingJustDetached = "1";
-				setTimeout(() => {
-					const el = document.getElementById(card.id);
-					if (el) {
-						el.dataset.hirelingJustDetached = "";
-					}
-				}, 800);
-
-				card.dataset.hirelingCardId = "";
 				const hEl = document.getElementById(hId);
-				if (hEl && String(hEl.dataset?.hirelingAttachedTreasureId || "") === String(card.id || "")) {
-					hEl.dataset.hirelingAttachedTreasureId = "";
-					// Короткий "cooldown" на предложение, чтобы снятие не запускало окно.
-					hEl.dataset.hirelingSuppressOffer = "1";
+				const hirelingParent = hEl?.parentElement || null;
+				const sameContainer = Boolean(hirelingParent && zone && hirelingParent === zone);
+				const toSideEquip = Boolean(zone && isSideEquipmentZoneElement(zone));
+				const mustDetachHirelingCarry = !sameContainer || toSideEquip;
+				if (mustDetachHirelingCarry) {
+					card.dataset.hirelingJustDetached = "1";
 					setTimeout(() => {
-						const hh = document.getElementById(hId);
-						if (hh) {
-							hh.dataset.hirelingSuppressOffer = "";
+						const el = document.getElementById(card.id);
+						if (el) {
+							el.dataset.hirelingJustDetached = "";
 						}
 					}, 800);
+
+					card.dataset.hirelingCardId = "";
+					if (hEl && String(hEl.dataset?.hirelingAttachedTreasureId || "") === String(card.id || "")) {
+						hEl.dataset.hirelingAttachedTreasureId = "";
+						hEl.dataset.hirelingSuppressOffer = "1";
+						setTimeout(() => {
+							const hh = document.getElementById(hId);
+							if (hh) {
+								hh.dataset.hirelingSuppressOffer = "";
+							}
+						}, 800);
+					}
+					const detachSeat =
+						getTreasureOwnerSeatFromZoneElement(prevParent)
+						?? getTreasureOwnerSeatFromZoneElement(hirelingParent);
+					if (detachSeat != null && Number.isFinite(Number(detachSeat)) && Number(detachSeat) >= 0) {
+						socket.emit("message", {
+							method: "MercenaryDetach",
+							seat: Number(detachSeat),
+							hirelingCardId: hId,
+							treasureCardId: card.id,
+						});
+					}
 				}
-				socket.emit("message", { method: "MercenaryDetach", seat: getGlobalSeatForPlayZone(prevParent), hirelingCardId: hId, treasureCardId: card.id });
 			}
 		}
 
 		// Если переместили наёмничка — его шмотка должна уйти вместе с ним в ту же зону.
 		if (card && isTreasureSpecial(card.id, "Hireling")) {
 			const attachedId = String(card.dataset?.hirelingAttachedTreasureId || "");
-			if (attachedId && zone?.id) {
+			if (attachedId && zone) {
 				const trEl = document.getElementById(attachedId);
-				if (trEl && trEl.parentElement?.id !== zone.id) {
-					socket.emit("message", { method: "moveCard", cardId: attachedId, targetId: null, zoneId: zone.id });
+				if (trEl && trEl.parentElement !== zone) {
+					const zid = String(zone?.id || response.zoneId || "").trim();
+					if (zid) {
+						socket.emit("message", { method: "moveCard", cardId: attachedId, targetId: null, zoneId: zid });
+					}
 				}
 			}
 		}
@@ -14143,6 +14474,43 @@ socket.on("message", response => {
 				badStaffPenalty: null,
 				monsterCardId: escapeCurrentMonsterCardId,
 				viaInvisibilityPotion: true,
+			};
+			emitEscapeRollResultAndAdvance(payload);
+		}
+	}
+	if (response.method === "EscapeHirelingApply") {
+		const actingSeat = Number(response.actingSeat);
+		const cardId = String(response.cardId || "");
+		if (escapeFailAidPending && Number(escapeFailAidPending.seat) === Number(actingSeat)) {
+			escapeFailAidPending = null;
+		}
+		hideEscapeFailAidModal();
+		hideWizardFlightModal();
+		updateWizardFlightUi();
+		if (cardId && Number.isFinite(actingSeat)) {
+			moveTreasureCardToDiscard(cardId, { ownerSeat: actingSeat });
+		}
+		adjustCardWidth(".myhand");
+		adjustCardWidth(".zone2");
+		adjustCardWidth(".zone5");
+		adjustCardWidth(".opponenthand");
+		adjustCardWidth(".opponent2hand");
+		adjustCardWidth(".opponent3hand");
+		UpdatebackImgTreasure();
+		if (Number(localSeat) === Number(escapeOwnerSeat) && escapeActive && Number.isFinite(actingSeat) && Number(actingSeat) === Number(escapeCurrentSeat)) {
+			const fleeSeat = Math.floor(Number(escapeCurrentSeat));
+			const payload = {
+				method: "EscapeRollResult",
+				seat: fleeSeat,
+				escapePenaltySeat: fleeSeat,
+				rawRoll: 6,
+				equipRemover: getSeatEquipmentRemover(fleeSeat),
+				monsterRemover: escapeMonsterRemover,
+				totalRoll: ESCAPE_TARGET_ROLL,
+				escaped: true,
+				badStaffPenalty: null,
+				monsterCardId: escapeCurrentMonsterCardId,
+				viaHirelingEscape: true,
 			};
 			emitEscapeRollResultAndAdvance(payload);
 		}

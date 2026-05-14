@@ -697,6 +697,18 @@ a{
 	transform: translateX(110px) rotate(-90deg);
 }
 
+/* Контур карт в экипировке в бою: абсолютный div внутри зоны (наследует rotate). Координаты — в JS. */
+.battle-equipment-cards-outline {
+	box-sizing: border-box;
+	border-radius: 10px;
+	border: 2px solid rgba(255, 255, 255, 0.92);
+	box-shadow:
+		0 0 10px 2px rgba(255, 255, 255, 0.9),
+		0 0 22px 7px rgba(255, 255, 255, 0.35);
+	pointer-events: none;
+	background: transparent;
+}
+
 /* Пятый игрок (нижний левый): рука + экипировка + боковая зона. */
 .opponent_bl_hand {
 	display: flex;
@@ -2657,6 +2669,14 @@ button.accept-help-seat-btn.accept-help-seat-btn--preview-bottom-left:disabled {
 	font-size: 15px;
 	line-height: 1.35;
 	margin-bottom: 10px;
+}
+
+.wishing-ring-curse-choice.is-waiting .wishing-ring-curse-choice-panel {
+	pointer-events: none;
+}
+
+.wishing-ring-curse-choice.is-waiting .wishing-ring-curse-choice-title {
+	margin-bottom: 0;
 }
 
 .wishing-ring-curse-choice-actions {

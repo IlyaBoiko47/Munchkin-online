@@ -61,6 +61,11 @@ function sanitizeRoomDisplayName(raw) {
   return s;
 }
 
+/** Карта «Наёмничек» (treasure40): способностью вора нельзя украсть. */
+function isThiefTheftBlockedTreasureCardId(cardId) {
+  return String(cardId || '').trim() === 'treasure40';
+}
+
 /** 10-й уровень только с победы в бою или «божественного вмешательства». */
 const WINNING_LEVEL_THRESHOLD = 10;
 
@@ -647,6 +652,7 @@ io.on('connection', socket => {
       "EscapeCloseAidModals",
       "EscapeRatOnStickApply",
       "EscapeInvisibilityPotionApply",
+      "EscapeHirelingApply",
       "EscapeMagicLampBanish",
       "EscapeFailAidPrompt",
       "EscapeFailAidSkip",
@@ -951,7 +957,13 @@ io.on('connection', socket => {
     if (moveData.method === "ThiefTheftTake") {
       const thiefSeat = Number(moveData.thiefSeat);
       const cardId = String(moveData.cardId || '').trim();
-      if (Number.isFinite(thiefSeat) && thiefSeat >= 0 && thiefSeat <= maxSeatIndexForRoom(roomID) && cardId) {
+      if (
+        Number.isFinite(thiefSeat)
+        && thiefSeat >= 0
+        && thiefSeat <= maxSeatIndexForRoom(roomID)
+        && cardId
+        && !isThiefTheftBlockedTreasureCardId(cardId)
+      ) {
         patchRoomCardEntries(roomID, [{ cardId, zoneId: handZoneIdForSeatInRoom(roomID, thiefSeat), targetId: null }]);
       }
     }
@@ -969,6 +981,18 @@ io.on('connection', socket => {
     if (moveData.method === "EscapeInvisibilityPotionApply") {
       const cid = String(moveData.cardId || '').trim();
       if (cid) patchRoomDiscards(roomID, [cid]);
+    }
+
+    if (moveData.method === "EscapeHirelingApply") {
+      const cid = String(moveData.cardId || '').trim();
+      if (cid) {
+        const prev = roomStates.get(roomID) || {};
+        const h = prev.hirelingAttachments && typeof prev.hirelingAttachments === 'object' ? { ...prev.hirelingAttachments } : {};
+        const trId = String(h[cid] || '').trim();
+        delete h[cid];
+        roomStates.set(roomID, { ...prev, hirelingAttachments: h });
+        patchRoomDiscards(roomID, [cid, trId].filter(Boolean));
+      }
     }
     
     if (moveData.method === "EscapeMagicLampBanish") {
