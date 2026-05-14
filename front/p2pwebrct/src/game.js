@@ -17,7 +17,7 @@ export function getLocalSeatForSocket() {
 }
 
 let currentTurnSeat = 0;
-const levelBySeat = [1, 1, 1, 1];
+const levelBySeat = [1, 1, 1, 1, 1];
 const STEAL_LEVEL_CARD_NAME = "Steal a level";
 const WINNING_LEVEL = 10;
 
@@ -179,6 +179,7 @@ const characterBySeat = [
 	new PlayerCharacterState(1),
 	new PlayerCharacterState(2),
 	new PlayerCharacterState(3),
+	new PlayerCharacterState(4),
 ];
 window.characterBySeat = characterBySeat;
 let battleActive = false;
@@ -238,15 +239,15 @@ let deathLootActive = false;
 let deathLootState = null;
 let resumeEscapeAfterLoot = false;
 let deathLootAwaitingEscapeFinish = false;
-const halflingDoubleSellUsedBySeat = [false, false, false, false];
-const warriorFrenzyUsedBySeat = [0, 0, 0, 0];
-const warriorFrenzyBonusBySeat = [0, 0, 0, 0];
-const clericExorcismUsedBySeat = [0, 0, 0, 0];
-const clericExorcismBonusBySeat = [0, 0, 0, 0];
+const halflingDoubleSellUsedBySeat = [false, false, false, false, false];
+const warriorFrenzyUsedBySeat = [0, 0, 0, 0, 0];
+const warriorFrenzyBonusBySeat = [0, 0, 0, 0, 0];
+const clericExorcismUsedBySeat = [0, 0, 0, 0, 0];
+const clericExorcismBonusBySeat = [0, 0, 0, 0, 0];
 /** В этом бою жертва уже «подрезана» (1 карта = один раз). */
-const victimThiefTrimUsedBySeat = [0, 0, 0, 0];
+const victimThiefTrimUsedBySeat = [0, 0, 0, 0, 0];
 /** −2 в бою к силе жертвы; остаётся до конца боя, даже если вор снял класс. */
-const thiefBackstabDebuffBySeat = [0, 0, 0, 0];
+const thiefBackstabDebuffBySeat = [0, 0, 0, 0, 0];
 const THIEF_THEFT_SUCCESS_ROLL = 4;
 /** Сброшена карта кражи; ждём клик по общему кубику .dice-container. */
 let thiefTheftBoardDicePending = false;
@@ -265,6 +266,7 @@ const ALL_ICON_SELECTORS = [
 	'.top-center-image',
 	'.image-top-right',
 	'.image-top-left',
+	'.image-bl-corner',
 	'.image-bottom-right',
 	'.image-bottom-left',
 ];
@@ -370,6 +372,7 @@ function setZoneInteractivityByPlayers(numPlayers) {
 
 function updatePlayersUiVisibility(numPlayers) {
 	setZoneInteractivityByPlayers(numPlayers);
+	setDisplay('#bl-corner-seat-ui', 'none');
 
 	// Скрываем слоты оппонентов.
 	setDisplay('.top-center-image', 'none');
@@ -431,7 +434,8 @@ function updatePlayersUiVisibility(numPlayers) {
 	}
 
 	if (numPlayers === 5) {
-		// Пока те же слоты иконок, что при 4P; пятый — зоны *_bl (рука/экипировка) без отдельного блока в container2.
+		// Четыре оппонента + зона слева снизу (#bl-corner-seat-ui).
+		setDisplay('#bl-corner-seat-ui', 'flex');
 		setDisplay('.image-top-left', 'block');
 		setDisplay('.level-top-left', 'block');
 		setDisplay('.top-left', 'flex');
@@ -448,17 +452,17 @@ function updatePlayersUiVisibility(numPlayers) {
 
 /**
  * Сколько игроков учитывать в маппинге мест → зон (иконки, сила, уровень, рука, налог).
- * num === 2 | 3 | 4; иначе Number(num)||window.num (после StartGame num иногда строка или ещё не записан).
+ * num === 2 | 3 | 4 | 5; иначе Number(num)||window.num (после StartGame num иногда строка или ещё не записан).
  */
 function effectiveSeatLayoutPlayerCount() {
-	if (num === 2 || num === 3 || num === 4) {
+	if (num === 2 || num === 3 || num === 4 || num === 5) {
 		return num;
 	}
 	const n = Number(num) || Number(window.num);
 	if (!Number.isFinite(n)) {
 		return 2;
 	}
-	return Math.min(4, Math.max(2, Math.floor(n)));
+	return Math.min(5, Math.max(2, Math.floor(n)));
 }
 
 function getSeatToIconMap() {
@@ -476,6 +480,16 @@ function getSeatToIconMap() {
 		const map = {};
 		for (let s = 0; s < 4; s += 1) {
 			map[s] = icons[(s - localSeat + 4) % 4];
+		}
+		return map;
+	}
+
+	if (n === 5) {
+		// По часовой стрелке: низ-центр → низ-слева (BL) → верх-слева → верх-центр → верх-справа → снова низ-центр.
+		const icons = ['.image-bottom-center', '.image-bl-corner', '.image-top-left', '.top-center-image', '.image-top-right'];
+		const map = {};
+		for (let s = 0; s < 5; s += 1) {
+			map[s] = icons[(s - localSeat + 5) % 5];
 		}
 		return map;
 	}
@@ -511,6 +525,15 @@ function getSeatToPowerMap() {
 		return map;
 	}
 
+	if (n === 5) {
+		const powers = ['.MyPower', '.PowerBlCorner', '.PowerPlayer4', '.PowerPlayer2', '.PowerPlayer3'];
+		const map = {};
+		for (let s = 0; s < 5; s += 1) {
+			map[s] = powers[(s - localSeat + 5) % 5];
+		}
+		return map;
+	}
+
 	if (n === 3) {
 		if (localSeat === 1) {
 			return { 1: '.MyPower', 2: '.PowerPlayer3', 0: '.PowerPlayer4' };
@@ -539,10 +562,25 @@ function getSeatToBattleZoneMap() {
 			'3': '#zone_opponent',
 		};
 	}
+	if (n === 5) {
+		return {
+			0: '#zone2',
+			1: '#zone_opponent_bl',
+			2: '#zone_opponent2',
+			3: '#zone_opponent3',
+			4: '#zone_opponent',
+			'0': '#zone2',
+			'1': '#zone_opponent_bl',
+			'2': '#zone_opponent2',
+			'3': '#zone_opponent3',
+			'4': '#zone_opponent',
+		};
+	}
 	// Важно: зона экипировки должна соответствовать тому же игроку, что и вывод силы в getSeatToPowerMap.
 	// Строим маппинг от power-селекторов, чтобы избежать рассинхрона zone_opponent2/zone_opponent3.
 	const powerToZone = {
 		'.MyPower': '.zone2',
+		'.PowerBlCorner': '.zone_opponent_bl',
 		'.PowerPlayer2': '.zone_opponent',
 		'.PowerPlayer3': '.zone_opponent2',
 		'.PowerPlayer4': '.zone_opponent3',
@@ -575,6 +613,15 @@ function getSeatToLevelMap() {
 		const map = {};
 		for (let s = 0; s < 4; s += 1) {
 			map[s] = levels[(s - localSeat + 4) % 4];
+		}
+		return map;
+	}
+
+	if (n === 5) {
+		const levels = ['.level-bottom-center', '.level-bl-corner', '.level-top-left', '.level-top-center', '.level-top-right'];
+		const map = {};
+		for (let s = 0; s < 5; s += 1) {
+			map[s] = levels[(s - localSeat + 5) % 5];
 		}
 		return map;
 	}
@@ -700,7 +747,7 @@ function bindSeatIconHoverTooltips() {
 
 function setLevelBySeat(seat, level) {
 	const v = Math.max(1, Math.floor(Number(level)) || 1);
-	if (seat >= 0 && seat <= 3) {
+	if (seat >= 0 && seat < characterBySeat.length) {
 		levelBySeat[seat] = v;
 		characterBySeat[seat]?.setLevel(v);
 	}
@@ -7181,7 +7228,8 @@ function isValidThiefTrimVictimSeat(seat) {
  */
 function applyThiefTrimDiscardAndDebuff(thiefSeat, assignments) {
 	const parsedThief = parseInt(thiefSeat, 10);
-	if (Number.isNaN(parsedThief) || parsedThief < 0 || parsedThief > 2) {
+	const maxSeat = Math.max(0, effectiveSeatLayoutPlayerCount() - 1);
+	if (Number.isNaN(parsedThief) || parsedThief < 0 || parsedThief > maxSeat) {
 		return;
 	}
 	if (!Array.isArray(assignments) || !assignments.length) {
@@ -7192,7 +7240,7 @@ function applyThiefTrimDiscardAndDebuff(thiefSeat, assignments) {
 	assignments.forEach((row) => {
 		const v = parseInt(row?.victimSeat, 10);
 		const c = row?.cardId;
-		if (Number.isNaN(v) || v < 0 || v > 2 || !c) {
+		if (Number.isNaN(v) || v < 0 || v > maxSeat || !c) {
 			return;
 		}
 		if (v === parsedThief) {
@@ -9772,10 +9820,10 @@ function advanceTurnClockwise() {
 	}
 
 	const n = Number(num);
-	// 4 игрока: порядок мест по часовой стрелке совпадает с ростом номера места (0→1→2→3).
+	// 4 и 5 игроков: порядок мест по часовой стрелке совпадает с ростом номера места (0→1→…→n−1→0).
 	// 2 и 3 игрока оставляем прежнюю арифметику (треугольник/двоечка уже подогнаны под UI).
-	if (n === 4) {
-		setCurrentTurn((Number(currentTurnSeat) + 1) % 4, true);
+	if (n === 4 || n === 5) {
+		setCurrentTurn((Number(currentTurnSeat) + 1) % n, true);
 		return;
 	}
 	const nextSeat = (currentTurnSeat - 1 + num) % num;
@@ -11873,6 +11921,22 @@ function updateCharacterStatesFromBoard() {
 	}
 }
 
+/** Кнопка «Принять помощь» для места слева снизу (5 игроков) — из разметки Room, id фиксированный. */
+function getBlCornerAcceptHelpPresetButton() {
+	return document.getElementById('accept-help-preview-bottom-left');
+}
+
+function getAcceptHelpButtonElForSeat(seat) {
+	const seatToPowerMap = getSeatToPowerMap();
+	if (seatToPowerMap[seat] === '.PowerBlCorner') {
+		const preset = getBlCornerAcceptHelpPresetButton();
+		if (preset) {
+			return preset;
+		}
+	}
+	return document.getElementById(`accept-help-seat-${seat}`);
+}
+
 /** Пересчёт позиций «Принять помощь» при смене размера окна (fixed + координаты от getBoundingClientRect). */
 let acceptHelpViewportResizeRaf = 0;
 function repositionVisibleAcceptHelpButtonsForViewport() {
@@ -11889,7 +11953,7 @@ function repositionVisibleAcceptHelpButtonsForViewport() {
 		return;
 	}
 	pendingHelpSeats.forEach((seat) => {
-		const btn = document.getElementById(`accept-help-seat-${seat}`);
+		const btn = getAcceptHelpButtonElForSeat(seat);
 		if (!btn) {
 			return;
 		}
@@ -11917,10 +11981,14 @@ if (typeof window !== 'undefined' && !window.__munchkinAcceptHelpViewportListene
 }
 
 function hideAllAcceptHelpButtons() {
-	for (let s = 0; s < 4; s++) {
-		const btn = document.getElementById(`accept-help-seat-${s}`);
+	const maxS = Math.max(0, (Number(num) || effectiveSeatLayoutPlayerCount() || 4) - 1);
+	for (let s = 0; s <= maxS; s++) {
+		const btn = getAcceptHelpButtonElForSeat(s);
 		if (btn) {
 			btn.style.display = 'none';
+			if (btn.id === 'accept-help-preview-bottom-left') {
+				btn.classList.remove('is-accept-help-bl-active');
+			}
 		}
 	}
 }
@@ -11933,10 +12001,38 @@ function ensureAcceptHelpButtonForSeat(seat) {
 		return null;
 	}
 
+	const presetBl = powerSelector === '.PowerBlCorner' ? getBlCornerAcceptHelpPresetButton() : null;
+	if (presetBl) {
+		const dup = document.getElementById(`accept-help-seat-${seat}`);
+		if (dup) {
+			dup.remove();
+		}
+		if (!presetBl.dataset.acceptHelpClickBound) {
+			presetBl.addEventListener('click', () => {
+				const helperSeat = parseInt(presetBl.dataset.acceptHelpHelperSeat, 10);
+				if (!Number.isFinite(helperSeat)) {
+					return;
+				}
+				if (!battleActive || localSeat !== getMonsterFightSeat() || acceptedHelperSeat !== null) {
+					return;
+				}
+				socket.emit("message", {
+					method: "AcceptHelp",
+					helperSeat,
+					turnSeat: getMonsterFightSeat(),
+				});
+			});
+			presetBl.dataset.acceptHelpClickBound = '1';
+		}
+		presetBl.dataset.acceptHelpHelperSeat = String(seat);
+		presetBl.classList.add('accept-help-seat-btn');
+		return presetBl;
+	}
+
 	let btn = document.getElementById(`accept-help-seat-${seat}`);
 	// Верх по центру: не вешать в .top-center (там transform — ломает fixed). В .container2 — тот же zoom 0.8, что и у остальных кнопок.
 	const anchorParent =
-		powerSelector === '.PowerPlayer2'
+		powerSelector === '.PowerPlayer2' || powerSelector === '.PowerBlCorner'
 			? (document.querySelector('.container2') || document.body)
 			: powerElement.parentElement;
 	if (!btn) {
@@ -11971,7 +12067,7 @@ function positionAcceptHelpButtonForSeat(seat, btn) {
 	// Единственный корректный источник позиции аватаров по месту игрока.
 	const seatToIconMap = getSeatToIconMap();
 	const iconSelector = seatToIconMap[seat];
-	btn.classList.remove('accept-help-seat-btn--top-left', 'accept-help-seat-btn--top-right', 'accept-help-seat-btn--top-center');
+	btn.classList.remove('accept-help-seat-btn--top-left', 'accept-help-seat-btn--top-right', 'accept-help-seat-btn--top-center', 'accept-help-seat-btn--bottom-bl', 'accept-help-seat-btn--preview-bottom-left', 'is-accept-help-bl-active');
 	if (!iconSelector) {
 		btn.style.position = '';
 		btn.style.left = '';
@@ -11999,6 +12095,25 @@ function positionAcceptHelpButtonForSeat(seat, btn) {
 	}
 	if (iconSelector === '.image-top-left') {
 		btn.classList.add('accept-help-seat-btn--top-left');
+		btn.style.left = '';
+		btn.style.right = '';
+		btn.style.top = '';
+		btn.style.transform = '';
+		return;
+	}
+	if (iconSelector === '.image-bl-corner') {
+		if (btn.id === 'accept-help-preview-bottom-left') {
+			btn.classList.remove('accept-help-seat-btn--bottom-bl');
+			btn.classList.add('accept-help-seat-btn--preview-bottom-left');
+			btn.classList.add('is-accept-help-bl-active');
+			btn.style.left = '';
+			btn.style.right = '';
+			btn.style.top = '';
+			btn.style.transform = '';
+			return;
+		}
+		btn.classList.remove('accept-help-seat-btn--preview-bottom-left');
+		btn.classList.add('accept-help-seat-btn--bottom-bl');
 		btn.style.left = '';
 		btn.style.right = '';
 		btn.style.top = '';
@@ -12310,6 +12425,53 @@ const FOUR_PLAYER_MAIN_CLASSES = ['zone2', 'zone_opponent3', 'zone_opponent', 'z
 const FOUR_PLAYER_SIDE_IDS = ['zone5', 'zone_opponent2_side', 'zone_opponent3_side', 'zone_opponent_side'];
 const FOUR_PLAYER_SIDE_CLASSES = ['zone5', 'zone_opponent3_side', 'zone_opponent_side', 'zone_opponent2_side'];
 
+/** 5 игроков: низ-центр → низ-слева (BL) → верх-слева → верх-центр → верх-справа (тот же цикл классов, что при 4P, плюс BL). */
+const FIVE_PLAYER_HAND_IDS = ['myhand', 'opponent_bl_hand', 'opponent2hand', 'opponent3hand', 'opponenthand'];
+const FIVE_PLAYER_HAND_CLASSES = ['myhand', 'opponent_bl_hand', 'opponent3hand', 'opponenthand', 'opponent2hand'];
+const FIVE_PLAYER_MAIN_IDS = ['zone2', 'zone_opponent_bl', 'zone_opponent2', 'zone_opponent3', 'zone_opponent'];
+const FIVE_PLAYER_MAIN_CLASSES = ['zone2', 'zone_opponent_bl', 'zone_opponent3', 'zone_opponent', 'zone_opponent2'];
+const FIVE_PLAYER_SIDE_IDS = ['zone5', 'zone_opponent_bl_side', 'zone_opponent2_side', 'zone_opponent3_side', 'zone_opponent_side'];
+const FIVE_PLAYER_SIDE_CLASSES = ['zone5', 'zone_opponent_bl_side', 'zone_opponent3_side', 'zone_opponent_side', 'zone_opponent2_side'];
+
+function resetFivePlayerLayoutToSeatZero() {
+	const set = (id, c) => {
+		const el = document.getElementById(id);
+		if (el) {
+			el.className = `${c} cards-zone`;
+		}
+	};
+	set('myhand', 'myhand');
+	set('opponent_bl_hand', 'opponent_bl_hand');
+	set('opponent2hand', 'opponent2hand');
+	set('opponent3hand', 'opponent3hand');
+	set('opponenthand', 'opponenthand');
+	set('zone2', 'zone2');
+	set('zone5', 'zone5');
+	set('zone_opponent_bl', 'zone_opponent_bl');
+	set('zone_opponent_bl_side', 'zone_opponent_bl_side');
+	set('zone_opponent2', 'zone_opponent2');
+	set('zone_opponent2_side', 'zone_opponent2_side');
+	set('zone_opponent3', 'zone_opponent3');
+	set('zone_opponent3_side', 'zone_opponent3_side');
+	set('zone_opponent', 'zone_opponent');
+	set('zone_opponent_side', 'zone_opponent_side');
+}
+
+function applyFivePlayerCanonicalClassShift(localSeatIndex) {
+	const L = ((Number(localSeatIndex) % 5) + 5) % 5;
+	const apply = (ids, classes) => {
+		for (let i = 0; i < 5; i += 1) {
+			const el = document.getElementById(ids[(i + L) % 5]);
+			if (el) {
+				el.className = `${classes[i]} cards-zone`;
+			}
+		}
+	};
+	apply(FIVE_PLAYER_HAND_IDS, FIVE_PLAYER_HAND_CLASSES);
+	apply(FIVE_PLAYER_MAIN_IDS, FIVE_PLAYER_MAIN_CLASSES);
+	apply(FIVE_PLAYER_SIDE_IDS, FIVE_PLAYER_SIDE_CLASSES);
+}
+
 function applyFourPlayerCanonicalClassShift(localSeatIndex) {
 	const L = ((Number(localSeatIndex) % 4) + 4) % 4;
 	const apply = (ids, classes) => {
@@ -12452,7 +12614,8 @@ function closeGameVictoryModal() {
 
 function openGameVictoryModal(winners) {
 	closeGameVictoryModal();
-	const seats = Array.isArray(winners) ? winners.map((x) => Number(x)).filter((s) => Number.isFinite(s) && s >= 0 && s <= 3) : [];
+	const maxSeat = Math.max(0, (Number(num) || effectiveSeatLayoutPlayerCount() || 4) - 1);
+	const seats = Array.isArray(winners) ? winners.map((x) => Number(x)).filter((s) => Number.isFinite(s) && s >= 0 && s <= maxSeat) : [];
 	const names = seats.map((s) => `Игрок ${s + 1}`);
 	const wrap = document.createElement("div");
 	wrap.id = "game-victory-modal";
@@ -12551,7 +12714,7 @@ function resetLocalTableForRestart() {
 	incomeTaxSession = null;
 	turnAwaitingManualEnd = false;
 	loseYourClassPendingBySeat.clear();
-	for (let i = 0; i < 4; i += 1) {
+	for (let i = 0; i < characterBySeat.length; i += 1) {
 		halflingDoubleSellUsedBySeat[i] = false;
 		warriorFrenzyUsedBySeat[i] = 0;
 		warriorFrenzyBonusBySeat[i] = 0;
@@ -12614,6 +12777,12 @@ socket.on("message", response => {
 		if (players === 4) {
 			resetFourPlayerLayoutToSeatZero();
 			applyFourPlayerCanonicalClassShift(seat);
+			return;
+		}
+
+		if (players === 5) {
+			resetFivePlayerLayoutToSeatZero();
+			applyFivePlayerCanonicalClassShift(seat);
 			return;
 		}
 	}
@@ -14488,6 +14657,9 @@ socket.on("message", response => {
 		if (Number(num) === 4) {
 			resetFourPlayerLayoutToSeatZero();
 			applyFourPlayerCanonicalClassShift(0);
+		} else if (Number(num) === 5) {
+			resetFivePlayerLayoutToSeatZero();
+			applyFivePlayerCanonicalClassShift(0);
 		}
 		ensureLocalPlayerProfileChosen();
 		updatePlayersUiVisibility(num);
@@ -14580,6 +14752,18 @@ socket.on("message", response => {
 		window.num = num;
 		resetFourPlayerLayoutToSeatZero();
 		applyFourPlayerCanonicalClassShift(localSeat);
+		updatePlayersUiVisibility(num);
+		recalculateAllPowerDisplays();
+		applyTurnHighlight();
+	}
+	if (response.method === "5Players") {
+		fl = response.fl;
+		localSeat = fl === "p4" ? 4 : fl === "p3" ? 3 : fl === "p2" ? 2 : 1;
+		ensureLocalPlayerProfileChosen();
+		num = 5;
+		window.num = num;
+		resetFivePlayerLayoutToSeatZero();
+		applyFivePlayerCanonicalClassShift(localSeat);
 		updatePlayersUiVisibility(num);
 		recalculateAllPowerDisplays();
 		applyTurnHighlight();
@@ -15256,11 +15440,12 @@ export function UpdatebackImgTreasure() {
 		const opponenthand = card.closest('.opponenthand');
 		const opponent2hand = card.closest('.opponent2hand');
 		const opponent3hand = card.closest('.opponent3hand');
+		const opponentBlHand = card.closest('.opponent_bl_hand');
 		const id = card.id;
 			const imgElement = card.querySelector('.card-item');
 			
 			const treasure = window.treasures.find(tc => tc.name === id);
-		if (zone_doors || opponenthand  ||opponent2hand || opponent3hand) {
+		if (zone_doors || opponenthand  ||opponent2hand || opponent3hand || opponentBlHand) {
 			if (treasure) {
 				imgElement.src = treasure.backimg;
 			}
@@ -15280,12 +15465,13 @@ export function UpdatebackImgDoor() {
 		const opponenthand = card.closest('.opponenthand');
 		const opponent2hand = card.closest('.opponent2hand');
 		const opponent3hand = card.closest('.opponent3hand');
+		const opponentBlHand = card.closest('.opponent_bl_hand');
 
 		const id = card.id;
 			const imgElement = card.querySelector('.card-item');
 			
 			const door = window.doors.find(dc => dc.name === id);
-		if (zone_doors || opponenthand  ||opponent2hand || opponent3hand) {
+		if (zone_doors || opponenthand  ||opponent2hand || opponent3hand || opponentBlHand) {
 			if (door) {
 				imgElement.src = door.backimg;
 			}
@@ -15317,6 +15503,7 @@ function Start_game(num_players){
   const opponenthand = document.querySelector('#opponenthand');
   const opponent2hand = document.querySelector('#opponent2hand');
   const opponent3hand = document.querySelector('#opponent3hand');
+  const opponentBlHand = document.querySelector('#opponent_bl_hand');
 
     const cardsToMoveDoors = [];
     const cardsToMoveTreasure = [];
@@ -15390,6 +15577,35 @@ function Start_game(num_players){
           } else if (r === 1) {
             opponent2hand.appendChild(card);
           } else if (r === 2) {
+            opponent3hand.appendChild(card);
+          } else {
+            opponenthand.appendChild(card);
+          }
+        });
+    } else if (num_players === 5 && opponentBlHand) {
+        cardsToMoveDoors.forEach((card, index) => {
+          const r = index % 5;
+          if (r === 0) {
+            myhand.appendChild(card);
+          } else if (r === 1) {
+            opponentBlHand.appendChild(card);
+          } else if (r === 2) {
+            opponent2hand.appendChild(card);
+          } else if (r === 3) {
+            opponent3hand.appendChild(card);
+          } else {
+            opponenthand.appendChild(card);
+          }
+        });
+        cardsToMoveTreasure.forEach((card, index) => {
+          const r = index % 5;
+          if (r === 0) {
+            myhand.appendChild(card);
+          } else if (r === 1) {
+            opponentBlHand.appendChild(card);
+          } else if (r === 2) {
+            opponent2hand.appendChild(card);
+          } else if (r === 3) {
             opponent3hand.appendChild(card);
           } else {
             opponenthand.appendChild(card);

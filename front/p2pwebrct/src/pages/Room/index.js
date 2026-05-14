@@ -211,7 +211,6 @@ export default function Room() {
 							id="accept-help-preview-bottom-left"
 							className="accept-help-seat-btn accept-help-seat-btn--preview-bottom-left"
 							tabIndex={-1}
-							disabled
 						>
 							Принять<br />помощь
 						</button>

@@ -2400,6 +2400,14 @@ button.accept-help-seat-btn.accept-help-seat-btn--top-center {
 	right: auto;
 	transform: translate(calc(-50% + 310px), 0);
 }
+/* Пятый игрок: #bl-corner-seat-ui слева снизу — кнопка над зоной аватара, не перекрывает руку */
+button.accept-help-seat-btn.accept-help-seat-btn--bottom-bl {
+	bottom: 118px;
+	left: 56px;
+	top: auto;
+	right: auto;
+	transform: translateX(-50%);
+}
 button.accept-help-seat-btn.accept-help-seat-btn--preview-bottom-left {
 	bottom: 65px;
 	left: 90px;
@@ -2413,6 +2421,15 @@ button.accept-help-seat-btn.accept-help-seat-btn--preview-bottom-left:disabled {
 	opacity: 1;
 	cursor: default;
 	color: inherit;
+}
+
+/* Статичная кнопка «Принять помощь» для места слева снизу (5 игроков): по умолчанию скрыта; показ и клик — из game.js */
+#accept-help-preview-bottom-left {
+	display: none;
+}
+#accept-help-preview-bottom-left.is-accept-help-bl-active {
+	pointer-events: auto;
+	cursor: pointer;
 }
 
 #end-turn{
