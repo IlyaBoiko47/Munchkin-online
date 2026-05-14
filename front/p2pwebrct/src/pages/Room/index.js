@@ -2,8 +2,18 @@ import {useParams} from 'react-router';
 import {useLayoutEffect} from 'react';
 import useWebRTC, {LOCAL_AUDIO} from '../../hooks/useWebRTC';
 import { openPlayerProfileModal } from '../../playerProfileModal.js';
+import { readTabProfile } from '../../profileSession.js';
 import "../../card-block";
 import "../../увеличение карточек во время игры.js";
+
+function isTabRoomProfileIncomplete(rid) {
+	if (!rid) {
+		return true;
+	}
+	const { name, gender } = readTabProfile(rid);
+	const g = String(gender || '').trim();
+	return !name || (g !== 'Male' && g !== 'Female');
+}
 
 export default function Room() {
   const {id: roomID} = useParams();
@@ -13,11 +23,14 @@ export default function Room() {
     if (!roomID) {
       return;
     }
-    // Даём время на RoomPlayerMetaSnapshot (имя/пол с сервера в localStorage), затем показываем
-    // подтверждение входа в комнату. Иначе при «полном» профиле окно никогда не открывалось.
+    // Даём время на RoomPlayerMetaSnapshot / RoomState — они дописывают профиль вкладки в sessionStorage.
+    // После F5 при уже сохранённом имени не показываем модалку.
     const t = window.setTimeout(() => {
+      if (!isTabRoomProfileIncomplete(roomID)) {
+        return;
+      }
       openPlayerProfileModal({ roomEntryPrompt: true, storageScopeId: roomID });
-    }, 200);
+    }, 400);
     return () => clearTimeout(t);
   }, [roomID]);
 
