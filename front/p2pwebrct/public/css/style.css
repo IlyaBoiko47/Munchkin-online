@@ -2498,6 +2498,13 @@ button:hover {
   font-size: 24px;
   line-height: 1.1;
   padding: 4px 8px;
+  z-index: 40;
+  background-color: rgba(0, 0, 0, 0.3);
+  color: #f0f0f0;
+}
+
+#offer-help:hover {
+  background-color: rgba(0, 0, 0, 0.58);
 }
 
 /* Кнопки «Принять помощь» у оппонентов (создаются в game.js). Превью нижнего левого — #accept-help-preview-bottom-left в Room. */
