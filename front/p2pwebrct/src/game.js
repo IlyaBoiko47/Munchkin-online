@@ -783,7 +783,8 @@ function applyPlayerMetaBySeatFromServer(raw) {
 		if (gender) {
 			ch.gender = gender;
 		}
-		if (Number(seat) === Number(localSeat)) {
+		// Важно: Number(null) === 0 — пока localSeat ещё не восстановлен, нельзя писать профиль как для места 0.
+		if (localSeat !== null && localSeat !== undefined && Number(seat) === Number(localSeat)) {
 			try {
 				writeTabProfile(getProfileStorageScopeIdFromLocation(), name, gender);
 			} catch {
@@ -10301,6 +10302,8 @@ function applyRoomStateFromServer(state) {
 		restoreOpenModalsFromServerGameState(g);
 	}
 	reopenEphemeralUiAfterTurnPhaseRestore();
+	// После восстановления состояния комнаты имя/пол этого клиента должны совпадать с sessionStorage, не с устаревшим снимком.
+	syncLocalProfileFromStorageToSeatCharacter();
 }
 
 function getMonsterBasePower() {
@@ -10377,7 +10380,14 @@ function computeMonsterZoneBasePower() {
 			// Остальные двери в зоне монстра не влияют на силу напрямую.
 			return;
 		}
-		// Сокровища в зоне монстра не учитываем (здесь только двери/модификаторы).
+		// Разовые сокровища на стороне монстра (например +5 к монстру): учитываем силу карты.
+		const treasure = window.treasures?.find((t) => t.name === cardEl.id);
+		if (treasure && treasure.oneTime) {
+			const bonus = Number(treasure.power) || 0;
+			if (bonus !== 0) {
+				sum += bonus;
+			}
+		}
 	});
 	return sum;
 }
@@ -12912,6 +12922,8 @@ socket.on("message", response => {
 		});
 		ensureLocalPlayerProfileChosen();
 		flushPendingPlayerMetaSnapshotIfNeeded();
+		// Снимок с сервера мог перезаписать локального персонажа до фикса Number(null) — снова берём имя/пол из вкладки.
+		syncLocalProfileFromStorageToSeatCharacter();
 		updatePlayersUiVisibility(num);
 		recalculateAllPowerDisplays();
 		applyTurnHighlight();
