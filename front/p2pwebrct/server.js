@@ -799,9 +799,20 @@ io.on('connection', socket => {
       const game = getOrInitRoomGameState(roomID);
       const seat = Number(moveData.seat);
       const gain = Number(moveData.level);
+      moveData.treasureLevelApplied = false;
       if (Number.isFinite(seat) && seat >= 0 && seat <= maxSeatIndexForRoom(roomID) && Number.isFinite(gain) && gain > 0) {
         const cur = Number(game.levelBySeat[seat] || 1) || 1;
-        game.levelBySeat[seat] = applyLevelDeltaRespectingWinRule(cur, gain, false);
+        const next = applyLevelDeltaRespectingWinRule(cur, gain, false);
+        if (next > cur) {
+          game.levelBySeat[seat] = next;
+          moveData.treasureLevelApplied = true;
+        } else {
+          const actorSeat = clampSeatInRoom(roomID, moveData.actorSeat);
+          const cid = String(moveData.cardId || '').trim();
+          if (actorSeat != null && cid) {
+            patchRoomCardEntries(roomID, [{ cardId: cid, zoneId: `hand${actorSeat}`, targetId: null }]);
+          }
+        }
       }
       queueMicrotask(() => checkGameVictory(roomID));
     }
@@ -1152,8 +1163,10 @@ io.on('connection', socket => {
     }
 
     if (moveData.method === "TreasureLevel") {
-      const cid = String(moveData.cardId || '').trim();
-      if (cid) patchRoomDiscards(roomID, [cid]);
+      if (moveData.treasureLevelApplied) {
+        const cid = String(moveData.cardId || '').trim();
+        if (cid) patchRoomDiscards(roomID, [cid]);
+      }
     }
 
     if (moveData.method === "Treasure65LevelSwap") {

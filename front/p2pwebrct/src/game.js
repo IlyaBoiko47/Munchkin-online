@@ -1167,6 +1167,18 @@ export function canPlaceTreasureInPlayerEquipment(draggingCardEl, targetZoneEl) 
 		return true;
 	}
 
+	const treasureLevelGain = Number(treasure.level);
+	if (Number.isFinite(treasureLevelGain) && treasureLevelGain > 0) {
+		let curLv = levelBySeat[seat];
+		if (curLv == null || Number.isNaN(curLv)) {
+			curLv = 1;
+		}
+		curLv = Math.max(1, Math.floor(Number(curLv)));
+		if (curLv >= WINNING_LEVEL - 1) {
+			return false;
+		}
+	}
+
 	const { main, side } = getMainAndSideZoneElementsForSeat(seat);
 	if (!main) {
 		return true;
@@ -5000,6 +5012,36 @@ function applyTreasureSellResult(seat, cardIds, totalCost) {
 	recalculateAllPowerDisplays();
 }
 
+export function notifyIfTreasureLevelBlockedOnSeat(draggingCardEl, targetZoneEl) {
+	if (!draggingCardEl || !isPlayerPlayZoneElement(targetZoneEl)) {
+		return;
+	}
+	const treasure = window.treasures?.find(t => t.name === draggingCardEl.id);
+	if (!treasure) {
+		return;
+	}
+	const levelGain = Number(treasure.level);
+	if (!Number.isFinite(levelGain) || levelGain <= 0) {
+		return;
+	}
+	const seat = getGlobalSeatForPlayZone(targetZoneEl);
+	if (seat === null || seat === undefined) {
+		return;
+	}
+	let curLv = levelBySeat[seat];
+	if (curLv == null || Number.isNaN(curLv)) {
+		curLv = 1;
+	}
+	curLv = Math.max(1, Math.floor(Number(curLv)));
+	if (curLv < WINNING_LEVEL - 1) {
+		return;
+	}
+	showBattleResult("Карту «получи уровень» нельзя применить к игроку 9 уровня.");
+	setTimeout(() => {
+		hideBattleResult();
+	}, 2000);
+}
+
 export function scheduleTreasureLevelIfNeeded(cardId, zoneEl) {
 	const treasure = window.treasures?.find(t => t.name === cardId);
 	if (!treasure) {
@@ -5024,11 +5066,37 @@ export function scheduleTreasureLevelIfNeeded(cardId, zoneEl) {
 		if (!card || !zone || !zone.contains(card)) {
 			return;
 		}
+		let curLv = levelBySeat[seat];
+		if (curLv == null || Number.isNaN(curLv)) {
+			curLv = 1;
+		}
+		curLv = Math.max(1, Math.floor(Number(curLv)));
+		if (curLv >= WINNING_LEVEL - 1) {
+			showBattleResult("Карту «получи уровень» нельзя применить к игроку 9 уровня.");
+			setTimeout(() => {
+				hideBattleResult();
+			}, 2000);
+			if (localSeat != null && localSeat !== undefined && !Number.isNaN(Number(localSeat))) {
+				appendCardToSeatHand(cardId, Number(localSeat));
+				socket.emit("message", {
+					method: "moveCard",
+					cardId,
+					targetId: card.previousElementSibling ? card.previousElementSibling.id : null,
+					zoneId: `hand${Number(localSeat)}`,
+					fromZoneId: zoneId,
+					playedBySeat: Number(localSeat),
+				});
+			}
+			return;
+		}
 		socket.emit("message", {
 			method: "TreasureLevel",
 			seat,
 			level: levelGain,
 			cardId,
+			actorSeat: localSeat != null && localSeat !== undefined && !Number.isNaN(Number(localSeat))
+				? Number(localSeat)
+				: undefined,
 		});
 	}, 1000);
 }
@@ -11499,12 +11567,17 @@ function openWanderingMonsterPickModal(wanderingCardId) {
 	});
 }
 
-export function scheduleWanderingMonsterIfNeeded(cardId, zoneEl) {
+export function scheduleWanderingMonsterIfNeeded(cardId, zoneEl, fromZoneId) {
 	if (!cardId || !zoneEl) {
 		return;
 	}
-	const isMonsterZone = zoneEl.id === "zone_monster" || zoneEl.classList?.contains("zone_monster");
-	if (!isMonsterZone) {
+	// С колоды дверей на поле боя — только положить карту, без эффекта «Бродячая тварь».
+	if (String(fromZoneId || "").trim() === "zone_doors") {
+		return;
+	}
+	const onMonster = zoneEl.id === "zone_monster" || zoneEl.classList?.contains?.("zone_monster");
+	const onZone3 = String(zoneEl.id) === "zone3";
+	if (!onMonster && !onZone3) {
 		return;
 	}
 	const door = window.doors?.find((d) => d.name === cardId);
@@ -11523,8 +11596,11 @@ export function scheduleWanderingMonsterIfNeeded(cardId, zoneEl) {
 		if (!cardEl) {
 			return;
 		}
-		const inMonsterZoneNow = !!cardEl.closest?.(".zone_monster") || cardEl.parentElement?.id === "zone_monster";
-		if (!inMonsterZoneNow) {
+		const p = cardEl.parentElement;
+		const pid = String(p?.id || "");
+		const inMonster = !!cardEl.closest?.(".zone_monster") || pid === "zone_monster";
+		const inZone3 = pid === "zone3";
+		if (!inMonster && !inZone3) {
 			return;
 		}
 		if (cardEl.dataset?.wanderingUsed) {
@@ -15031,6 +15107,20 @@ socket.on("message", response => {
 		}
 	}
 	if (response.method === "TreasureLevel") {
+		if (response.treasureLevelApplied === false) {
+			const actorSeat = parseInt(response.actorSeat, 10);
+			const cardId = response.cardId;
+			if (!Number.isNaN(actorSeat) && cardId) {
+				appendCardToSeatHand(cardId, actorSeat);
+			}
+			if (!Number.isNaN(actorSeat) && Number(actorSeat) === Number(localSeat)) {
+				showBattleResult("Карту «получи уровень» нельзя применить к игроку 9 уровня.");
+				setTimeout(() => {
+					hideBattleResult();
+				}, 2000);
+			}
+			return;
+		}
 		const seat = parseInt(response.seat, 10);
 		const levelGain = Number(response.level);
 		const cardId = response.cardId;

@@ -1,5 +1,5 @@
 import { UpdateZones } from './увеличение карточек во время игры.js';
-import { UpdatebackImgTreasure, UpdatebackImgDoor, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, scheduleWanderingMonsterIfNeeded, scheduleCheatIfNeeded, scheduleMagicLampIfNeeded, schedulePollymorthPotionIfNeeded, scheduleIllusionIfNeeded, scheduleMateIfNeeded, canLocalPlayMagicLampToBattleZone, canPlaceTreasureInPlayerEquipment, canPlaceDoorInPlayerEquipment, canPlaceDopplegangerTreasureInBonusZone, canPlaceYuppieWaterTreasureInBonusZone, getLocalSeatForSocket, getMonsterBattleContext } from './game.js';
+import { UpdatebackImgTreasure, UpdatebackImgDoor, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, scheduleWanderingMonsterIfNeeded, scheduleCheatIfNeeded, scheduleMagicLampIfNeeded, schedulePollymorthPotionIfNeeded, scheduleIllusionIfNeeded, scheduleMateIfNeeded, canLocalPlayMagicLampToBattleZone, canPlaceTreasureInPlayerEquipment, canPlaceDoorInPlayerEquipment, canPlaceDopplegangerTreasureInBonusZone, canPlaceYuppieWaterTreasureInBonusZone, getLocalSeatForSocket, getMonsterBattleContext, notifyIfTreasureLevelBlockedOnSeat } from './game.js';
 import socket from './socket/index.js';
 //import {socket} from './game.js';
 // console.log("card работает");
@@ -123,6 +123,10 @@ function dragend_handler(e) {
 			}
 		}
 
+		if (invalidTreasureEquip && zone) {
+			notifyIfTreasureLevelBlockedOnSeat(currentDrag, zone);
+		}
+
 		// Обновления и синхронизация с другими клиентами.
 		adjustCardWidth('.myhand');
 		adjustCardWidth('.zone2');
@@ -161,7 +165,7 @@ function dragend_handler(e) {
 			scheduleTreasureLevelIfNeeded(currentDrag.id, parentZone);
 			scheduleTreasure65IfNeeded(currentDrag.id, parentZone);
 			scheduleMonsterBonusAttachIfNeeded(currentDrag.id, parentZone);
-			scheduleWanderingMonsterIfNeeded(currentDrag.id, parentZone);
+			scheduleWanderingMonsterIfNeeded(currentDrag.id, parentZone, dragFromSnapshot?.parent?.id || null);
 			scheduleCheatIfNeeded(currentDrag.id, parentZone);
 			scheduleMagicLampIfNeeded(currentDrag.id, parentZone);
 			schedulePollymorthPotionIfNeeded(currentDrag.id, parentZone);
@@ -357,6 +361,9 @@ function drop_handler(e) {
 	if (currentDrag) {
 		currentDrag.style.filter = '';
 	}
+	if (invalidTreasureEquip) {
+		notifyIfTreasureLevelBlockedOnSeat(currentDrag, zone);
+	}
 	adjustCardWidth('.myhand');
 	adjustCardWidth('.zone2');
 	adjustCardWidth('.zone5');
@@ -393,7 +400,7 @@ function drop_handler(e) {
 			scheduleTreasureLevelIfNeeded(currentDrag.id, parentZone);
 			scheduleTreasure65IfNeeded(currentDrag.id, parentZone);
 			scheduleMonsterBonusAttachIfNeeded(currentDrag.id, parentZone);
-			scheduleWanderingMonsterIfNeeded(currentDrag.id, parentZone);
+			scheduleWanderingMonsterIfNeeded(currentDrag.id, parentZone, dragFromSnapshot?.parent?.id || null);
 			scheduleCheatIfNeeded(currentDrag.id, parentZone);
 			scheduleMagicLampIfNeeded(currentDrag.id, parentZone);
 			schedulePollymorthPotionIfNeeded(currentDrag.id, parentZone);
@@ -520,7 +527,7 @@ function drop_handler(e) {
     scheduleTreasureLevelIfNeeded(currentDrag.id, zone);
     scheduleTreasure65IfNeeded(currentDrag.id, zone);
     scheduleMonsterBonusAttachIfNeeded(currentDrag.id, zone);
-    scheduleWanderingMonsterIfNeeded(currentDrag.id, zone);
+    scheduleWanderingMonsterIfNeeded(currentDrag.id, zone, dragFromSnapshot?.parent?.id || null);
     scheduleCheatIfNeeded(currentDrag.id, zone);
     scheduleMagicLampIfNeeded(currentDrag.id, zone);
     schedulePollymorthPotionIfNeeded(currentDrag.id, zone);
