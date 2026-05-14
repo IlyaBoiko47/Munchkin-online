@@ -1,5 +1,5 @@
 import { UpdateZones } from './увеличение карточек во время игры.js';
-import { UpdatebackImgTreasure, UpdatebackImgDoor, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, scheduleWanderingMonsterIfNeeded, scheduleCheatIfNeeded, scheduleMagicLampIfNeeded, schedulePollymorthPotionIfNeeded, scheduleIllusionIfNeeded, scheduleMateIfNeeded, canLocalPlayMagicLampToBattleZone, canPlaceTreasureInPlayerEquipment, canPlaceDoorInPlayerEquipment, canPlaceDopplegangerTreasureInBonusZone, canPlaceYuppieWaterTreasureInBonusZone, getLocalSeatForSocket, getMonsterBattleContext, notifyIfTreasureLevelBlockedOnSeat } from './game.js';
+import { UpdatebackImgTreasure, UpdatebackImgDoor, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, scheduleWanderingMonsterIfNeeded, scheduleCheatIfNeeded, scheduleMagicLampIfNeeded, schedulePollymorthPotionIfNeeded, scheduleIllusionIfNeeded, scheduleMateIfNeeded, canLocalPlayMagicLampToBattleZone, canPlaceTreasureInPlayerEquipment, canPlaceDoorInPlayerEquipment, canPlaceDopplegangerTreasureInBonusZone, canPlaceYuppieWaterTreasureInBonusZone, getLocalSeatForSocket, getMonsterBattleContext, notifyIfTreasureLevelBlockedOnSeat, notifyIfKillHirelingBlockedOnSeat, notifyIfWhineAtGMBlockedOnSeat } from './game.js';
 import socket from './socket/index.js';
 //import {socket} from './game.js';
 // console.log("card работает");
@@ -125,6 +125,8 @@ function dragend_handler(e) {
 
 		if (invalidTreasureEquip && zone) {
 			notifyIfTreasureLevelBlockedOnSeat(currentDrag, zone);
+			notifyIfKillHirelingBlockedOnSeat(currentDrag, zone);
+			notifyIfWhineAtGMBlockedOnSeat(currentDrag, zone);
 		}
 
 		// Обновления и синхронизация с другими клиентами.
@@ -363,6 +365,8 @@ function drop_handler(e) {
 	}
 	if (invalidTreasureEquip) {
 		notifyIfTreasureLevelBlockedOnSeat(currentDrag, zone);
+		notifyIfKillHirelingBlockedOnSeat(currentDrag, zone);
+		notifyIfWhineAtGMBlockedOnSeat(currentDrag, zone);
 	}
 	adjustCardWidth('.myhand');
 	adjustCardWidth('.zone2');

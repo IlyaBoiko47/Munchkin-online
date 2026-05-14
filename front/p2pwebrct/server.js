@@ -23,6 +23,23 @@ function maxSeatIndexForRoom(roomID) {
   return n - 1;
 }
 
+/** Цель на максимальном уровне за столом (один или несколько лидеров) — карту «Whine at the GM» на неё нельзя. */
+function isSeatAtMaxLevelForRoom(roomID, game, seat) {
+  const s = Number(seat);
+  const maxIdx = maxSeatIndexForRoom(roomID);
+  if (!Number.isFinite(s) || s < 0 || s > maxIdx) {
+    return false;
+  }
+  const arr = Array.isArray(game.levelBySeat) ? game.levelBySeat : [];
+  let maxL = 1;
+  for (let i = 0; i <= maxIdx; i++) {
+    const lv = Math.max(1, Math.floor(Number(arr[i] || 1) || 1));
+    if (lv > maxL) maxL = lv;
+  }
+  const targetLv = Math.max(1, Math.floor(Number(arr[s] || 1) || 1));
+  return targetLv === maxL;
+}
+
 function normalizeSeatArraysForNum(game, numPlayers) {
   const n = Math.max(2, Math.min(MAX_ROOM_PLAYERS, Math.floor(Number(numPlayers) || 2)));
   const pad = (arr, fill) => {
@@ -803,9 +820,24 @@ io.on('connection', socket => {
       if (Number.isFinite(seat) && seat >= 0 && seat <= maxSeatIndexForRoom(roomID) && Number.isFinite(gain) && gain > 0) {
         const cur = Number(game.levelBySeat[seat] || 1) || 1;
         const next = applyLevelDeltaRespectingWinRule(cur, gain, false);
-        if (next > cur) {
+        const tid = String(moveData.cardId || '').trim();
+        const whineBlocked = tid === 'treasure39' && isSeatAtMaxLevelForRoom(roomID, game, seat);
+        if (next > cur && !whineBlocked) {
           game.levelBySeat[seat] = next;
           moveData.treasureLevelApplied = true;
+          const hid = String(moveData.killedHirelingCardId || '').trim();
+          if (hid) {
+            const prev = roomStates.get(roomID) || {};
+            const h = prev.hirelingAttachments && typeof prev.hirelingAttachments === 'object' ? { ...prev.hirelingAttachments } : {};
+            if (Object.prototype.hasOwnProperty.call(h, hid)) {
+              const trId = String(h[hid] || '').trim();
+              delete h[hid];
+              roomStates.set(roomID, { ...prev, hirelingAttachments: h });
+              patchRoomDiscards(roomID, [hid, trId].filter(Boolean));
+            } else {
+              patchRoomDiscards(roomID, [hid]);
+            }
+          }
         } else {
           const actorSeat = clampSeatInRoom(roomID, moveData.actorSeat);
           const cid = String(moveData.cardId || '').trim();

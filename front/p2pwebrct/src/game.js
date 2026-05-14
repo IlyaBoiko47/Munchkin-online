@@ -30,6 +30,9 @@ export function getLocalSeatForSocket() {
 let currentTurnSeat = 0;
 const levelBySeat = [1, 1, 1, 1, 1];
 const STEAL_LEVEL_CARD_NAME = "Steal a level";
+/** Сокровище treasure36 (card0131): +1 уровень, сбрасывает наёмничка с поля. */
+const KILL_THE_HIRELING_SPECIAL = "Kill the hireling";
+const WHINE_AT_GM_SPECIAL = "Whine at the GM";
 const WINNING_LEVEL = 10;
 
 /** Положительный прирост без «разрешения победы» не доводит уровень выше 9 (10-й только бой / божественное вмешательство). */
@@ -1177,6 +1180,12 @@ export function canPlaceTreasureInPlayerEquipment(draggingCardEl, targetZoneEl) 
 		if (curLv >= WINNING_LEVEL - 1) {
 			return false;
 		}
+	}
+	if (isTreasureSpecial(draggingCardEl.id, KILL_THE_HIRELING_SPECIAL) && !someSeatHasHirelingEquipped()) {
+		return false;
+	}
+	if (isTreasureSpecial(draggingCardEl.id, WHINE_AT_GM_SPECIAL) && !seatCanReceiveWhineAtGM(seat)) {
+		return false;
 	}
 
 	const { main, side } = getMainAndSideZoneElementsForSeat(seat);
@@ -5042,6 +5051,42 @@ export function notifyIfTreasureLevelBlockedOnSeat(draggingCardEl, targetZoneEl)
 	}, 2000);
 }
 
+export function notifyIfKillHirelingBlockedOnSeat(draggingCardEl, targetZoneEl) {
+	if (!draggingCardEl || !isPlayerPlayZoneElement(targetZoneEl)) {
+		return;
+	}
+	if (!isTreasureSpecial(draggingCardEl.id, KILL_THE_HIRELING_SPECIAL)) {
+		return;
+	}
+	if (someSeatHasHirelingEquipped()) {
+		return;
+	}
+	showBattleResult(`Карту «${KILL_THE_HIRELING_SPECIAL}» можно играть только пока у кого-то в экипировке есть наёмничек.`);
+	setTimeout(() => {
+		hideBattleResult();
+	}, 2000);
+}
+
+export function notifyIfWhineAtGMBlockedOnSeat(draggingCardEl, targetZoneEl) {
+	if (!draggingCardEl || !isPlayerPlayZoneElement(targetZoneEl)) {
+		return;
+	}
+	if (!isTreasureSpecial(draggingCardEl.id, WHINE_AT_GM_SPECIAL)) {
+		return;
+	}
+	const seat = getGlobalSeatForPlayZone(targetZoneEl);
+	if (seat === null || seat === undefined) {
+		return;
+	}
+	if (seatCanReceiveWhineAtGM(seat)) {
+		return;
+	}
+	showBattleResult(`Карту «${WHINE_AT_GM_SPECIAL}» нельзя применить к игроку на максимальном уровне за столом.`);
+	setTimeout(() => {
+		hideBattleResult();
+	}, 2000);
+}
+
 export function scheduleTreasureLevelIfNeeded(cardId, zoneEl) {
 	const treasure = window.treasures?.find(t => t.name === cardId);
 	if (!treasure) {
@@ -5089,7 +5134,7 @@ export function scheduleTreasureLevelIfNeeded(cardId, zoneEl) {
 			}
 			return;
 		}
-		socket.emit("message", {
+		const payload = {
 			method: "TreasureLevel",
 			seat,
 			level: levelGain,
@@ -5097,7 +5142,48 @@ export function scheduleTreasureLevelIfNeeded(cardId, zoneEl) {
 			actorSeat: localSeat != null && localSeat !== undefined && !Number.isNaN(Number(localSeat))
 				? Number(localSeat)
 				: undefined,
-		});
+		};
+		if (isTreasureSpecial(cardId, KILL_THE_HIRELING_SPECIAL)) {
+			const hirelingToKill = pickHirelingCardIdToKillForLevelPlay(seat);
+			if (!hirelingToKill) {
+				showBattleResult(`Карту «${KILL_THE_HIRELING_SPECIAL}» можно играть только пока у кого-то в экипировке есть наёмничек.`);
+				setTimeout(() => {
+					hideBattleResult();
+				}, 2000);
+				if (localSeat != null && localSeat !== undefined && !Number.isNaN(Number(localSeat))) {
+					appendCardToSeatHand(cardId, Number(localSeat));
+					socket.emit("message", {
+						method: "moveCard",
+						cardId,
+						targetId: card.previousElementSibling ? card.previousElementSibling.id : null,
+						zoneId: `hand${Number(localSeat)}`,
+						fromZoneId: zoneId,
+						playedBySeat: Number(localSeat),
+					});
+				}
+				return;
+			}
+			payload.killedHirelingCardId = hirelingToKill;
+		}
+		if (isTreasureSpecial(cardId, WHINE_AT_GM_SPECIAL) && !seatCanReceiveWhineAtGM(seat)) {
+			showBattleResult(`Карту «${WHINE_AT_GM_SPECIAL}» нельзя применить к игроку на максимальном уровне за столом.`);
+			setTimeout(() => {
+				hideBattleResult();
+			}, 2000);
+			if (localSeat != null && localSeat !== undefined && !Number.isNaN(Number(localSeat))) {
+				appendCardToSeatHand(cardId, Number(localSeat));
+				socket.emit("message", {
+					method: "moveCard",
+					cardId,
+					targetId: card.previousElementSibling ? card.previousElementSibling.id : null,
+					zoneId: `hand${Number(localSeat)}`,
+					fromZoneId: zoneId,
+					playedBySeat: Number(localSeat),
+				});
+			}
+			return;
+		}
+		socket.emit("message", payload);
 	}, 1000);
 }
 
@@ -11672,6 +11758,93 @@ function getHirelingCardInMainForSeat(seat) {
 	return candidates.find((el) => isTreasureSpecial(el.id, "Hireling")) || null;
 }
 
+/** Наёмничек в основной или боковой экипировке (не в руке). */
+function someSeatHasHirelingEquipped() {
+	const n = effectiveSeatLayoutPlayerCount();
+	if (!Number.isFinite(n) || n <= 0) {
+		return false;
+	}
+	for (let s = 0; s < n; s++) {
+		const { main, side } = getMainAndSideZoneElementsForSeat(s) || {};
+		for (const z of [main, side]) {
+			if (!z) {
+				continue;
+			}
+			for (const el of z.querySelectorAll(".card")) {
+				if (el?.id && isTreasureSpecial(el.id, "Hireling")) {
+					return true;
+				}
+			}
+		}
+	}
+	return false;
+}
+
+/** Кого сбросить: сначала наёмничек на месте получателя уровня, иначе первый по местам за столом. */
+function pickHirelingCardIdToKillForLevelPlay(levelTargetSeat) {
+	const s = Number(levelTargetSeat);
+	if (Number.isFinite(s) && s >= 0) {
+		const { main, side } = getMainAndSideZoneElementsForSeat(s) || {};
+		for (const z of [main, side]) {
+			if (!z) {
+				continue;
+			}
+			for (const el of z.querySelectorAll(".card")) {
+				if (el?.id && isTreasureSpecial(el.id, "Hireling")) {
+					return String(el.id);
+				}
+			}
+		}
+	}
+	const n = effectiveSeatLayoutPlayerCount();
+	if (!Number.isFinite(n) || n <= 0) {
+		return null;
+	}
+	for (let si = 0; si < n; si++) {
+		const { main, side } = getMainAndSideZoneElementsForSeat(si) || {};
+		for (const z of [main, side]) {
+			if (!z) {
+				continue;
+			}
+			for (const el of z.querySelectorAll(".card")) {
+				if (el?.id && isTreasureSpecial(el.id, "Hireling")) {
+					return String(el.id);
+				}
+			}
+		}
+	}
+	return null;
+}
+
+/** «Whine at the GM»: только на игрока ниже максимального уровня за столом (все, кто делит максимум, недоступны). */
+function seatCanReceiveWhineAtGM(seat) {
+	const s = Number(seat);
+	if (!Number.isFinite(s) || s < 0) {
+		return false;
+	}
+	const n = effectiveSeatLayoutPlayerCount();
+	if (!Number.isFinite(n) || n <= 0) {
+		return true;
+	}
+	let maxL = 1;
+	for (let i = 0; i < n; i++) {
+		let lv = levelBySeat[i];
+		if (lv == null || Number.isNaN(lv)) {
+			lv = 1;
+		}
+		lv = Math.max(1, Math.floor(Number(lv)));
+		if (lv > maxL) {
+			maxL = lv;
+		}
+	}
+	let targetLv = levelBySeat[s];
+	if (targetLv == null || Number.isNaN(targetLv)) {
+		targetLv = 1;
+	}
+	targetLv = Math.max(1, Math.floor(Number(targetLv)));
+	return targetLv < maxL;
+}
+
 function setHirelingAttachment(hirelingCardId, treasureCardId) {
 	const hirelingEl = document.getElementById(hirelingCardId);
 	const trEl = document.getElementById(treasureCardId);
@@ -15114,7 +15287,12 @@ socket.on("message", response => {
 				appendCardToSeatHand(cardId, actorSeat);
 			}
 			if (!Number.isNaN(actorSeat) && Number(actorSeat) === Number(localSeat)) {
-				showBattleResult("Карту «получи уровень» нельзя применить к игроку 9 уровня.");
+				let msg = "Карту «получи уровень» нельзя применить к игроку 9 уровня.";
+				const cid = String(cardId || "");
+				if (cid === "treasure39" || isTreasureSpecial(cid, WHINE_AT_GM_SPECIAL)) {
+					msg = `Карту «${WHINE_AT_GM_SPECIAL}» нельзя применить к игроку на максимальном уровне за столом.`;
+				}
+				showBattleResult(msg);
 				setTimeout(() => {
 					hideBattleResult();
 				}, 2000);
@@ -15127,6 +15305,10 @@ socket.on("message", response => {
 		if (!Number.isNaN(seat) && Number.isFinite(levelGain) && levelGain > 0 && cardId) {
 			applyTreasureLevelToSeat(seat, levelGain);
 			moveTreasureCardToDiscard(cardId);
+			const hid = String(response.killedHirelingCardId || "").trim();
+			if (hid) {
+				moveTreasureCardToDiscard(hid);
+			}
 		}
 	}
 	if (response.method === "Treasure65LevelSwap") {
@@ -15782,10 +15964,10 @@ const treasure32 = new Card_treasure("treasure32", "",  "../img/treasure1/card01
 const treasure33 = new Card_treasure("treasure33", "",  "../img/treasure1/card0128.png", "../img/treasure1/cardBack_Treasure.png", 0, -1, 0, 0, 0, 0, 0, 1, "", 0, null, true);
 const treasure34 = new Card_treasure("treasure34", "",  "../img/treasure1/card0129.png", "../img/treasure1/cardBack_Treasure.png", 0, -1, 0, 0, 0, 0, 0, 1, "", 0, null, true);
 const treasure35 = new Card_treasure("treasure35", "",  "../img/treasure1/card0130.png", "../img/treasure1/cardBack_Treasure.png", 0, -1, 0, 0, 0, 0, 0, 1, "", 0, null, true);
-const treasure36 = new Card_treasure("treasure36", "",  "../img/treasure1/card0131.png", "../img/treasure1/cardBack_Treasure.png", 0, -1, 0, 0, 0, 0, 0, 1, "", 0, null, true);
+const treasure36 = new Card_treasure("treasure36", "Kill the hireling",  "../img/treasure1/card0131.png", "../img/treasure1/cardBack_Treasure.png", 0, -1, 0, 0, 0, 0, 0, 1, "Kill the hireling", 0, null, true);
 const treasure37 = new Card_treasure("treasure37", "",  "../img/treasure1/card0132.png", "../img/treasure1/cardBack_Treasure.png", 0, -1, 0, 0, 0, 0, 0, 1, "", 0, null, true);
 const treasure38 = new Card_treasure("treasure38", "",  "../img/treasure1/card0133.png", "../img/treasure1/cardBack_Treasure.png", 0, -1, 0, 0, 0, 0, 0, 1, "", 0, null, true);
-const treasure39 = new Card_treasure("treasure39", "",  "../img/treasure1/card0134.png", "../img/treasure1/cardBack_Treasure.png", 0, -1, 0, 0, 0, 0, 0, 1, "", 0, null, true);
+const treasure39 = new Card_treasure("treasure39", "Whine at the GM",  "../img/treasure1/card0134.png", "../img/treasure1/cardBack_Treasure.png", 0, -1, 0, 0, 0, 0, 0, 1, "Whine at the GM", 0, null, true);
 const treasure40 = new Card_treasure("treasure40", "",  "../img/treasure1/card0135.png", "../img/treasure1/cardBack_Treasure.png", 1, -1, 0, 0, 0, 0, 0, 0, "Hireling", 0, null);
 // card0136: Instant wall — позволяет автоматически смыться от всех монстров в бою (одному или двум игрокам).
 const treasure41 = new Card_treasure("treasure41", "Instant wall",  "../img/treasure1/card0136.png", "../img/treasure1/cardBack_Treasure.png", 0, 300, 0, 0, 0, 0, 0, 0, "Instant wall", 0, null, true);
