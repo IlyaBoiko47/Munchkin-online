@@ -977,6 +977,17 @@ io.on('connection', socket => {
     }
 
     if (moveData.method === "SellTreasures") {
+      const game = getOrInitRoomGameState(roomID);
+      const seat = clampSeatInRoom(roomID, moveData.seat);
+      const totalCost = Number(moveData.totalCost);
+      if (seat != null && Number.isFinite(totalCost) && totalCost >= 0) {
+        const levelGain = Math.floor(Math.max(0, totalCost) / 1000);
+        if (levelGain > 0) {
+          const cur = getLevelBySeatFromGame(game, seat);
+          setLevelBySeatInGame(game, seat, applyLevelDeltaRespectingWinRule(cur, levelGain, false));
+          queueMicrotask(() => checkGameVictory(roomID));
+        }
+      }
       patchRoomDiscards(roomID, Array.isArray(moveData.cardIds) ? moveData.cardIds : []);
     }
 

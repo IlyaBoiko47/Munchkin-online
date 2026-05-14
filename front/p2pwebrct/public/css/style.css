@@ -20,36 +20,6 @@ body{
 	color: aliceblue;
 }
 
-/* Подстройка UI: меняйте значения здесь (или переопределяйте в конце файла). */
-:root {
-	/* «Принять помощь» у верхнего левого / правого оппонента (fixed от вьюпорта). */
-	--accept-help-top-left-top: 118.5px;
-	--accept-help-top-left-left: 58px;
-	--accept-help-top-right-top: 118.5px;
-	--accept-help-top-right-right: 58px;
-	/* Центр сверху: та же вертикаль, что у правой (--accept-help-top-right-top), можно переопределить отдельно. */
-	--accept-help-top-center-top: var(--accept-help-top-right-top);
-	/* Центр сверху: сдвиг вправо от центра иконки (translate calc(-50% + …)). Больше — правее. */
-	--accept-help-top-center-shift-x: 310px;
-	/* Превью-кнопка «Принять помощь» у нижнего левого (только вёрстка, #accept-help-preview-bottom-left). */
-	--accept-help-preview-bl-bottom: 65px;
-	--accept-help-preview-bl-left: 90px;
-	/* Уровень над верхними иконками: общий подъём (отрицательное — выше). */
-	--level-top-shift-y: -15px;
-	/* Сдвиг по X от центра колонки аватара (px). Больше — правее. */
-	--level-top-left-shift-x: -5px;
-	--level-top-right-shift-x: 5px;
-	--level-top-center-shift-x: 125px;
-	/* Нижние уровни: доп. translate. X+ — вправо, Y+ — вниз.
-	   Важно: .level-bottom-left в разметке всегда скрыт в game.js — левый нижний видимый уровень это .level-bl-corner (#bl-corner-seat-ui); для него используйте --level-bottom-left-offset-* (суммируются с --bl-level-offset-*). */
-	--level-bottom-left-offset-x: 0px;
-	--level-bottom-left-offset-y: 5px;
-	--level-bottom-right-offset-x: 0px;
-	--level-bottom-right-offset-y: 10px;
-	--level-bottom-center-offset-x: 0px;
-	--level-bottom-center-offset-y: 10px;
-}
-
 *{
 	font-family: 'Munchkin', sans-serif;
 }
@@ -947,7 +917,7 @@ a{
    top: 22.5px;
    right: 50px;
    display: none;
-   transform: translate(var(--level-bottom-left-offset-x), var(--level-bottom-left-offset-y));
+   transform: translate(0px, 5px);
  
  }
 
@@ -960,8 +930,6 @@ a{
 	z-index: 6;
 }
 #bl-corner-seat-ui {
-	--bl-level-offset-x: -5px;
-	--bl-level-offset-y: 10px;
 	position: absolute;
 	left: 20px;
 	bottom: 10px;
@@ -1014,10 +982,7 @@ a{
 .bl-corner-seat-ui.top-left .level-top-left {
 	position: absolute;
 	left: 50%;
-	transform: translate(
-		calc(-50% + var(--level-top-left-shift-x)),
-		var(--level-top-shift-y)
-	);
+	transform: translate(calc(-50% - 5px), -15px);
 	bottom: 100%;
 	margin-bottom: 2px;
 	font-weight: bold;
@@ -1029,10 +994,7 @@ a{
 .bl-corner-seat-ui.top-right .level-top-right {
 	position: absolute;
 	left: 50%;
-	transform: translate(
-		calc(-50% + var(--level-top-right-shift-x)),
-		var(--level-top-shift-y)
-	);
+	transform: translate(calc(-50% + 5px), -15px);
 	bottom: 100%;
 	margin-bottom: 2px;
 	font-weight: bold;
@@ -1041,14 +1003,10 @@ a{
 	white-space: nowrap;
 	z-index: 1;
 }
-/* Центр сверху: X — var(--level-top-center-shift-x) в :root */
 .bl-corner-seat-ui.top-center .level-top-center {
 	position: absolute;
 	left: 50%;
-	transform: translate(
-		calc(-50% + var(--level-top-center-shift-x)),
-		var(--level-top-shift-y)
-	);
+	transform: translate(calc(-50% + 125px), -15px);
 	bottom: 100%;
 	margin-bottom: 2px;
 	font-weight: bold;
@@ -1068,8 +1026,7 @@ a{
 	font-weight: bold;
 	font-size: 25px;
 	line-height: 1;
-	transform: translate(var(--bl-level-offset-x), var(--bl-level-offset-y))
-		translate(var(--level-bottom-left-offset-x), var(--level-bottom-left-offset-y));
+	transform: translate(-5px, 15px);
 }
 .bl-corner-seat-ui .image-top-left,
 .bl-corner-seat-ui .image-top-right,
@@ -1115,7 +1072,7 @@ a{
    top: 22.5px;
    right: 50px;
    display: none;
-   transform: translate(var(--level-bottom-right-offset-x), var(--level-bottom-right-offset-y));
+   transform: translate(0px, 10px);
  
  }
  
@@ -1124,7 +1081,7 @@ a{
    bottom: 105px;
    right: 50px;
    left: calc(50% - 240px);
-   transform: translate(var(--level-bottom-center-offset-x), var(--level-bottom-center-offset-y));
+   transform: translate(0px, 10px);
  }
 
  .MyPower{
@@ -2408,7 +2365,7 @@ button:hover {
   padding: 4px 8px;
 }
 
-/* Кнопки «Принять помощь» у оппонентов (создаются в game.js). Верх-лево / верх-право / сдвиг центра — переменные в :root. Превью нижнего левого — #accept-help-preview-bottom-left в Room. */
+/* Кнопки «Принять помощь» у оппонентов (создаются в game.js). Превью нижнего левого — #accept-help-preview-bottom-left в Room. */
 button.accept-help-seat-btn {
 	box-sizing: border-box;
 	display: inline-block;
@@ -2424,28 +2381,28 @@ button.accept-help-seat-btn {
 	z-index: 30;
 }
 button.accept-help-seat-btn.accept-help-seat-btn--top-left {
-	top: var(--accept-help-top-left-top);
-	left: var(--accept-help-top-left-left);
+	top: 118.5px;
+	left: 58px;
 	right: auto;
 	bottom: auto;
 	transform: translateX(-50%);
 }
 button.accept-help-seat-btn.accept-help-seat-btn--top-right {
-	top: var(--accept-help-top-right-top);
-	right: var(--accept-help-top-right-right);
+	top: 118.5px;
+	right: 58px;
 	left: auto;
 	bottom: auto;
 	transform: translateX(50%);
 }
 button.accept-help-seat-btn.accept-help-seat-btn--top-center {
-	top: var(--accept-help-top-center-top);
+	top: 118.5px;
 	bottom: auto;
 	right: auto;
-	transform: translate(calc(-50% + var(--accept-help-top-center-shift-x)), 0);
+	transform: translate(calc(-50% + 310px), 0);
 }
 button.accept-help-seat-btn.accept-help-seat-btn--preview-bottom-left {
-	bottom: var(--accept-help-preview-bl-bottom);
-	left: var(--accept-help-preview-bl-left);
+	bottom: 65px;
+	left: 90px;
 	top: auto;
 	right: auto;
 	transform: none;
