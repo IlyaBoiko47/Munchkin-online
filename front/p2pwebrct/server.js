@@ -45,11 +45,21 @@ function normalizeSeatArraysForNum(game, numPlayers) {
 // Как только комната станет пустой — убираем флаг.
 const startedRooms = new Set();
 // Авторитетное состояние комнаты для восстановления после refresh.
-// roomID -> { started, num, deckDoors, deckTreasure, cards, cheatAttachments, hirelingAttachments, monsterBonusAttachments, game }
+// roomID -> { started, num, deckDoors, deckTreasure, cards, cheatAttachments, hirelingAttachments, monsterBonusAttachments, game, playerMetaBySeat? }
 const roomStates = new Map();
 // Привязка “токен игрока” -> seat в комнате.
 // roomID -> Map(token -> seat)
 const roomSeatsByToken = new Map();
+// Отображаемое имя комнаты (не UUID), задаётся при Create.
+// roomID -> string
+const roomDisplayNames = new Map();
+
+function sanitizeRoomDisplayName(raw) {
+  let s = String(raw || '').trim().replace(/[\u0000-\u001F\u007F]/g, '');
+  if (!s) return 'Комната';
+  if (s.length > 48) s = s.slice(0, 48);
+  return s;
+}
 
 /** 10-й уровень только с победы в бою или «божественного вмешательства». */
 const WINNING_LEVEL_THRESHOLD = 10;
@@ -460,10 +470,29 @@ function getClientRooms() {
   return Array.from(rooms.keys()).filter(roomID => validate(roomID) && version(roomID) === 4 && !startedRooms.has(roomID));
 }
 
+function buildRoomsPayloadForShare() {
+  return getClientRooms().map((roomID) => {
+    const players = (io.sockets.adapter.rooms.get(roomID) || new Set()).size;
+    return {
+      id: roomID,
+      name: roomDisplayNames.get(roomID) || 'Комната',
+      players,
+    };
+  });
+}
+
 function shareRoomsInfo() {
   io.emit(ACTIONS.SHARE_ROOMS, {
-    rooms: getClientRooms()
-  })
+    rooms: buildRoomsPayloadForShare(),
+  });
+}
+
+function emitRoomLobbyPlayerCount(roomID) {
+  if (!roomID || !validate(roomID) || version(roomID) !== 4) {
+    return;
+  }
+  const size = (io.sockets.adapter.rooms.get(roomID) || new Set()).size;
+  io.to(roomID).emit('message', { method: 'RoomLobbyUpdate', connectedPlayers: size, maxPlayers: MAX_ROOM_PLAYERS });
 }
 io.on('connection', socket => {
 	
@@ -476,8 +505,14 @@ io.on('connection', socket => {
     const moveData = message || {};
 
     if (moveData.method === "Create") {
-      // Совместимость со старым протоколом: запоминаем комнату в сокете.
-      socket.data.gameRoomID = typeof moveData.room === 'string' ? moveData.room : socket.data.gameRoomID;
+      const roomId = typeof moveData.room === 'string' ? moveData.room : null;
+      if (roomId && validate(roomId) && version(roomId) === 4) {
+        socket.data.gameRoomID = roomId;
+        roomDisplayNames.set(roomId, sanitizeRoomDisplayName(moveData.roomName || moveData.displayName));
+      } else {
+        socket.data.gameRoomID = typeof moveData.room === 'string' ? moveData.room : socket.data.gameRoomID;
+      }
+      shareRoomsInfo();
       return;
     }
 
@@ -494,6 +529,23 @@ io.on('connection', socket => {
 
     const roomSize = (io.sockets.adapter.rooms.get(roomID) || new Set()).size;
     moveData.num = roomSize;
+
+    if (moveData.method === "PlayerMeta") {
+      const seat = Number(moveData.seat);
+      const name = String(moveData.name || "").trim();
+      const gender =
+        moveData.gender === "Male" || moveData.gender === "Female" ? moveData.gender : "";
+      const roomN = Math.max(1, Number(moveData.num) || roomSize || 1);
+      const maxSeat = roomN - 1;
+      if (Number.isFinite(seat) && seat >= 0 && seat <= maxSeat && name && gender) {
+        const prev = roomStates.get(roomID) || {};
+        const playerMetaBySeat = {
+          ...(prev.playerMetaBySeat && typeof prev.playerMetaBySeat === "object" ? prev.playerMetaBySeat : {}),
+          [String(seat)]: { name, gender },
+        };
+        roomStates.set(roomID, { ...prev, playerMetaBySeat });
+      }
+    }
 
     const prevForFinish = roomStates.get(roomID);
     const gameForFinish = prevForFinish?.game;
@@ -1252,11 +1304,15 @@ io.on('connection', socket => {
   shareRoomsInfo();
 
   socket.on(ACTIONS.JOIN, config => {
-    const {room: roomID, token} = config || {};
+    const {room: roomID, token, roomDisplayName} = config || {};
     const {rooms: joinedRooms} = socket;
 
     if (Array.from(joinedRooms).includes(roomID)) {
       return console.warn(`Already joined to ${roomID}`);
+    }
+
+    if (typeof roomDisplayName === 'string' && roomDisplayName.trim()) {
+      roomDisplayNames.set(roomID, sanitizeRoomDisplayName(roomDisplayName));
     }
 
     const clients = Array.from(io.sockets.adapter.rooms.get(roomID) || []);
@@ -1279,6 +1335,20 @@ io.on('connection', socket => {
       socket.data.playerToken = String(token);
     }
     shareRoomsInfo();
+    emitRoomLobbyPlayerCount(roomID);
+
+    const stMeta = roomStates.get(roomID);
+    if (
+      stMeta &&
+      stMeta.playerMetaBySeat &&
+      typeof stMeta.playerMetaBySeat === "object" &&
+      Object.keys(stMeta.playerMetaBySeat).length
+    ) {
+      socket.emit("message", {
+        method: "RoomPlayerMetaSnapshot",
+        playerMetaBySeat: stMeta.playerMetaBySeat,
+      });
+    }
 
     // Если игра уже началась — восстанавливаем seat и состояние комнаты с сервера.
     if (startedRooms.has(roomID)) {
@@ -1329,6 +1399,9 @@ io.on('connection', socket => {
           startedRooms.delete(roomID);
           roomStates.delete(roomID);
           roomSeatsByToken.delete(roomID);
+          roomDisplayNames.delete(roomID);
+        } else {
+          emitRoomLobbyPlayerCount(roomID);
         }
       });
 

@@ -2,6 +2,15 @@ import { adjustCardWidth } from './card-block.js';
 import { adjustCardHeight } from './card-block.js';
 import { UpdateZones } from './увеличение карточек во время игры.js';
 import socket from './socket/index.js';
+import {
+	readTabProfile,
+	writeTabProfile,
+	getProfileStorageScopeIdFromLocation,
+} from './profileSession.js';
+import {
+	hidePlayerProfileModal as hidePlayerProfileModalShared,
+	openPlayerProfileModal as openPlayerProfileModalShared,
+} from './playerProfileModal.js';
 
 // console.log("game работает");
 let fl ;
@@ -10,6 +19,8 @@ window.treasures = [];
 
 let num;
 let localSeat = null;
+/** Снимок имён с сервера до известного localSeat (лобби): дописываем localStorage после назначения места. */
+let pendingPlayerMetaSnapshot = null;
 
 /** Для moveCard: кто инициировал перенос (локальное место), чтобы удалённые клиенты открыли модалку штыря у нужного игрока. */
 export function getLocalSeatForSocket() {
@@ -694,6 +705,105 @@ function hideSeatIconTooltip() {
 	}
 }
 
+function clearSeatIconTooltipBindings() {
+	for (const sel of ALL_ICON_SELECTORS) {
+		try {
+			document.querySelectorAll(sel).forEach((el) => {
+				if (el?.dataset) {
+					delete el.dataset.seatTooltipBound;
+				}
+			});
+		} catch {
+			// ignore
+		}
+	}
+}
+
+function pickSeatIconAnchorElement(selector) {
+	if (!selector) {
+		return null;
+	}
+	let nodes;
+	try {
+		nodes = Array.from(document.querySelectorAll(selector));
+	} catch {
+		return null;
+	}
+	if (!nodes.length) {
+		return null;
+	}
+	const visible = nodes.filter((el) => {
+		if (!(el instanceof HTMLElement)) {
+			return false;
+		}
+		const r = el.getBoundingClientRect();
+		const cs = window.getComputedStyle(el);
+		return (
+			r.width > 2 &&
+			r.height > 2 &&
+			cs.visibility !== "hidden" &&
+			cs.display !== "none" &&
+			el.offsetParent !== null
+		);
+	});
+	const pool = visible.length ? visible : nodes;
+	let best = null;
+	let bestArea = 0;
+	pool.forEach((el) => {
+		const r = el.getBoundingClientRect();
+		const a = r.width * r.height;
+		if (a >= bestArea) {
+			bestArea = a;
+			best = el;
+		}
+	});
+	return best;
+}
+
+function applyPlayerMetaBySeatFromServer(raw) {
+	if (!raw || typeof raw !== "object") {
+		return;
+	}
+	Object.entries(raw).forEach(([sk, meta]) => {
+		const seat = parseInt(sk, 10);
+		if (Number.isNaN(seat) || seat < 0 || seat >= characterBySeat.length) {
+			return;
+		}
+		const name = String(meta?.name || "").trim();
+		const g = String(meta?.gender || "").trim();
+		const gender = g === "Male" || g === "Female" ? g : "";
+		if (!name) {
+			return;
+		}
+		const ch = characterBySeat[seat];
+		if (!ch) {
+			return;
+		}
+		ch.name = name;
+		if (gender) {
+			ch.gender = gender;
+		}
+		if (Number(seat) === Number(localSeat)) {
+			try {
+				writeTabProfile(getProfileStorageScopeIdFromLocation(), name, gender);
+			} catch {
+				// ignore
+			}
+		}
+	});
+}
+
+function flushPendingPlayerMetaSnapshotIfNeeded() {
+	if (!pendingPlayerMetaSnapshot || typeof pendingPlayerMetaSnapshot !== "object") {
+		return;
+	}
+	if (localSeat === null || localSeat === undefined) {
+		return;
+	}
+	applyPlayerMetaBySeatFromServer(pendingPlayerMetaSnapshot);
+	pendingPlayerMetaSnapshot = null;
+}
+
 function showSeatIconTooltipForSeat(seat, anchorEl) {
 	if (!anchorEl) {
 		return;
@@ -722,14 +832,17 @@ function showSeatIconTooltipForSeat(seat, anchorEl) {
 	document.body.appendChild(tip);
 }
 
+let seatTooltipGlobalListenersBound = false;
+
 function bindSeatIconHoverTooltips() {
+	clearSeatIconTooltipBindings();
 	const seatToIconMap = getSeatToIconMap();
 	Object.entries(seatToIconMap).forEach(([seatKey, selector]) => {
 		const seat = parseInt(seatKey, 10);
 		if (Number.isNaN(seat) || !selector) {
 			return;
 		}
-		const el = document.querySelector(selector);
+		const el = pickSeatIconAnchorElement(selector);
 		if (!el) {
 			return;
 		}
@@ -741,8 +854,11 @@ function bindSeatIconHoverTooltips() {
 		el.addEventListener("mouseleave", () => hideSeatIconTooltip());
 	});
 	// Если уводим курсор/перекладываем DOM — прячем.
-	window.addEventListener("scroll", hideSeatIconTooltip, { passive: true });
-	window.addEventListener("resize", hideSeatIconTooltip);
+	if (!seatTooltipGlobalListenersBound) {
+		seatTooltipGlobalListenersBound = true;
+		window.addEventListener("scroll", hideSeatIconTooltip, { passive: true });
+		window.addEventListener("resize", hideSeatIconTooltip);
+	}
 }
 
 function setLevelBySeat(seat, level) {
@@ -5161,137 +5277,106 @@ function getSeatLabel(seat) {
 }
 
 function hidePlayerProfileModal() {
-	const existing = document.getElementById("player-profile-modal");
-	if (existing) {
-		existing.remove();
-	}
+	hidePlayerProfileModalShared();
 }
 
 function openPlayerProfileModal() {
-	hidePlayerProfileModal();
 	if (localSeat == null || localSeat < 0) {
 		return;
 	}
-	const modal = document.createElement("div");
-	modal.id = "player-profile-modal";
-	modal.className = "wizard-taming-modal";
-	const panel = document.createElement("div");
-	panel.className = "wizard-taming-panel";
-	const title = document.createElement("div");
-	title.className = "wizard-taming-title";
-	title.textContent = "Выбери имя и пол";
-	const desc = document.createElement("div");
-	desc.className = "wizard-taming-desc";
-	desc.textContent = "Имя будет отображаться в сообщениях игры.";
-
-	const storedName = localStorage.getItem("munchkin.playerName") || "";
-	const storedGender = localStorage.getItem("munchkin.playerGender") || "";
-
-	const nameInput = document.createElement("input");
-	nameInput.type = "text";
-	nameInput.placeholder = "Имя игрока";
-	nameInput.value = storedName;
-	nameInput.maxLength = 18;
-	nameInput.style.alignSelf = "center";
-	nameInput.style.width = "min(520px, 88%)";
-	nameInput.style.padding = "10px 12px";
-	nameInput.style.fontSize = "22px";
-	nameInput.style.borderRadius = "10px";
-	nameInput.style.border = "2px solid rgba(255,255,255,0.22)";
-	nameInput.style.background = "rgba(40, 44, 58, 0.95)";
-	nameInput.style.color = "#fff";
-
-	const genderWrap = document.createElement("div");
-	genderWrap.style.display = "flex";
-	genderWrap.style.justifyContent = "center";
-	genderWrap.style.gap = "16px";
-	genderWrap.style.flexWrap = "wrap";
-	genderWrap.style.marginTop = "6px";
-
-	const makeGenderBtn = (value, label) => {
-		const btn = document.createElement("button");
-		btn.type = "button";
-		btn.textContent = label;
-		btn.dataset.gender = value;
-		btn.style.padding = "8px 14px";
-		btn.style.fontSize = "20px";
-		btn.style.borderRadius = "10px";
-		btn.style.border = "2px solid rgba(255, 255, 255, 0.24)";
-		btn.style.background = "rgba(40, 44, 58, 0.95)";
-		btn.style.color = "#fff";
-		btn.style.cursor = "pointer";
-		if (storedGender === value) {
-			btn.classList.add("is-selected");
-			btn.style.borderColor = "#8fd2ff";
-			btn.style.boxShadow = "0 0 0 3px rgba(143, 210, 255, 0.32)";
-		}
-		return btn;
-	};
-
-	const maleBtn = makeGenderBtn("Male", "Мужской");
-	const femaleBtn = makeGenderBtn("Female", "Женский");
-	let selectedGender = storedGender === "Male" || storedGender === "Female" ? storedGender : "";
-
-	const selectGender = (g) => {
-		selectedGender = g;
-		[maleBtn, femaleBtn].forEach((b) => {
-			const isSel = b.dataset.gender === g;
-			b.style.borderColor = isSel ? "#8fd2ff" : "rgba(255, 255, 255, 0.24)";
-			b.style.boxShadow = isSel ? "0 0 0 3px rgba(143, 210, 255, 0.32)" : "";
-		});
-		applyBtn.disabled = !canApply();
-	};
-
-	maleBtn.addEventListener("click", () => selectGender("Male"));
-	femaleBtn.addEventListener("click", () => selectGender("Female"));
-	genderWrap.appendChild(maleBtn);
-	genderWrap.appendChild(femaleBtn);
-
-	const canApply = () => {
-		const n = String(nameInput.value || "").trim();
-		return n.length > 0 && (selectedGender === "Male" || selectedGender === "Female");
-	};
-
-	const applyBtn = document.createElement("button");
-	applyBtn.type = "button";
-	applyBtn.className = "wizard-taming-apply-btn";
-	applyBtn.textContent = "Подтвердить";
-	applyBtn.disabled = !canApply();
-
-	nameInput.addEventListener("input", () => {
-		applyBtn.disabled = !canApply();
+	openPlayerProfileModalShared({
+		onApply: ({ name, gender }) => {
+			characterBySeat[localSeat].name = name;
+			characterBySeat[localSeat].gender = gender;
+			socket.emit("message", {
+				method: "PlayerMeta",
+				seat: localSeat,
+				name,
+				gender,
+			});
+		},
 	});
+}
 
-	applyBtn.addEventListener("click", () => {
-		const name = String(nameInput.value || "").trim();
-		if (!name || !(selectedGender === "Male" || selectedGender === "Female")) {
-			return;
-		}
-		localStorage.setItem("munchkin.playerName", name);
-		localStorage.setItem("munchkin.playerGender", selectedGender);
-		characterBySeat[localSeat].name = name;
-		characterBySeat[localSeat].gender = selectedGender;
+function normalizeStoredPlayerGender() {
+	const { gender } = readTabProfile(getProfileStorageScopeIdFromLocation());
+	return gender === "Male" || gender === "Female" ? gender : "";
+}
+
+function ensureLocalPlayerProfileChosen() {
+	if (document.getElementById("player-profile-modal")) {
+		return;
+	}
+	syncLocalProfileFromStorageToSeatCharacter();
+	if (localSeat == null || localSeat < 0) {
+		return;
+	}
+	const name = readTabProfile(getProfileStorageScopeIdFromLocation()).name;
+	const gender = normalizeStoredPlayerGender();
+	if (!name || !gender) {
+		openPlayerProfileModal();
+	}
+}
+
+function syncLocalProfileFromStorageToSeatCharacter() {
+	if (localSeat == null || localSeat < 0 || localSeat >= characterBySeat.length) {
+		return;
+	}
+	const scopeId = getProfileStorageScopeIdFromLocation();
+	const { name, gender } = readTabProfile(scopeId);
+	if (!name || !gender) {
+		return;
+	}
+	const ch = characterBySeat[localSeat];
+	if (!ch) {
+		return;
+	}
+	const same = String(ch.name || "").trim() === name && String(ch.gender || "") === gender;
+	ch.name = name;
+	ch.gender = gender;
+	if (!same) {
 		socket.emit("message", {
 			method: "PlayerMeta",
 			seat: localSeat,
 			name,
-			gender: selectedGender,
+			gender,
 		});
-		hidePlayerProfileModal();
-	});
-
-	panel.appendChild(title);
-	panel.appendChild(desc);
-	panel.appendChild(nameInput);
-	panel.appendChild(genderWrap);
-	panel.appendChild(applyBtn);
-	modal.appendChild(panel);
-	document.body.appendChild(modal);
+	}
 }
 
-function ensureLocalPlayerProfileChosen() {
-	// Временно отключено: используем дефолтные имя/пол для всех игроков.
-	return;
+if (typeof window !== "undefined") {
+	window.addEventListener("munchkin:playerProfileStorageUpdated", () => {
+		try {
+			syncLocalProfileFromStorageToSeatCharacter();
+		} catch {
+			// ignore
+		}
+	});
+}
+
+function hideRoomLobbyBar() {
+	const bar = document.getElementById("room-lobby-bar");
+	if (bar) {
+		bar.style.display = "none";
+	}
+}
+
+function updateRoomLobbyBarFromServer(connectedPlayers, maxPlayers) {
+	const bar = document.getElementById("room-lobby-bar");
+	const cnt = document.getElementById("room-lobby-connected");
+	const mx = document.getElementById("room-lobby-max");
+	if (!bar || !cnt) {
+		return;
+	}
+	if (gameStarted) {
+		bar.style.display = "none";
+		return;
+	}
+	bar.style.display = "flex";
+	cnt.textContent = String(Math.max(0, Math.floor(Number(connectedPlayers) || 0)));
+	if (mx) {
+		mx.textContent = String(Math.max(2, Math.min(5, Math.floor(Number(maxPlayers) || 5))));
+	}
 }
 
 function ensureDeathLootZoneElement() {
@@ -6544,21 +6629,27 @@ function applyThiefTheftStolenCardMove(thiefSeat, fromSeat, cardId) {
 		return;
 	}
 	const tr = window.treasures?.find((x) => x.name === cardId);
-	if (!tr || !isTreasureSmallShmot(tr)) {
+	if (tr && !isTreasureSmallShmot(tr)) {
 		return;
 	}
 	const card = document.getElementById(cardId);
 	if (!card) {
 		return;
 	}
-	const { main, side } = getMainAndSideZoneElementsForSeat(f);
-	const fromOk = (main && main.contains(card)) || (side && side.contains(card));
-	if (!fromOk) {
-		return;
-	}
 	const hand = getHandElementForPlayerSeat(t);
 	if (!hand) {
 		return;
+	}
+	if (hand.contains(card)) {
+		return;
+	}
+	const { main, side } = getMainAndSideZoneElementsForSeat(f);
+	const fromOk = (main && main.contains(card)) || (side && side.contains(card));
+	if (!fromOk) {
+		const parent = card.parentElement;
+		if (!parent || !isPlayerPlayZoneElement(parent)) {
+			return;
+		}
 	}
 	hand.appendChild(card);
 	adjustCardWidth(".myhand");
@@ -10097,6 +10188,10 @@ function applyRoomStateFromServer(state) {
 	// поэтому принудительно включаем интерактивность под текущее число игроков.
 	const nPlayers = Number(state?.num) || window.num || num || 0;
 	updatePlayersUiVisibility(nPlayers);
+	applyPlayerMetaBySeatFromServer(state.playerMetaBySeat);
+	if (state.playerMetaBySeat && typeof state.playerMetaBySeat === "object") {
+		pendingPlayerMetaSnapshot = null;
+	}
 	bindSeatIconHoverTooltips();
 	UpdatebackImgDoor();
 	UpdatebackImgTreasure();
@@ -10114,6 +10209,7 @@ function applyRoomStateFromServer(state) {
 	try { window.dispatchEvent(new Event("munchkin:zonesChanged")); } catch {}
 
 	gameStarted = true;
+	hideRoomLobbyBar();
 	// Восстанавливаем только то, что хранит сервер-авторитет.
 	const g = state.game && typeof state.game === "object" ? state.game : null;
 	if (g) {
@@ -12815,9 +12911,28 @@ socket.on("message", response => {
 			zone_opponent3: document.getElementById("zone_opponent3")?.className,
 		});
 		ensureLocalPlayerProfileChosen();
+		flushPendingPlayerMetaSnapshotIfNeeded();
 		updatePlayersUiVisibility(num);
 		recalculateAllPowerDisplays();
 		applyTurnHighlight();
+	}
+
+	if (response.method === "RoomLobbyUpdate") {
+		updateRoomLobbyBarFromServer(response.connectedPlayers, response.maxPlayers);
+		return;
+	}
+
+	if (response.method === "RoomPlayerMetaSnapshot") {
+		applyPlayerMetaBySeatFromServer(response.playerMetaBySeat);
+		if (localSeat === null || localSeat === undefined) {
+			pendingPlayerMetaSnapshot = response.playerMetaBySeat;
+		} else {
+			pendingPlayerMetaSnapshot = null;
+		}
+		hideSeatIconTooltip();
+		bindSeatIconHoverTooltips();
+		recalculateAllPowerDisplays();
+		return;
 	}
 
 	// Восстановление состояния комнаты с сервера (сервер-авторитет).
@@ -12831,6 +12946,7 @@ socket.on("message", response => {
 		if ((localSeat === null || localSeat === undefined) && !Number.isNaN(seatFromMsg) && seatFromMsg >= 0) {
 			localSeat = seatFromMsg;
 		}
+		flushPendingPlayerMetaSnapshotIfNeeded();
 		// num мог быть ещё не проставлен — берём из state.
 		const nPlayers = Number(state?.num) || window.num || num || 0;
 		if (nPlayers > 0) {
@@ -14661,6 +14777,7 @@ socket.on("message", response => {
 			resetFivePlayerLayoutToSeatZero();
 			applyFivePlayerCanonicalClassShift(0);
 		}
+		flushPendingPlayerMetaSnapshotIfNeeded();
 		ensureLocalPlayerProfileChosen();
 		updatePlayersUiVisibility(num);
 		recalculateAllPowerDisplays();
@@ -14688,6 +14805,7 @@ socket.on("message", response => {
 		//console.log("второй или третий ")
     fl = response.fl;
 		localSeat = 1;
+		flushPendingPlayerMetaSnapshotIfNeeded();
 		ensureLocalPlayerProfileChosen();
 		num = 2;
 		window.num = num;
@@ -14730,6 +14848,7 @@ socket.on("message", response => {
 		//console.log("второй или третий ")
 		fl = response.fl;
 		localSeat = fl === "3player" ? 2 : 1;
+		flushPendingPlayerMetaSnapshotIfNeeded();
 		ensureLocalPlayerProfileChosen();
 		num = 3;
 		window.num = num;
@@ -14747,6 +14866,7 @@ socket.on("message", response => {
 	if (response.method === "4Players") {
 		fl = response.fl;
 		localSeat = fl === "p3" ? 3 : fl === "p2" ? 2 : 1;
+		flushPendingPlayerMetaSnapshotIfNeeded();
 		ensureLocalPlayerProfileChosen();
 		num = 4;
 		window.num = num;
@@ -14759,6 +14879,7 @@ socket.on("message", response => {
 	if (response.method === "5Players") {
 		fl = response.fl;
 		localSeat = fl === "p4" ? 4 : fl === "p3" ? 3 : fl === "p2" ? 2 : 1;
+		flushPendingPlayerMetaSnapshotIfNeeded();
 		ensureLocalPlayerProfileChosen();
 		num = 5;
 		window.num = num;
@@ -14855,6 +14976,7 @@ socket.on("message", response => {
 		updateThiefTheftUi();
 		updateThiefTrimUi();
 		gameStarted = true;
+		hideRoomLobbyBar();
 		ensureRoomOpenModalsMutationObserver();
 		wireEndTurnButtonClick();
 		if (localSeat === 0) {

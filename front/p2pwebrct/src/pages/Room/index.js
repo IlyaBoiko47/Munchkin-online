@@ -1,15 +1,35 @@
 import {useParams} from 'react-router';
+import {useLayoutEffect} from 'react';
 import useWebRTC, {LOCAL_AUDIO} from '../../hooks/useWebRTC';
+import { openPlayerProfileModal } from '../../playerProfileModal.js';
 import "../../card-block";
 import "../../увеличение карточек во время игры.js";
-
 
 export default function Room() {
   const {id: roomID} = useParams();
   const {clients, provideMediaRef} = useWebRTC(roomID);
 
+  useLayoutEffect(() => {
+    if (!roomID) {
+      return;
+    }
+    // Даём время на RoomPlayerMetaSnapshot (имя/пол с сервера в localStorage), затем показываем
+    // подтверждение входа в комнату. Иначе при «полном» профиле окно никогда не открывалось.
+    const t = window.setTimeout(() => {
+      openPlayerProfileModal({ roomEntryPrompt: true, storageScopeId: roomID });
+    }, 200);
+    return () => clearTimeout(t);
+  }, [roomID]);
+
   return (
     <div>
+			<div id="room-lobby-bar" className="room-lobby-bar" role="status" aria-live="polite">
+				<span className="room-lobby-bar__label">В комнате:</span>
+				<span id="room-lobby-connected" className="room-lobby-bar__count">1</span>
+				<span className="room-lobby-bar__sep">/</span>
+				<span id="room-lobby-max" className="room-lobby-bar__max">5</span>
+				<span className="room-lobby-bar__hint">игроков</span>
+			</div>
       {clients.map((clientID, index) => {
         return (
           <div key={clientID} id={clientID}>

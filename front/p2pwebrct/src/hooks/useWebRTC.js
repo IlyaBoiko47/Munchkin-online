@@ -3,6 +3,8 @@ import freeice from 'freeice';
 import useStateWithCallback from './useStateWithCallback';
 import socket from '../socket';
 import ACTIONS from '../socket/actions';
+import { consumeRoomTitleForJoin } from '../roomTitleBridge.js';
+import { getOrCreateTabPlayerToken } from '../profileSession.js';
 
 export const LOCAL_AUDIO = 'LOCAL_AUDIO';
 
@@ -11,25 +13,10 @@ export default function useWebRTC(roomID) {
   const [clients, updateClients] = useStateWithCallback([]);
 
   function getOrCreatePlayerToken() {
-    // ВАЖНО: токен должен быть уникален для ВКЛАДКИ, иначе при игре "в 2-3 вкладки"
-    // localStorage будет общий и все игроки получат один token => один seat после refresh.
-    // sessionStorage сохраняется при refresh, но не шарится между вкладками.
-    const key = `munchkin_player_token:${roomID || 'global'}`;
-    try {
-      const existing = sessionStorage.getItem(key);
-      if (existing) return existing;
-      const created = (window.crypto && typeof window.crypto.randomUUID === 'function')
-        ? window.crypto.randomUUID()
-        : String(Date.now()) + '-' + String(Math.random()).slice(2);
-      sessionStorage.setItem(key, created);
-      return created;
-    } catch {
-      // Если sessionStorage недоступен — создаём “на лету” (без сохранения между обновлениями).
-      return (window.crypto && typeof window.crypto.randomUUID === 'function')
-        ? window.crypto.randomUUID()
-        : String(Date.now()) + '-' + String(Math.random()).slice(2);
-    }
+    return getOrCreateTabPlayerToken(roomID || 'global');
   }
+
+  // Токен вкладки: profileSession.js (тот же префикс sessionStorage, что и для профиля)
 
   const addNewClient = useCallback((newClient, cb) => {
     updateClients(list => {
@@ -265,6 +252,10 @@ export default function useWebRTC(roomID) {
   }, []);
 
   useEffect(() => {
+    if (!roomID) {
+      return undefined;
+    }
+
     const startCapture = async () => {
         if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
             try {
@@ -293,7 +284,12 @@ export default function useWebRTC(roomID) {
     // Важно: на http (не localhost) браузеры часто блокируют getUserMedia.
     // Но комната и игра должны работать и без микрофона — поэтому JOIN выполняем всегда.
     const token = getOrCreatePlayerToken();
-    socket.emit(ACTIONS.JOIN, {room: roomID, token});
+    const roomDisplayName = consumeRoomTitleForJoin(roomID) || undefined;
+    socket.emit(ACTIONS.JOIN, {
+      room: roomID,
+      token,
+      roomDisplayName,
+    });
     startCapture().catch((e) => console.error('Error getting userMedia:', e));
 
     return () => {
