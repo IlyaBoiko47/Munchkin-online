@@ -16501,6 +16501,11 @@ export function timer(initialSeconds = 30, restoring = false) {
 	hideWizardFlightModal();
 	hideThiefTrimModal();
   }
+  // Тот же бой и то же «боевое» место хода: новый отсчёт таймера (UpdateTimer и т.п.) — снова можно жать «Пас» всем.
+  if (!restoring && isSameBattleTurn) {
+    window.FoldCount = 0;
+    foldedOnTurnSeat = null;
+  }
   updateHelpUi();
 
   clearInterval(countdownInterval);
