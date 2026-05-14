@@ -20,6 +20,36 @@ body{
 	color: aliceblue;
 }
 
+/* Подстройка UI: меняйте значения здесь (или переопределяйте в конце файла). */
+:root {
+	/* «Принять помощь» у верхнего левого / правого оппонента (fixed от вьюпорта). */
+	--accept-help-top-left-top: 118.5px;
+	--accept-help-top-left-left: 58px;
+	--accept-help-top-right-top: 118.5px;
+	--accept-help-top-right-right: 58px;
+	/* Центр сверху: та же вертикаль, что у правой (--accept-help-top-right-top), можно переопределить отдельно. */
+	--accept-help-top-center-top: var(--accept-help-top-right-top);
+	/* Центр сверху: сдвиг вправо от центра иконки (translate calc(-50% + …)). Больше — правее. */
+	--accept-help-top-center-shift-x: 310px;
+	/* Превью-кнопка «Принять помощь» у нижнего левого (только вёрстка, #accept-help-preview-bottom-left). */
+	--accept-help-preview-bl-bottom: 65px;
+	--accept-help-preview-bl-left: 90px;
+	/* Уровень над верхними иконками: общий подъём (отрицательное — выше). */
+	--level-top-shift-y: -15px;
+	/* Сдвиг по X от центра колонки аватара (px). Больше — правее. */
+	--level-top-left-shift-x: -5px;
+	--level-top-right-shift-x: 5px;
+	--level-top-center-shift-x: 125px;
+	/* Нижние уровни: доп. translate. X+ — вправо, Y+ — вниз.
+	   Важно: .level-bottom-left в разметке всегда скрыт в game.js — левый нижний видимый уровень это .level-bl-corner (#bl-corner-seat-ui); для него используйте --level-bottom-left-offset-* (суммируются с --bl-level-offset-*). */
+	--level-bottom-left-offset-x: 0px;
+	--level-bottom-left-offset-y: 5px;
+	--level-bottom-right-offset-x: 0px;
+	--level-bottom-right-offset-y: 10px;
+	--level-bottom-center-offset-x: 0px;
+	--level-bottom-center-offset-y: 10px;
+}
+
 *{
 	font-family: 'Munchkin', sans-serif;
 }
@@ -425,12 +455,12 @@ a{
   margin: 0 auto;
   padding: 20px;
   /* Базовый масштаб интерфейса как при 80% браузерного зума, без масштабирования фона */
-  zoom: 0.8;
+  zoom: 0.75;
 }
 
 .container2 {
   /* Слой иконок/силы/кубика масштабируем так же, как основной UI */
-  zoom: 0.8;
+  zoom: 0.75;
 }
 
 .cards {
@@ -486,18 +516,23 @@ a{
 	display: none !important;
 }
 
+/* Контур всех игровых зон карт (руки, экипировка, бонусы, колоды, сброс — class cards-zone) */
+.cards-zone {
+	border: 2px solid rgba(0, 0, 0, 0.55);
+	border-radius: 8px;
+	box-sizing: border-box;
+}
+
 .myhand{
-  /*border: 1px solid black; */
 	display: flex;
-  width: 300px;
-  height: 150px;
-  position: fixed;
-  bottom: 10px;
-  left: 50% ;
-  transform: translateX(-50%);
-  justify-content: center;
-  z-index: 2;
-	
+	width: 300px;
+	height: 150px;
+	position: fixed;
+	bottom: 10px;
+	left: 50%;
+	transform: translateX(-50%);
+	justify-content: center;
+	z-index: 2;
 }
 .opponenthand{
   /*border: 1px solid black; */
@@ -513,44 +548,52 @@ a{
 	
 }
 
+/* Верхняя правая зона (рука + экип + бок) — история значений:
+   (1) из коммита HEAD: .opponent2hand top 100px right 30px; .zone_opponent2 top 220px right 150px;
+       .zone_opponent2_side width 300px top 100px right 375px justify-content end;
+   (2) перед поднятием руки до top 150px: .opponent2hand top 100px; .zone_opponent2 top 270px right 150px;
+       .zone_opponent2_side width 200px top 65px right 325px justify-content end.
+*/
 .opponent2hand{
-  /*border: 1px solid black; */
+  /* border: 1px solid black; */
 	display: flex;
   width: 300px;
   height: 150px;
   position: fixed;
-  top: 100px;
+  top: 150px;
   right: 30px ;
-  /*transform: translateX(-75%);*/
+  /* transform: translateX(-75%); */
 	transform:  rotate(45deg);
   justify-content: center;
   z-index: 2;
 }
+/* Верхняя левая зона (рука + экип + бок) — прежние значения из HEAD; текущие правила ниже с пометками «было (HEAD)».
+   .opponent3hand:      top: 100px; left: 30px; transform: rotate(-45deg);
+   .zone_opponent3:     top: 220px; left: 150px; transform: rotate(-45deg);
+   .zone_opponent3_side: width 300px; height 150px; top: 445px; left: 30px; justify-content: start; transform: rotate(45deg);
+*/
 .opponent3hand{
-  /*border: 1px solid black; */
 	display: flex;
-  width: 300px;
-  height: 150px;
-  position: fixed;
-  top: 100px;
-  left: 30px ;
-  /*transform: translateX(-75%);*/
-	transform:  rotate(-45deg);
-  justify-content: center;
-  z-index: 2;
+	width: 300px;
+	height: 150px;
+	position: fixed;
+	top: 80px; /* было (HEAD): 100px */
+	left: 130px; /* было (HEAD): 30px */
+	transform: rotate(-45deg);
+	justify-content: center;
+	z-index: 2;
 }
 
 .zone2 {
-  /*border: 1px solid black; */
 	display: flex;
-  width: 300px;
-  height: 150px;
-  position: fixed;
-  bottom: 170px;
-  left: 50% ;
-  transform: translateX(-50%);
-  justify-content: center;
-  z-index: 2;
+	width: 300px;
+	height: 150px;
+	position: fixed;
+	bottom: 170px;
+	left: 50%;
+	transform: translateX(-50%);
+	justify-content: center;
+	z-index: 2;
 }
 
 .zone_opponent {
@@ -566,28 +609,27 @@ a{
   z-index: 2;
 }
 .zone_opponent2 {
-  /*border: 1px solid black; */
+  /* border: 1px solid black; */
 	display: flex;
   width: 300px;
   height: 150px;
   position: fixed;
-  top: 220px;
+  top: 270px;
   right: 150px ;
 	transform:  rotate(45deg);
   justify-content: center;
   z-index: 2;
 }
 .zone_opponent3 {
-  /*border: 1px solid black; */
 	display: flex;
-  width: 300px;
-  height: 150px;
-  position: fixed;
-  top: 220px;
-  left: 150px ;
-	transform:  rotate(-45deg);
-  justify-content: center;
-  z-index: 2;
+	width: 300px;
+	height: 150px;
+	position: fixed;
+	top: 195px; /* было (HEAD): 220px */
+	left: 245px; /* было (HEAD): 150px */
+	transform: rotate(-45deg);
+	justify-content: center;
+	z-index: 2;
 }
 
 .zone_opponent_side {
@@ -607,29 +649,28 @@ a{
 .zone_opponent2_side {
 	display: flex;
   flex-direction: row; 
-  width: 300px;
+  width: 200px;
   height: 150px;
   position: fixed;
-  top: 100px;
-	right: 375px;
+  top: 65px;
+	right: 325px;
   justify-content: end; 
   z-index: 1;
-  /*border: 1px solid black; */
+  /* border: 1px solid black; */
   transform: rotate(-45deg);
 }
 
 .zone_opponent3_side {
 	display: flex;
-  flex-direction: row; 
-  width: 300px;
-  height: 150px;
-  position: fixed;
-  top: 445px;
-	left: 30px;
-  justify-content: start; 
-  z-index: 1;
-  /*border: 1px solid black; */
-  transform: rotate(45deg);
+	flex-direction: row;
+	width: 200px; /* было (HEAD): 300px */
+	height: 150px;
+	position: fixed;
+	top: 275px; /* было (HEAD): 445px */
+	left: 45px; /* было (HEAD): 30px */
+	justify-content: flex-start; /* было (HEAD): start */
+	z-index: 1;
+	transform: rotate(45deg);
 }
 
 .zone3 {
@@ -675,18 +716,54 @@ a{
 
 .zone5 {
 	display: flex;
-  flex-direction: row; 
-  width: 300px;
-  height: 150px;
-  position: fixed;
-  bottom: 100px;
-  justify-content: center; 
-  z-index: 1;
-  left: 50%;
-  /*border: 1px solid black; */
-  transform: translateX(110px) rotate(-90deg);
+	flex-direction: row;
+	width: 300px;
+	height: 150px;
+	position: fixed;
+	bottom: 100px;
+	justify-content: center;
+	z-index: 1;
+	left: 50%;
+	transform: translateX(110px) rotate(-90deg);
 }
 
+/* Пятый игрок (нижний левый): рука + экипировка + боковая зона. */
+.opponent_bl_hand {
+	display: flex;
+	width: 300px;
+	height: 150px;
+	position: fixed;
+	bottom: 160px;
+	left: 30px;
+	transform: rotate(45deg);
+	justify-content: center;
+	z-index: 2;
+}
+
+.zone_opponent_bl {
+	display: flex;
+	width: 300px;
+	height: 150px;
+	position: fixed;
+	bottom: 280px;
+	left: 150px;
+	transform: rotate(45deg);
+	justify-content: center;
+	z-index: 2;
+}
+
+.zone_opponent_bl_side {
+	display: flex;
+	flex-direction: row;
+	width: 200px;
+	height: 150px;
+	position: fixed;
+	bottom: 70px;
+	left: 320px;
+	justify-content: flex-start;
+	z-index: 1;
+	transform: rotate(-45deg);
+}
 
 .zone3, .zone_monster {
   position: fixed;
@@ -805,33 +882,6 @@ a{
   margin-right: 10px;
 }
 
-.top-left {
-	position: absolute;
- top: calc(25vh + 26px);
- left: 10px;
- display: none;
-}
-.PowerPlayer4{
-	font-weight: bold;
-	position: absolute;
-	right: 30px;
-	top:78px !important;
-	font-size: 20px;
- }
-.top-right {
-	position: absolute;
- top: calc(25vh + 26px);
- right: 10px;
- display: none;
-}
-.PowerPlayer3{
-	font-weight: bold;
-	position: absolute;
-	left: 30px;
-	top:78px !important;
-	font-size: 20px;
- }
-
 .bottom-left {
 	position: absolute;
  bottom: calc(25vh - 10px);
@@ -886,7 +936,7 @@ a{
  }
  .level-top-left{
  
-   top: 22.5px;
+   top: 2px;
    left: 50px;
    display: none;
  
@@ -897,12 +947,164 @@ a{
    top: 22.5px;
    right: 50px;
    display: none;
+   transform: translate(var(--level-bottom-left-offset-x), var(--level-bottom-left-offset-y));
  
  }
- 
+
+/* Ряд «колонка аватар+уровень | меч+сила» (как нижний #bl-corner-seat-ui). Верхние: .bl-corner-seat-ui.top-left / .top-right / .top-center */
+.bl-corner-seat-ui {
+	display: flex;
+	flex-direction: row;
+	align-items: flex-end;
+	gap: 10px;
+	z-index: 6;
+}
+#bl-corner-seat-ui {
+	--bl-level-offset-x: -5px;
+	--bl-level-offset-y: 10px;
+	position: absolute;
+	left: 20px;
+	bottom: 10px;
+	top: auto;
+	right: auto;
+	transform: none;
+}
+.bl-corner-seat-ui.top-left {
+	position: absolute;
+	top: 20px;
+	left: 20px;
+	bottom: auto;
+	right: auto;
+	transform: none;
+}
+.bl-corner-seat-ui.top-right {
+	position: absolute;
+	top: 20px;
+	right: 20px;
+	left: auto;
+	bottom: auto;
+	transform: none;
+	/* DOM: сначала .bl-corner-power, потом аватар — меч слева от иконки */
+	flex-direction: row;
+}
+.bl-corner-seat-ui.top-center {
+	position: absolute;
+	top: 20px;
+	right: calc(50% - 300px);
+	left: auto;
+	bottom: auto;
+	transform: none;
+	/* Аватар справа: правый край блока = правый край иконки (как у старого .top-center-image + right) */
+	flex-direction: row-reverse;
+}
+.bl-corner-seat-ui .bl-corner-avatar-col {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 4px;
+	flex-shrink: 0;
+}
+/* Верхние слоты: уровень над иконкой (как раньше), иконка в потоке — верх колонки = прежний top иконки */
+.bl-corner-seat-ui.top-left .bl-corner-avatar-col,
+.bl-corner-seat-ui.top-right .bl-corner-avatar-col,
+.bl-corner-seat-ui.top-center .bl-corner-avatar-col {
+	position: relative;
+	gap: 0;
+}
+.bl-corner-seat-ui.top-left .level-top-left {
+	position: absolute;
+	left: 50%;
+	transform: translate(
+		calc(-50% + var(--level-top-left-shift-x)),
+		var(--level-top-shift-y)
+	);
+	bottom: 100%;
+	margin-bottom: 2px;
+	font-weight: bold;
+	font-size: 25px;
+	line-height: 1;
+	white-space: nowrap;
+	z-index: 1;
+}
+.bl-corner-seat-ui.top-right .level-top-right {
+	position: absolute;
+	left: 50%;
+	transform: translate(
+		calc(-50% + var(--level-top-right-shift-x)),
+		var(--level-top-shift-y)
+	);
+	bottom: 100%;
+	margin-bottom: 2px;
+	font-weight: bold;
+	font-size: 25px;
+	line-height: 1;
+	white-space: nowrap;
+	z-index: 1;
+}
+/* Центр сверху: X — var(--level-top-center-shift-x) в :root */
+.bl-corner-seat-ui.top-center .level-top-center {
+	position: absolute;
+	left: 50%;
+	transform: translate(
+		calc(-50% + var(--level-top-center-shift-x)),
+		var(--level-top-shift-y)
+	);
+	bottom: 100%;
+	margin-bottom: 2px;
+	font-weight: bold;
+	font-size: 25px;
+	line-height: 1;
+	white-space: nowrap;
+	z-index: 1;
+}
+.bl-corner-seat-ui .image-container {
+	position: relative;
+	flex-shrink: 0;
+}
+.bl-corner-seat-ui .image-bl-corner {
+	display: block;
+}
+.bl-corner-seat-ui .level-bl-corner {
+	font-weight: bold;
+	font-size: 25px;
+	line-height: 1;
+	transform: translate(var(--bl-level-offset-x), var(--bl-level-offset-y))
+		translate(var(--level-bottom-left-offset-x), var(--level-bottom-left-offset-y));
+}
+.bl-corner-seat-ui .image-top-left,
+.bl-corner-seat-ui .image-top-right,
+.bl-corner-seat-ui .top-center-image {
+	position: static !important;
+	top: auto !important;
+	left: auto !important;
+	right: auto !important;
+	bottom: auto !important;
+	transform: none !important;
+	display: block;
+}
+.bl-corner-seat-ui .bl-corner-power {
+	display: flex;
+	flex-direction: row;
+	align-items: flex-end;
+	gap: 6px;
+	flex-shrink: 0;
+	padding-bottom: 2px;
+}
+.bl-corner-seat-ui .PowerBlCorner,
+.bl-corner-seat-ui .PowerPlayer2,
+.bl-corner-seat-ui .PowerPlayer3,
+.bl-corner-seat-ui .PowerPlayer4 {
+	font-weight: bold;
+	font-size: 20px;
+	line-height: 1;
+}
+.bl-corner-seat-ui .bl-corner-sword {
+	display: block;
+}
+
  .level-top-right{
  
-   top: 22.5px;
+   top: 2px;
    right: 50px;
    display: none;
    
@@ -913,6 +1115,7 @@ a{
    top: 22.5px;
    right: 50px;
    display: none;
+   transform: translate(var(--level-bottom-right-offset-x), var(--level-bottom-right-offset-y));
  
  }
  
@@ -921,6 +1124,7 @@ a{
    bottom: 105px;
    right: 50px;
    left: calc(50% - 240px);
+   transform: translate(var(--level-bottom-center-offset-x), var(--level-bottom-center-offset-y));
  }
 
  .MyPower{
@@ -2015,37 +2219,12 @@ a{
 	font-size: 24px;
 }
 
- .top-center {
-	position: absolute;
-  top: 106px;
-	right: calc(50% - 330px);
-  transform: translateX(-50%);
-	display: flex; /* Включаем flexbox */
-  align-items: center; /* Выравниваем элементы по центру по вертикали */
- }
- .PowerPlayer2{
-	font-weight: bold;
-	position: absolute;
-	top: 8px !important;
-	left: 50px;
-	font-size: 20px;
- }
-
 
  .image-bottom-center {
 	position: absolute;
 	bottom: 10px;
 	left: calc(50% - 230px);
 	transform: translateX(-50%);
- }
-
-
-
- .top-center-image {
-	position: absolute;
-  top: 20px;
-	right: calc(50% - 300px);
-  transform: translateX(-50%);
  }
 
 
@@ -2227,6 +2406,56 @@ button:hover {
   font-size: 24px;
   line-height: 1.1;
   padding: 4px 8px;
+}
+
+/* Кнопки «Принять помощь» у оппонентов (создаются в game.js). Верх-лево / верх-право / сдвиг центра — переменные в :root. Превью нижнего левого — #accept-help-preview-bottom-left в Room. */
+button.accept-help-seat-btn {
+	box-sizing: border-box;
+	display: inline-block;
+	margin-left: 0;
+	padding: 2px 6px;
+	min-width: 86px;
+	font-size: 16px;
+	line-height: 1.05;
+	white-space: normal;
+	text-align: center;
+	cursor: pointer;
+	position: fixed;
+	z-index: 30;
+}
+button.accept-help-seat-btn.accept-help-seat-btn--top-left {
+	top: var(--accept-help-top-left-top);
+	left: var(--accept-help-top-left-left);
+	right: auto;
+	bottom: auto;
+	transform: translateX(-50%);
+}
+button.accept-help-seat-btn.accept-help-seat-btn--top-right {
+	top: var(--accept-help-top-right-top);
+	right: var(--accept-help-top-right-right);
+	left: auto;
+	bottom: auto;
+	transform: translateX(50%);
+}
+button.accept-help-seat-btn.accept-help-seat-btn--top-center {
+	top: var(--accept-help-top-center-top);
+	bottom: auto;
+	right: auto;
+	transform: translate(calc(-50% + var(--accept-help-top-center-shift-x)), 0);
+}
+button.accept-help-seat-btn.accept-help-seat-btn--preview-bottom-left {
+	bottom: var(--accept-help-preview-bl-bottom);
+	left: var(--accept-help-preview-bl-left);
+	top: auto;
+	right: auto;
+	transform: none;
+	pointer-events: none;
+	opacity: 1;
+}
+button.accept-help-seat-btn.accept-help-seat-btn--preview-bottom-left:disabled {
+	opacity: 1;
+	cursor: default;
+	color: inherit;
 }
 
 #end-turn{

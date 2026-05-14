@@ -434,6 +434,7 @@ function isWandOfDowsingActivatableZone(zoneId) {
     || z === 'zone_opponent'
     || z === 'zone_opponent2'
     || z === 'zone_opponent3'
+    || z === 'zone_opponent_bl'
   );
 }
 

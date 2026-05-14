@@ -283,6 +283,7 @@ function setZoneInteractivityByPlayers(numPlayers) {
 		'opponenthand',
 		'opponent2hand',
 		'opponent3hand',
+		'opponent_bl_hand',
 		'zone2',
 		'zone3',
 		'zone5',
@@ -292,6 +293,8 @@ function setZoneInteractivityByPlayers(numPlayers) {
 		'zone_opponent2_side',
 		'zone_opponent3',
 		'zone_opponent3_side',
+		'zone_opponent_bl',
+		'zone_opponent_bl_side',
 		'zone_monster',
 		'zone_doors',
 		'zone_treasure',
@@ -305,6 +308,9 @@ function setZoneInteractivityByPlayers(numPlayers) {
 		'zone2',
 		'zone3',
 		'zone5',
+		'opponent_bl_hand',
+		'zone_opponent_bl',
+		'zone_opponent_bl_side',
 		'zone_monster',
 		'zone_doors',
 		'zone_treasure',
@@ -328,6 +334,18 @@ function setZoneInteractivityByPlayers(numPlayers) {
 	}
 
 	if (numPlayers === 4) {
+		enabledZoneIds.add('opponenthand');
+		enabledZoneIds.add('zone_opponent');
+		enabledZoneIds.add('zone_opponent_side');
+		enabledZoneIds.add('opponent2hand');
+		enabledZoneIds.add('zone_opponent2');
+		enabledZoneIds.add('zone_opponent2_side');
+		enabledZoneIds.add('opponent3hand');
+		enabledZoneIds.add('zone_opponent3');
+		enabledZoneIds.add('zone_opponent3_side');
+	}
+
+	if (numPlayers === 5) {
 		enabledZoneIds.add('opponenthand');
 		enabledZoneIds.add('zone_opponent');
 		enabledZoneIds.add('zone_opponent_side');
@@ -390,22 +408,37 @@ function updatePlayersUiVisibility(numPlayers) {
 		// Два оппонента.
 		setDisplay('.image-top-left', 'block');
 		setDisplay('.level-top-left', 'block');
-		setDisplay('.top-left', 'block');
+		setDisplay('.top-left', 'flex');
 
 		setDisplay('.image-top-right', 'block');
 		setDisplay('.level-top-right', 'block');
-		setDisplay('.top-right', 'block');
+		setDisplay('.top-right', 'flex');
 	}
 
 	if (numPlayers === 4) {
 		// Три оппонента: слева, справа и по центру сверху.
 		setDisplay('.image-top-left', 'block');
 		setDisplay('.level-top-left', 'block');
-		setDisplay('.top-left', 'block');
+		setDisplay('.top-left', 'flex');
 
 		setDisplay('.image-top-right', 'block');
 		setDisplay('.level-top-right', 'block');
-		setDisplay('.top-right', 'block');
+		setDisplay('.top-right', 'flex');
+
+		setDisplay('.top-center-image', 'block');
+		setDisplay('.level-top-center', 'block');
+		setDisplay('.top-center', 'flex');
+	}
+
+	if (numPlayers === 5) {
+		// Пока те же слоты иконок, что при 4P; пятый — зоны *_bl (рука/экипировка) без отдельного блока в container2.
+		setDisplay('.image-top-left', 'block');
+		setDisplay('.level-top-left', 'block');
+		setDisplay('.top-left', 'flex');
+
+		setDisplay('.image-top-right', 'block');
+		setDisplay('.level-top-right', 'block');
+		setDisplay('.top-right', 'flex');
 
 		setDisplay('.top-center-image', 'block');
 		setDisplay('.level-top-center', 'block');
@@ -692,6 +725,8 @@ export function isPlayerPlayZoneElement(zoneEl) {
 		'zone_opponent2_side',
 		'zone_opponent3',
 		'zone_opponent3_side',
+		'zone_opponent_bl',
+		'zone_opponent_bl_side',
 	]);
 	return playZoneIds.has(zoneEl.id);
 }
@@ -762,6 +797,8 @@ const BATTLE_MAIN_SELECTOR_TO_SIDE_SELECTOR = {
 	'#zone_opponent2': '#zone_opponent2_side',
 	'.zone_opponent3': '.zone_opponent3_side',
 	'#zone_opponent3': '#zone_opponent3_side',
+	'.zone_opponent_bl': '.zone_opponent_bl_side',
+	'#zone_opponent_bl': '#zone_opponent_bl_side',
 };
 
 /**
@@ -793,7 +830,7 @@ function getHandElementForPlayerSeat(targetSeat) {
 	if (n === 2) {
 		return document.querySelector(".opponenthand");
 	}
-	if (n === 3 || n === 4) {
+	if (n === 3 || n === 4 || n === 5) {
 		const bz = getSeatToBattleZoneMap();
 		const mainSel = bz[String(targetSeat)] ?? bz[targetSeat];
 		if (!mainSel) {
@@ -804,6 +841,9 @@ function getHandElementForPlayerSeat(targetSeat) {
 		}
 		if (mainSel.includes("zone_opponent3")) {
 			return document.getElementById("opponent3hand");
+		}
+		if (mainSel.includes("zone_opponent_bl")) {
+			return document.getElementById("opponent_bl_hand");
 		}
 		if (mainSel.includes("zone_opponent")) {
 			return document.getElementById("opponenthand");
@@ -2536,6 +2576,9 @@ function applyWandOfDowsingResolve({ wandCardId, pickedCardId, actorSeat }) {
 	adjustCardWidth(".opponent3hand");
 	adjustCardWidth(".zone_opponent3");
 	adjustCardWidth(".zone_opponent3_side");
+	adjustCardWidth(".opponent_bl_hand");
+	adjustCardWidth(".zone_opponent_bl");
+	adjustCardWidth(".zone_opponent_bl_side");
 	UpdatebackImgTreasure();
 	UpdatebackImgDoor();
 	recalculateAllPowerDisplays();
@@ -2707,6 +2750,9 @@ function applyTransferralPotionResolve({ potionCardId, newFighterSeat }) {
 	adjustCardWidth(".opponent3hand");
 	adjustCardWidth(".zone_opponent3");
 	adjustCardWidth(".zone_opponent3_side");
+	adjustCardWidth(".opponent_bl_hand");
+	adjustCardWidth(".zone_opponent_bl");
+	adjustCardWidth(".zone_opponent_bl_side");
 	UpdatebackImgTreasure();
 	UpdatebackImgDoor();
 	recalculateAllPowerDisplays();
@@ -3526,7 +3572,7 @@ function findTreasureCardInSeatZones(cardId, seat) {
 				return hit;
 			}
 		}
-		const zoneSels = [".zone_opponent", ".zone_opponent2", ".zone_opponent3", ".zone_opponent_side", ".zone_opponent2_side", ".zone_opponent3_side"];
+		const zoneSels = [".zone_opponent", ".zone_opponent2", ".zone_opponent3", ".zone_opponent_bl", ".zone_opponent_side", ".zone_opponent2_side", ".zone_opponent3_side", ".zone_opponent_bl_side"];
 		for (const sel of zoneSels) {
 			const z = document.querySelector(sel);
 			if (!z || zones.includes(z)) {
@@ -5330,13 +5376,15 @@ function appendCardToSeatHand(cardId, seat) {
 		// Для 2p достаточно взять .opponenthand, для 3p используем id по селектору зоны.
 		if (num === 2) {
 			hand = document.querySelector(".opponenthand") || hand;
-		} else if (Number(num) === 3 || Number(num) === 4) {
+		} else if (Number(num) === 3 || Number(num) === 4 || Number(num) === 5) {
 			const bz = getSeatToBattleZoneMap();
 			const mainSel = bz[String(seat)] ?? bz[seat];
 			if (mainSel?.includes("zone_opponent2") && !mainSel.includes("zone_opponent3")) {
 				hand = document.getElementById("opponent2hand") || hand;
 			} else if (mainSel?.includes("zone_opponent3")) {
 				hand = document.getElementById("opponent3hand") || hand;
+			} else if (mainSel?.includes("zone_opponent_bl")) {
+				hand = document.getElementById("opponent_bl_hand") || hand;
 			} else if (mainSel?.includes("zone_opponent")) {
 				hand = document.getElementById("opponenthand") || hand;
 			}
@@ -5350,7 +5398,7 @@ function appendCardToSeatHand(cardId, seat) {
 			hand = document.querySelector(".myhand");
 		} else if (num === 2) {
 			hand = document.querySelector(".opponenthand") || document.getElementById("opponenthand");
-		} else if (Number(num) === 3 || Number(num) === 4) {
+		} else if (Number(num) === 3 || Number(num) === 4 || Number(num) === 5) {
 			// Пытаемся определить по текущей раскладке зон.
 			const bz = getSeatToBattleZoneMap();
 			const mainSel = bz[String(seat)] ?? bz[seat];
@@ -5358,6 +5406,8 @@ function appendCardToSeatHand(cardId, seat) {
 				hand = document.getElementById("opponent2hand");
 			} else if (mainSel?.includes("zone_opponent3")) {
 				hand = document.getElementById("opponent3hand");
+			} else if (mainSel?.includes("zone_opponent_bl")) {
+				hand = document.getElementById("opponent_bl_hand");
 			} else if (mainSel?.includes("zone_opponent")) {
 				hand = document.getElementById("opponenthand");
 			}
@@ -5383,6 +5433,9 @@ function appendCardToSeatHand(cardId, seat) {
 	adjustCardWidth(".opponent3hand");
 	adjustCardWidth(".zone_opponent3");
 	adjustCardWidth(".zone_opponent3_side");
+	adjustCardWidth(".opponent_bl_hand");
+	adjustCardWidth(".zone_opponent_bl");
+	adjustCardWidth(".zone_opponent_bl_side");
 	UpdatebackImgTreasure();
 	UpdatebackImgDoor();
 }
@@ -6474,6 +6527,9 @@ function applyThiefTheftStolenCardMove(thiefSeat, fromSeat, cardId) {
 	adjustCardWidth(".opponent3hand");
 	adjustCardWidth(".zone_opponent3");
 	adjustCardWidth(".zone_opponent3_side");
+	adjustCardWidth(".opponent_bl_hand");
+	adjustCardWidth(".zone_opponent_bl");
+	adjustCardWidth(".zone_opponent_bl_side");
 	UpdatebackImgTreasure();
 	UpdatebackImgDoor();
 	recalculateAllPowerDisplays();
@@ -9855,6 +9911,9 @@ function applyMoveCardLocally(move) {
 	adjustCardWidth('.opponent3hand');
 	adjustCardWidth('.zone_opponent3');
 	adjustCardWidth('.zone_opponent3_side');
+	adjustCardWidth('.opponent_bl_hand');
+	adjustCardWidth('.zone_opponent_bl');
+	adjustCardWidth('.zone_opponent_bl_side');
 	UpdatebackImgTreasure();
 	UpdatebackImgDoor();
 	recalculateAllPowerDisplays();
@@ -11882,17 +11941,11 @@ function ensureAcceptHelpButtonForSeat(seat) {
 			: powerElement.parentElement;
 	if (!btn) {
 		btn = document.createElement('button');
+		btn.type = 'button';
 		btn.id = `accept-help-seat-${seat}`;
+		btn.className = 'accept-help-seat-btn';
 		btn.innerHTML = 'Принять<br>помощь';
 		btn.style.display = 'none';
-		btn.style.marginLeft = '0';
-		btn.style.padding = '2px 6px';
-		btn.style.minWidth = '86px';
-		btn.style.fontSize = '16px';
-		btn.style.lineHeight = '1.05';
-		btn.style.whiteSpace = 'normal';
-		btn.style.textAlign = 'center';
-		btn.style.cursor = 'pointer';
 		btn.addEventListener('click', () => {
 			if (!battleActive || localSeat !== getMonsterFightSeat() || acceptedHelperSeat !== null) {
 				return;
@@ -11907,6 +11960,7 @@ function ensureAcceptHelpButtonForSeat(seat) {
 	} else if (btn.parentElement !== anchorParent) {
 		anchorParent.appendChild(btn);
 	}
+	btn.classList.add('accept-help-seat-btn');
 	return btn;
 }
 
@@ -11917,6 +11971,7 @@ function positionAcceptHelpButtonForSeat(seat, btn) {
 	// Единственный корректный источник позиции аватаров по месту игрока.
 	const seatToIconMap = getSeatToIconMap();
 	const iconSelector = seatToIconMap[seat];
+	btn.classList.remove('accept-help-seat-btn--top-left', 'accept-help-seat-btn--top-right', 'accept-help-seat-btn--top-center');
 	if (!iconSelector) {
 		btn.style.position = '';
 		btn.style.left = '';
@@ -11932,25 +11987,39 @@ function positionAcceptHelpButtonForSeat(seat, btn) {
 	}
 	const rect = iconElement.getBoundingClientRect();
 	btn.style.position = 'fixed';
+	btn.style.zIndex = '30';
+
+	if (iconSelector === '.image-top-right') {
+		btn.classList.add('accept-help-seat-btn--top-right');
+		btn.style.left = '';
+		btn.style.right = '';
+		btn.style.top = '';
+		btn.style.transform = '';
+		return;
+	}
+	if (iconSelector === '.image-top-left') {
+		btn.classList.add('accept-help-seat-btn--top-left');
+		btn.style.left = '';
+		btn.style.right = '';
+		btn.style.top = '';
+		btn.style.transform = '';
+		return;
+	}
+
 	btn.style.left = '';
 	btn.style.right = '';
-	if (iconSelector === '.image-top-right') {
-		// Для правой верхней иконки позиционируем от правого края — проще держать симметрию.
-		btn.style.right = '46px';
-		btn.style.transform = 'translateX(50%)';
-		btn.style.top = `${rect.bottom + 28}px`;
-	} else if (iconSelector === '.top-center-image') {
-		// Та же вертикаль, что у остальных «Принять помощь»; по горизонтали чуть правее центра под иконкой.
+	if (iconSelector === '.top-center-image') {
+		btn.classList.add('accept-help-seat-btn--top-center');
 		btn.style.left = `${rect.left + rect.width / 2}px`;
-		btn.style.transform = 'translate(calc(-50% + 220px), 0px)';
-		btn.style.top = `${rect.bottom + 28}px`;
-	} else {
-		const left = rect.left + rect.width / 2;
-		btn.style.left = `${left}px`;
-		btn.style.transform = 'translateX(-50%)';
-		btn.style.top = `${rect.bottom + 28}px`;
+		btn.style.top = '';
+		btn.style.transform = '';
+		return;
 	}
-	btn.style.zIndex = '30';
+
+	const left = rect.left + rect.width / 2;
+	btn.style.left = `${left}px`;
+	btn.style.transform = 'translateX(-50%)';
+	btn.style.top = `${rect.bottom + 28}px`;
 }
 
 function updateHelpUi() {
@@ -12685,6 +12754,9 @@ socket.on("message", response => {
 	adjustCardWidth('.opponent3hand');
 	adjustCardWidth('.zone_opponent3');
 	adjustCardWidth('.zone_opponent3_side');
+	adjustCardWidth('.opponent_bl_hand');
+	adjustCardWidth('.zone_opponent_bl');
+	adjustCardWidth('.zone_opponent_bl_side');
     UpdatebackImgTreasure();
     UpdatebackImgDoor();
 		// Важно: не пересчитываем здесь, потому что ниже есть "инварианты" (Cheat/Наёмничек),

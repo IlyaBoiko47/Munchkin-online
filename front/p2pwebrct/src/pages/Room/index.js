@@ -58,6 +58,13 @@ export default function Room() {
 							<div className="zone_opponent3_side cards-zone" id="zone_opponent3_side">
 							</div>
 
+							<div className="opponent_bl_hand cards-zone" id="opponent_bl_hand">
+							</div>
+							<div className="zone_opponent_bl cards-zone" id="zone_opponent_bl">
+							</div>
+							<div className="zone_opponent_bl_side cards-zone" id="zone_opponent_bl_side">
+							</div>
+
 							<div className="zone2 cards-zone" id="zone2">
 							</div>
 							
@@ -131,16 +138,8 @@ export default function Room() {
 					</section>
 					<div className="container2">
 						<div className="image-container">
-							<img src="../img/svg/лого 8.svg" alt="Image 1" className="image-top-left"/>
-							<span className="level-top-left">1</span>
-						</div>
-						<div className="image-container">
 							<img src="../img/svg/лого 8.svg" alt="Image 1" className="image-bottom-left"/>
 							<span className="level-bottom-left">1</span>
-						</div>
-						<div className="image-container">
-							<img src="../img/svg/лого 9.svg" alt="Image 2" className="image-top-right"/>
-							<span className="level-top-right">1</span>
 						</div>
 						<div className="image-container">
 							<img src="../img/svg/лого 9.svg" alt="Image 2" className="image-bottom-right"/>
@@ -150,23 +149,72 @@ export default function Room() {
 							<img src="../img/svg/лого 8.svg" alt="Image 1" className="image-bottom-center"/>
 							<span className="level-bottom-center">1</span>
 						</div>
-						<div className="image-container">
-							<img src="../img/svg/лого 9.svg" alt="Image 2" className="top-center-image"/>
-							<span className="level-top-center">1</span>
+
+						<div className="bl-corner-seat-ui top-left">
+							<div className="bl-corner-avatar-col">
+								<span className="level-top-left">1</span>
+								<div className="image-container">
+									<img src="../img/svg/лого 8.svg" alt="Image 1" className="image-top-left" />
+								</div>
+							</div>
+							<div className="bl-corner-power">
+								<img src="../img/svg/sword_icon-icons 2.svg" alt="" className="bl-corner-sword" />
+								<span id="PowerPlayer4" className="PowerPlayer4">0</span>
+							</div>
 						</div>
 
-						<div className="top-left">
-							<span id="PowerPlayer4" className="PowerPlayer4">0</span>
-							<img  src="../img/svg/sword_icon-icons 2.svg" alt="картинка"/>
+						<div className="bl-corner-seat-ui top-right">
+							<div className="bl-corner-power">
+								<img src="../img/svg/sword_icon-icons 2.svg" alt="" className="bl-corner-sword" />
+								<span id="PowerPlayer3" className="PowerPlayer3">0</span>
+							</div>
+							<div className="bl-corner-avatar-col">
+								<span className="level-top-right">1</span>
+								<div className="image-container">
+									<img src="../img/svg/лого 9.svg" alt="Image 2" className="image-top-right" />
+								</div>
+							</div>
 						</div>
-						<div className="top-right">
-							<span id="PowerPlayer3" className="PowerPlayer3">0</span>
-							<img  src="../img/svg/sword_icon-icons 2.svg" alt="картинка"/>
+
+						<div className="bl-corner-seat-ui top-center">
+							<div className="bl-corner-avatar-col">
+								<span className="level-top-center">1</span>
+								<div className="image-container">
+									<img src="../img/svg/лого 9.svg" alt="Image 2" className="top-center-image" />
+								</div>
+							</div>
+							<div className="bl-corner-power">
+								<img src="../img/svg/sword_icon-icons 2.svg" alt="" className="bl-corner-sword" />
+								<span id="PowerPlayer2" className="PowerPlayer2">0</span>
+							</div>
 						</div>
+
+						<div className="bl-corner-seat-ui" id="bl-corner-seat-ui">
+							<div className="bl-corner-avatar-col">
+								<span className="level-bl-corner">1</span>
+								<div className="image-container">
+									<img src="../img/svg/лого 8.svg" alt="" className="image-bl-corner" />
+								</div>
+							</div>
+							<div className="bl-corner-power">
+								<img src="../img/svg/sword_icon-icons 2.svg" alt="" className="bl-corner-sword" />
+								<span className="PowerBlCorner">0</span>
+							</div>
+						</div>
+
 						<div className="bottom-left">
 							<span id="PowerPlayer5" className="PowerPlayer5">0</span>
 							<img  src="../img/svg/sword_icon-icons 2.svg" alt="картинка"/>
 						</div>
+						<button
+							type="button"
+							id="accept-help-preview-bottom-left"
+							className="accept-help-seat-btn accept-help-seat-btn--preview-bottom-left"
+							tabIndex={-1}
+							disabled
+						>
+							Принять<br />помощь
+						</button>
 						<div className="bottom-right">
 							<span id="PowerPlayer6" className="PowerPlayer6">0</span>
 							<img  src="../img/svg/sword_icon-icons 2.svg" alt="картинка"/>
@@ -174,10 +222,6 @@ export default function Room() {
 						<div className="bottom-center">
 							<img src="../img/money-bag.png" alt="" className="MoneyBag"/>
 							<span id="MyPower" className="MyPower">0</span>
-							<img  src="../img/svg/sword_icon-icons 2.svg" alt="картинка"/>
-						</div>
-						<div className="top-center">
-							<span id="PowerPlayer2" className="PowerPlayer2">0</span>
 							<img  src="../img/svg/sword_icon-icons 2.svg" alt="картинка"/>
 						</div>
 
