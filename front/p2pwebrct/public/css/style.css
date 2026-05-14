@@ -387,6 +387,12 @@ a{
   align-items: center;
 }
 
+/* Увеличенный просмотр: стрелки всегда видны (без hover по корню модалки) */
+.card-zoom-modal #prev-button,
+.card-zoom-modal #next-button {
+  display: block !important;
+}
+
 .modal-content {
   max-width: 90%;
   max-height: 90%;

@@ -1,4 +1,4 @@
-import { UpdateZones } from './увеличение карточек во время игры.js';
+import { UpdateZones, closeCardZoomModal } from './увеличение карточек во время игры.js';
 import { UpdatebackImgTreasure, UpdatebackImgDoor, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, scheduleWanderingMonsterIfNeeded, scheduleCheatIfNeeded, scheduleMagicLampIfNeeded, schedulePollymorthPotionIfNeeded, scheduleIllusionIfNeeded, scheduleMateIfNeeded, canLocalPlayMagicLampToBattleZone, canPlaceTreasureInPlayerEquipment, canPlaceDoorInPlayerEquipment, canPlaceDopplegangerTreasureInBonusZone, canPlaceYuppieWaterTreasureInBonusZone, getLocalSeatForSocket, getMonsterBattleContext, notifyIfTreasureLevelBlockedOnSeat, notifyIfKillHirelingBlockedOnSeat, notifyIfWhineAtGMBlockedOnSeat } from './game.js';
 import socket from './socket/index.js';
 //import {socket} from './game.js';
@@ -88,9 +88,13 @@ function canPlaceMagicLampIntoBattleZone(cardEl, zoneEl) {
 }
 
 function dragend_handler(e) {
-	const c = e.target && e.target.closest && e.target.closest('.card');
-	if (c) {
-		c.style.filter = '';
+	if (currentDrag) {
+		currentDrag.style.filter = '';
+	} else {
+		const c = e.target && e.target.closest && e.target.closest('.card');
+		if (c) {
+			c.style.filter = '';
+		}
 	}
 	// Если drop не сработал (мышь отпустили вне зоны), но во время dragover карта уже "заехала" в последнюю зону —
 	// считаем это валидным переносом и отправляем moveCard так же, как в drop_handler.
@@ -197,10 +201,13 @@ function recalculateMyPower(shouldSync = true) {
 	return newValue;
 }
 
-function dragstart_handler(e) {
-  currentDrag = e.target.closest('.card');
-	//console.log('старт сработал');
-	const zone = e.target.closest('.cards-zone');
+/** Общая инициация перетаскивания для реальной карты `.card` (с поля или из увеличенного превью). */
+function setupDragStateFromCard(cardEl) {
+	if (!cardEl || !cardEl.classList.contains('card')) {
+		return;
+	}
+	currentDrag = cardEl;
+	const zone = cardEl.closest('.cards-zone');
 	if (currentDrag && currentDrag.parentElement) {
 		dragFromSnapshot = {
 			parent: currentDrag.parentElement,
@@ -213,7 +220,6 @@ function dragstart_handler(e) {
 	lastHoverZone = null;
 	lastHoverTargetCard = null;
 	dropHandled = false;
-	// console.log(zone);
 
 	if (zone?.classList.contains('zone3') && currentDrag) {
 	// Получаем значение power из currentDrag
@@ -274,8 +280,48 @@ function dragstart_handler(e) {
 		}
 		}
 	}
-  
 }
+
+/**
+ * Старт drag с увеличенной картинки в модалке: двигается та же DOM-карта, что на столе.
+ * Модалку закрываем асинхронно, иначе удаление элемента, с которого начали drag, обрывает сессию.
+ */
+export function beginDragFromZoomImage(cardEl, dragEvent) {
+	if (!cardEl?.classList?.contains?.('card')) {
+		return;
+	}
+	if (dragEvent?.dataTransfer) {
+		dragEvent.dataTransfer.effectAllowed = 'move';
+		try {
+			if (cardEl.id) {
+				dragEvent.dataTransfer.setData('text/plain', cardEl.id);
+			}
+		} catch {
+			// ignore
+		}
+		const item = cardEl.querySelector('.card-item');
+		if (item) {
+			try {
+				const r = item.getBoundingClientRect();
+				dragEvent.dataTransfer.setDragImage(item, Math.max(1, r.width / 2), Math.max(1, r.height / 2));
+			} catch {
+				// ignore
+			}
+		}
+	}
+	setupDragStateFromCard(cardEl);
+	setTimeout(() => closeCardZoomModal(), 0);
+}
+
+function dragstart_handler(e) {
+	closeCardZoomModal();
+	const card = e.target.closest('.card');
+	if (!card) {
+		return;
+	}
+	setupDragStateFromCard(card);
+}
+
 function dragover_handler(e) {
 	e.preventDefault();
 
