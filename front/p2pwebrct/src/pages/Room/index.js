@@ -17,7 +17,7 @@ function isTabRoomProfileIncomplete(rid) {
 
 export default function Room() {
   const {id: roomID} = useParams();
-  const {clients, provideMediaRef} = useWebRTC(roomID);
+  const {clients, provideMediaRef, micMuted, toggleMicMute} = useWebRTC(roomID);
 
   useLayoutEffect(() => {
     if (!roomID) {
@@ -138,6 +138,19 @@ export default function Room() {
 							</div>
 							<div className="battle-result" id="battle-result"></div>
 							<div className="timer" id="timer"></div>
+							<button
+								type="button"
+								id="voice-mic-toggle"
+								className="voice-mic-toggle"
+								aria-label={micMuted ? 'Включить микрофон' : 'Выключить микрофон'}
+								aria-pressed={micMuted}
+								onClick={toggleMicMute}
+							>
+								<img
+									src={micMuted ? '../img/svg/microphone_off.png' : '../img/svg/microphone_on.png'}
+									alt=""
+								/>
+							</button>
 							<div className="fold" id="fold">Пас</div>
 							<div className="fold" id="end-turn">Завершить ход</div>
 							<div className="abilities-panel" id="abilities-panel">

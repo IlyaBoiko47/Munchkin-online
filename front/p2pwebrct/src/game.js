@@ -16435,7 +16435,9 @@ let foldedOnTurnSeat = null;
 let battleTurnSeat = null;
 let timerSecondsRemaining = 0;
 let timerRunning = false;
-export function timer(initialSeconds = 30, restoring = false) {
+const TURN_TIMER_SECONDS = 60;
+
+export function timer(initialSeconds = TURN_TIMER_SECONDS, restoring = false) {
   if (!getMonsterBattleContext().hasMonster) {
     return;
   }
@@ -16463,7 +16465,7 @@ export function timer(initialSeconds = 30, restoring = false) {
     return; 
   }
 
-  let secondsRemaining = Math.max(1, parseInt(initialSeconds, 10) || 30);
+  let secondsRemaining = Math.max(1, parseInt(initialSeconds, 10) || TURN_TIMER_SECONDS);
   timerSecondsRemaining = secondsRemaining;
   timerRunning = true;
   flag = true;

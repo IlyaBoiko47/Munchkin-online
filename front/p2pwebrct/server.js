@@ -1321,7 +1321,7 @@ io.on('connection', socket => {
           ...game,
           timerRunning: true,
           turnStartedAt: Date.now(),
-          turnDurationMs: 30000,
+          turnDurationMs: 60000,
         },
       });
     }

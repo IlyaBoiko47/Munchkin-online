@@ -2439,7 +2439,7 @@ button:hover {
 
 .timer{
 	position: fixed; /* элемент будет позиционироваться фиксированно */
-  left: 25%; /* устанавливаем левую позицию элемента на 50% */
+  left: 27%;
   top: 35%; /* устанавливаем верхнюю позицию элемента на 50% */
   transform: translate(-50%, -30%); /* смещаем элемент на половину его ширины и высоты */
   display: flex; /* устанавливаем внешний вид элемента в виде flex контейнера */
@@ -2447,6 +2447,36 @@ button:hover {
   align-items: center; /* выравниваем элемент по вертикали по центру */
 	width: auto;
 	height: auto;
+}
+
+#fold {
+  left: 73%;
+}
+
+.voice-mic-toggle {
+  position: fixed;
+  left: 27%;
+  top: calc(35% + 2.75rem);
+  transform: translateX(-50%);
+  z-index: 40;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  line-height: 0;
+  transition: background-color 0.2s ease;
+}
+
+.voice-mic-toggle:hover {
+  background-color: rgba(0, 0, 0, 0.45);
+}
+
+.voice-mic-toggle img {
+  width: 48px;
+  height: 48px;
+  display: block;
+  pointer-events: none;
 }
 
 .fold{
@@ -2507,7 +2537,7 @@ button:hover {
   background-color: rgba(0, 0, 0, 0.58);
 }
 
-/* Кнопки «Принять помощь» у оппонентов (создаются в game.js). Превью нижнего левого — #accept-help-preview-bottom-left в Room. */
+/* Кнопки «Принять помощь» у оппонентов (создаются в game.js).*/
 button.accept-help-seat-btn {
 	box-sizing: border-box;
 	display: inline-block;
