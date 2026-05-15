@@ -1,7 +1,7 @@
 import {useState, useEffect, useRef} from 'react';
 import socket from '../../socket';
 import ACTIONS from '../../socket/actions';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {v4} from 'uuid';
 import { openPlayerProfileModal, hidePlayerProfileModal } from '../../playerProfileModal.js';
 import { rememberRoomTitleForClient, getStoredRoomTitleForList, ROOM_TITLE_QUERY } from '../../roomTitleBridge.js';
@@ -44,10 +44,18 @@ function hasCompleteLocalProfile() {
 
 export default function Main() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [rooms, updateRooms] = useState([]);
   const rootNode = useRef();
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [newRoomTitle, setNewRoomTitle] = useState('');
+
+  useEffect(() => {
+    if (searchParams.get('create') === '1') {
+      setCreateModalOpen(true);
+      setSearchParams({}, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
 
   useEffect(() => {
     const handler = ({rooms: raw = []} = {}) => {
@@ -91,6 +99,9 @@ export default function Main() {
 
   return (
     <div className='join_room' ref={rootNode}>
+      <p className="join_room-back">
+        <a href="/start_of_play.html">← Назад</a>
+      </p>
       <h1>Созданные комнаты:</h1>
 
       <ul className="join_room-list">

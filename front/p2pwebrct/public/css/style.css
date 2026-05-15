@@ -2296,6 +2296,23 @@ button:hover {
 
 
 /* join_room style*/
+.join_room-back {
+	margin: 0 0 12px 24px;
+	font-size: 18px;
+}
+.join_room-back a {
+	color: #f0e6d0;
+	text-decoration: underline;
+}
+.join_room-back a:hover {
+	color: #fff;
+}
+
+.header__link--disabled {
+	opacity: 0.55;
+	cursor: default;
+}
+
 .join_room{
 	font-size: 50px;
 	height: 100vh;
@@ -2453,11 +2470,23 @@ button:hover {
   left: 73%;
 }
 
+/* WebRTC: не display:none — иначе Chrome не показывает «заглушить вкладку» */
+.webrtc-audio {
+  position: fixed;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+  display: block !important;
+  overflow: hidden;
+}
+
 .voice-mic-toggle {
   position: fixed;
   left: 27%;
-  top: calc(35% + 2.75rem);
-  transform: translateX(-50%);
+  top: 50%;
+  transform: translate(-50%, -50%);
   z-index: 40;
   padding: 6px 14px;
   border: none;

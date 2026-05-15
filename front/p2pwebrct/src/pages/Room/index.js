@@ -43,19 +43,20 @@ export default function Room() {
 				<span id="room-lobby-max" className="room-lobby-bar__max">5</span>
 				<span className="room-lobby-bar__hint">игроков</span>
 			</div>
-      {clients.map((clientID, index) => {
-        return (
-          <div key={clientID} id={clientID}>
+      {clients.map((clientID) => (
+        <div key={clientID} id={clientID} className="webrtc-audio-host" aria-hidden="true">
+          {clientID !== LOCAL_AUDIO ? (
             <audio
-              ref={instance => {
+              className="webrtc-audio webrtc-audio--remote"
+              ref={(instance) => {
                 provideMediaRef(clientID, instance);
               }}
               autoPlay
-              muted={clientID === LOCAL_AUDIO}
+              playsInline
             />
-          </div>
-        );
-      })}
+          ) : null}
+        </div>
+      ))}
 			<div>
 				<main className="main">
 					<section className="area">
@@ -163,7 +164,7 @@ export default function Room() {
 							<div className="fold" id="offer-help">Предложить помощь</div>
 
 							<div className="settings_in_game_board">
-								<a href="../menu_settings.html" className="settings__logo-link">
+								<a href="/menu_settings.html" className="settings__logo-link">
 									<img src="../img/svg/settings.svg" width="115px" height="115px"alt="Настройки" className="settings__logo-pic"/>
 								</a>
 							</div>

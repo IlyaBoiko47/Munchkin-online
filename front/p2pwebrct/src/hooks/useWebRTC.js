@@ -10,7 +10,7 @@ export const LOCAL_AUDIO = 'LOCAL_AUDIO';
 
 export default function useWebRTC(roomID) {
   const [clients, updateClients] = useStateWithCallback([]);
-  const [micMuted, setMicMuted] = useState(false);
+  const [micMuted, setMicMuted] = useState(true);
 
   function getOrCreatePlayerToken() {
     return getOrCreateTabPlayerToken(roomID || 'global');
@@ -126,21 +126,26 @@ export default function useWebRTC(roomID) {
       return;
     }
     addNewClient(peerID, () => {
+      const attachToElement = (audioEl) => {
+        if (!audioEl) {
+          return;
+        }
+        audioEl.volume = 1;
+        audioEl.muted = false;
+        audioEl.srcObject = remoteStream;
+        if (typeof audioEl.play === 'function') {
+          audioEl.play().catch(() => {});
+        }
+      };
       const el = peerMediaElements.current[peerID];
       if (el) {
-        el.srcObject = remoteStream;
-        if (typeof el.play === 'function') {
-          el.play().catch(() => {});
-        }
+        attachToElement(el);
       } else {
         let settled = false;
         const interval = setInterval(() => {
           const audioEl = peerMediaElements.current[peerID];
           if (audioEl) {
-            audioEl.srcObject = remoteStream;
-            if (typeof audioEl.play === 'function') {
-              audioEl.play().catch(() => {});
-            }
+            attachToElement(audioEl);
             settled = true;
           }
           if (settled) {
@@ -322,14 +327,11 @@ export default function useWebRTC(roomID) {
         localMediaStream.current = await navigator.mediaDevices.getUserMedia({
           audio: true,
         });
-
-        addNewClient(LOCAL_AUDIO, () => {
-          const localAudioElement = peerMediaElements.current[LOCAL_AUDIO];
-          if (localAudioElement) {
-            localAudioElement.volume = 0;
-            localAudioElement.srcObject = localMediaStream.current;
-          }
+        localMediaStream.current.getAudioTracks().forEach((track) => {
+          track.enabled = false;
         });
+
+        addNewClient(LOCAL_AUDIO, () => {});
         return true;
       } catch (e) {
         console.error('Error getting userMedia:', e);

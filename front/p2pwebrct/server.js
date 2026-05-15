@@ -1623,6 +1623,7 @@ const publicPath = path.join(__dirname, 'public');
 const staticPath = fs.existsSync(buildPath) ? buildPath : publicPath;
 
 app.use(express.static(staticPath, {
+  index: false,
   setHeaders: (res, p) => {
     const type = mime.lookup(p);
     if (type) {
@@ -1630,9 +1631,23 @@ app.use(express.static(staticPath, {
     }
   }
 }));
-app.get('*', (req, res) => {
-  res.sendFile(path.join(staticPath, 'index.html'));
+
+const spaIndexPath = path.join(staticPath, 'index.html');
+const homePath = path.join(staticPath, 'home.html');
+
+function sendSpa(req, res) {
+  res.sendFile(spaIndexPath);
+}
+
+app.get('/', (req, res) => {
+  if (fs.existsSync(homePath)) {
+    return res.sendFile(homePath);
+  }
+  return sendSpa(req, res);
 });
+
+app.get('/lobby', sendSpa);
+app.get('/room/:id', sendSpa);
 
 server.listen(PORT, HOST, () => {
   console.log(`Munchkin server started on http://${HOST}:${PORT} (static: ${path.basename(staticPath)})`);

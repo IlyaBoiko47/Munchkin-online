@@ -1,0 +1,136 @@
+/* Масштаб 75% только для контента; фон на весь экран без уменьшения */
+
+html.site-ui-scale {
+  min-height: 100%;
+}
+
+html.site-ui-scale body {
+  min-height: 100vh;
+  margin: 0;
+  position: relative;
+}
+
+/* Фон на весь viewport — не участвует в zoom */
+html.site-ui-scale body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: url(../img/bg.png) no-repeat center center;
+  background-size: cover;
+}
+
+/* Убираем фон с секций — его рисует body::before */
+html.site-ui-scale .menu,
+html.site-ui-scale .area {
+  background: none !important;
+  min-height: 100vh;
+}
+
+html.site-ui-scale .header,
+html.site-ui-scale .main {
+  zoom: 0.75;
+}
+
+@supports not (zoom: 0.75) {
+  html.site-ui-scale .header,
+  html.site-ui-scale .main {
+    transform: scale(0.75);
+    transform-origin: top center;
+    width: 133.333%;
+    margin-left: auto;
+    margin-right: auto;
+  }
+}
+
+/* Все иконки колод — один размер (PNG могут быть разного исходного разрешения) */
+.pack-link .pack__logo-pic,
+.pack-link--static .pack__logo-pic {
+  display: block;
+  width: 205px;
+  height: 290px;
+  object-fit: contain;
+}
+
+/* Колоды без ссылки (2–9): та же анимация, что у .pack-link:hover */
+.pack-link--static {
+  display: inline-block;
+  width: 205px;
+  height: 290px;
+  transition: transform 0.2s;
+  cursor: default;
+}
+
+.pack-link--static:hover {
+  transform: scale(1.1);
+}
+
+/* start_of_play.html — текст и картинка по центру колонки */
+html.site-ui-scale .start_game__list .start_game__nav {
+  align-items: center;
+  justify-content: flex-start;
+  gap: 24px;
+  max-height: none;
+}
+
+html.site-ui-scale .start_game__nav .header__logo-link {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+/* start_of_play.html — иллюстрации без сплющивания (PNG 1280×1024, 5:4) */
+html.site-ui-scale .start_game__logo-pic {
+  display: block;
+  height: auto;
+  object-fit: contain;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+html.site-ui-scale .start_game__logo-pic--connect {
+  width: 400px;
+}
+
+html.site-ui-scale .start_game__logo-pic--create {
+  width: 450px;
+}
+
+/* 1pack.html — текст «Посмотреть колоду», под ним картинка */
+html.site-ui-scale .start_game__nav--deck {
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 24px;
+  max-height: none;
+}
+
+html.site-ui-scale .pack-deck-link {
+  display: block;
+  line-height: 0;
+}
+
+/* 1pack.html — колода помещается на экран */
+html.site-ui-scale .pack_deck {
+  width: 260px;
+  height: auto;
+  max-height: 50vh;
+  object-fit: contain;
+  display: block;
+}
+
+/* Увеличенные правила/карты — 75% (551×858 → 413×644), модалка вне .main */
+html.site-ui-scale .site-zoom-modal .modal-zoom-img {
+  width: 413px;
+  height: auto;
+  max-height: 644px;
+  max-width: min(413px, 90vw);
+  object-fit: contain;
+  display: block;
+  margin: auto;
+}
+
+html.site-ui-scale .site-zoom-modal #prev-button,
+html.site-ui-scale .site-zoom-modal #next-button {
+  display: block !important;
+}
