@@ -356,6 +356,7 @@ export default function useWebRTC(roomID) {
         token,
         roomDisplayName,
       });
+      socket.emit('message', { method: 'RequestRoomLobby', roomID });
     })().catch((e) => console.error('useWebRTC room join failed:', e));
 
     return () => {

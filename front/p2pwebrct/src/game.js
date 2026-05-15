@@ -293,6 +293,9 @@ function setDisplay(selector, displayValue) {
 	}
 }
 
+/** Сколько игроков в лобби (до старта игры) — для иконок мест. */
+let lobbyConnectedPlayers = 1;
+
 function setZoneInteractivityByPlayers(numPlayers) {
 	const allZoneIds = [
 		'myhand',
@@ -317,6 +320,18 @@ function setZoneInteractivityByPlayers(numPlayers) {
 		'zone_doors_drop',
 		'zone_treasure_drop',
 	];
+
+	if (numPlayers <= 0) {
+		allZoneIds.forEach((id) => {
+			const zone = document.getElementById(id);
+			if (!zone) {
+				return;
+			}
+			zone.style.pointerEvents = 'none';
+			zone.style.opacity = '0.5';
+		});
+		return;
+	}
 
 	const enabledZoneIds = new Set([
 		// Базовые игровые зоны, активные в любом количестве игроков.
@@ -384,11 +399,12 @@ function setZoneInteractivityByPlayers(numPlayers) {
 	});
 }
 
-function updatePlayersUiVisibility(numPlayers) {
-	setZoneInteractivityByPlayers(numPlayers);
+function hideAllSeatIconSlots() {
 	setDisplay('#bl-corner-seat-ui', 'none');
+	setDisplay('.bl-corner-seat-ui.top-left', 'none');
+	setDisplay('.bl-corner-seat-ui.top-right', 'none');
+	setDisplay('.bl-corner-seat-ui.top-center', 'none');
 
-	// Скрываем слоты оппонентов.
 	setDisplay('.top-center-image', 'none');
 	setDisplay('.level-top-center', 'none');
 	setDisplay('.top-center', 'none');
@@ -401,6 +417,9 @@ function updatePlayersUiVisibility(numPlayers) {
 	setDisplay('.level-top-right', 'none');
 	setDisplay('.top-right', 'none');
 
+	setDisplay('.image-bl-corner', 'none');
+	setDisplay('.level-bl-corner', 'none');
+
 	setDisplay('.image-bottom-left', 'none');
 	setDisplay('.level-bottom-left', 'none');
 	setDisplay('.bottom-left', 'none');
@@ -408,60 +427,83 @@ function updatePlayersUiVisibility(numPlayers) {
 	setDisplay('.image-bottom-right', 'none');
 	setDisplay('.level-bottom-right', 'none');
 	setDisplay('.bottom-right', 'none');
+}
 
-	// Локальный игрок всегда видим.
+function showTopCenterSeat() {
+	setDisplay('.bl-corner-seat-ui.top-center', 'flex');
+	setDisplay('.top-center-image', 'block');
+	setDisplay('.level-top-center', 'block');
+	setDisplay('.top-center', 'flex');
+}
+
+function showTopLeftSeat() {
+	setDisplay('.bl-corner-seat-ui.top-left', 'flex');
+	setDisplay('.image-top-left', 'block');
+	setDisplay('.level-top-left', 'block');
+	setDisplay('.top-left', 'flex');
+}
+
+function showTopRightSeat() {
+	setDisplay('.bl-corner-seat-ui.top-right', 'flex');
+	setDisplay('.image-top-right', 'block');
+	setDisplay('.level-top-right', 'block');
+	setDisplay('.top-right', 'flex');
+}
+
+function showBottomLeftBlSeat() {
+	setDisplay('#bl-corner-seat-ui', 'flex');
+	setDisplay('.image-bl-corner', 'block');
+	setDisplay('.level-bl-corner', 'block');
+}
+
+/**
+ * Иконки мест по числу игроков в комнате:
+ * 1 — только низ-центр; 2 — +верх-центр; 3 — +верх-слева/справа (без верх-центра);
+ * 4 — +верх-центр; 5 — +низ-слева (BL).
+ */
+function applySeatIconsForPlayerCount(numPlayers) {
+	const n = Math.max(1, Math.min(5, Math.floor(Number(numPlayers) || 1)));
+
+	hideAllSeatIconSlots();
+
 	setDisplay('.image-bottom-center', 'block');
 	setDisplay('.level-bottom-center', 'block');
 	setDisplay('.bottom-center', 'flex');
 
-	if (numPlayers === 2) {
-		// Один оппонент.
-		setDisplay('.top-center-image', 'block');
-		setDisplay('.level-top-center', 'block');
-		setDisplay('.top-center', 'flex');
+	if (n >= 2) {
+		showTopCenterSeat();
+	}
+	if (n >= 3) {
+		setDisplay('.bl-corner-seat-ui.top-center', 'none');
+		setDisplay('.top-center-image', 'none');
+		setDisplay('.level-top-center', 'none');
+		setDisplay('.top-center', 'none');
+		showTopLeftSeat();
+		showTopRightSeat();
+	}
+	if (n >= 4) {
+		showTopCenterSeat();
+	}
+	if (n >= 5) {
+		showBottomLeftBlSeat();
 	}
 
-	if (numPlayers === 3) {
-		// Два оппонента.
-		setDisplay('.image-top-left', 'block');
-		setDisplay('.level-top-left', 'block');
-		setDisplay('.top-left', 'flex');
+	return n;
+}
 
-		setDisplay('.image-top-right', 'block');
-		setDisplay('.level-top-right', 'block');
-		setDisplay('.top-right', 'flex');
+/** Лобби: только иконки, все зоны неактивны. */
+function updateLobbySeatIcons(numPlayers) {
+	const n = applySeatIconsForPlayerCount(numPlayers);
+	lobbyConnectedPlayers = n;
+	if (!gameStarted) {
+		setZoneInteractivityByPlayers(0);
 	}
+}
 
-	if (numPlayers === 4) {
-		// Три оппонента: слева, справа и по центру сверху.
-		setDisplay('.image-top-left', 'block');
-		setDisplay('.level-top-left', 'block');
-		setDisplay('.top-left', 'flex');
-
-		setDisplay('.image-top-right', 'block');
-		setDisplay('.level-top-right', 'block');
-		setDisplay('.top-right', 'flex');
-
-		setDisplay('.top-center-image', 'block');
-		setDisplay('.level-top-center', 'block');
-		setDisplay('.top-center', 'flex');
-	}
-
-	if (numPlayers === 5) {
-		// Четыре оппонента + зона слева снизу (#bl-corner-seat-ui).
-		setDisplay('#bl-corner-seat-ui', 'flex');
-		setDisplay('.image-top-left', 'block');
-		setDisplay('.level-top-left', 'block');
-		setDisplay('.top-left', 'flex');
-
-		setDisplay('.image-top-right', 'block');
-		setDisplay('.level-top-right', 'block');
-		setDisplay('.top-right', 'flex');
-
-		setDisplay('.top-center-image', 'block');
-		setDisplay('.level-top-center', 'block');
-		setDisplay('.top-center', 'flex');
-	}
+function updatePlayersUiVisibility(numPlayers) {
+	const n = applySeatIconsForPlayerCount(numPlayers);
+	lobbyConnectedPlayers = n;
+	setZoneInteractivityByPlayers(n);
 }
 
 /**
@@ -469,14 +511,14 @@ function updatePlayersUiVisibility(numPlayers) {
  * num === 2 | 3 | 4 | 5; иначе Number(num)||window.num (после StartGame num иногда строка или ещё не записан).
  */
 function effectiveSeatLayoutPlayerCount() {
-	if (num === 2 || num === 3 || num === 4 || num === 5) {
+	if (num === 1 || num === 2 || num === 3 || num === 4 || num === 5) {
 		return num;
 	}
 	const n = Number(num) || Number(window.num);
 	if (!Number.isFinite(n)) {
-		return 2;
+		return 1;
 	}
-	return Math.min(5, Math.max(2, Math.floor(n)));
+	return Math.min(5, Math.max(1, Math.floor(n)));
 }
 
 function getSeatToIconMap() {
@@ -13494,6 +13536,11 @@ socket.on("message", response => {
 
 	if (response.method === "RoomLobbyUpdate") {
 		updateRoomLobbyBarFromServer(response.connectedPlayers, response.maxPlayers);
+		if (!gameStarted) {
+			const lobbyCount = Math.max(1, Math.min(5, Math.floor(Number(response.connectedPlayers) || 1)));
+			updateLobbySeatIcons(lobbyCount);
+			bindSeatIconHoverTooltips();
+		}
 		return;
 	}
 
@@ -16402,15 +16449,23 @@ document.addEventListener('DOMContentLoaded', function() {
 	window.button = document.querySelector('.button_start_game');
 	window.zonedoor = document.querySelector('.zone_doors');
 	window.zoneTreasure = document.querySelector('.zone_treasure');
-	// До старта игры отключаем лишние зоны.
+	// До старта игры зоны неактивны; иконки — по RoomLobbyUpdate / RequestRoomLobby.
 	setZoneInteractivityByPlayers(0);
-	if (!window.button) { // Проверка наличия элемента
-		// Если кнопки нет, но игра ещё не стартовала, попробуем позже.
-		// (Если игра восстановится через RoomState, gameStarted станет true и ретраи прекратятся.)
+	if (lobbyConnectedPlayers > 0) {
+		applySeatIconsForPlayerCount(lobbyConnectedPlayers);
+	}
+	if (!window.__lobbySyncRequested) {
+		window.__lobbySyncRequested = true;
+		const roomMatch = window.location.pathname.match(/\/room\/([^/]+)/);
+		const rid = roomMatch && roomMatch[1];
+		if (rid) {
+			socket.emit('message', { method: 'RequestRoomLobby', roomID: rid });
+		}
+	}
+	if (!window.button) {
 		setTimeout(initialize, 1000);
-
-	} else {
-		// Добавляем обработчик события 'click' на кнопку
+	} else if (!window.__startButtonBound) {
+		window.__startButtonBound = true;
 		window.button.addEventListener('click', function() {
 			// Вызываем функцию Start_game() при нажатии на кнопку
 			const Start = {

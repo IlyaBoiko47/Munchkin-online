@@ -509,12 +509,16 @@ function shareRoomsInfo() {
   });
 }
 
-function emitRoomLobbyPlayerCount(roomID) {
+function emitRoomLobbyPlayerCount(roomID, targetSocket) {
   if (!roomID || !validate(roomID) || version(roomID) !== 4) {
     return;
   }
   const size = (io.sockets.adapter.rooms.get(roomID) || new Set()).size;
-  io.to(roomID).emit('message', { method: 'RoomLobbyUpdate', connectedPlayers: size, maxPlayers: MAX_ROOM_PLAYERS });
+  const payload = { method: 'RoomLobbyUpdate', connectedPlayers: size, maxPlayers: MAX_ROOM_PLAYERS };
+  io.to(roomID).emit('message', payload);
+  if (targetSocket) {
+    targetSocket.emit('message', payload);
+  }
 }
 io.on('connection', socket => {
 	
@@ -541,6 +545,14 @@ io.on('connection', socket => {
     if (moveData.method === "Join") {
       // Совместимость со старым протоколом: запоминаем комнату в сокете.
       socket.data.gameRoomID = moveData?.room?.roomID || socket.data.gameRoomID;
+      return;
+    }
+
+    if (moveData.method === 'RequestRoomLobby') {
+      const roomID = moveData.roomID || socket.data.gameRoomID;
+      if (roomID && validate(roomID) && version(roomID) === 4) {
+        emitRoomLobbyPlayerCount(roomID, socket);
+      }
       return;
     }
 
@@ -1404,7 +1416,7 @@ io.on('connection', socket => {
       socket.data.playerToken = String(token);
     }
     shareRoomsInfo();
-    emitRoomLobbyPlayerCount(roomID);
+    emitRoomLobbyPlayerCount(roomID, socket);
 
     const stMeta = roomStates.get(roomID);
     if (

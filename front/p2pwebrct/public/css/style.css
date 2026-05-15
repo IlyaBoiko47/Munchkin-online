@@ -492,10 +492,9 @@ a{
 	display: none !important;
 }
 
-/* Контур всех игровых зон карт (руки, экипировка, бонусы, колоды, сброс — class cards-zone) */
+/* Игровые зоны без видимого контура */
 .cards-zone {
-	border: 2px solid rgba(0, 0, 0, 0.55);
-	border-radius: 8px;
+	border: none;
 	box-sizing: border-box;
 }
 

@@ -1,6 +1,7 @@
 import {useParams} from 'react-router';
-import {useLayoutEffect} from 'react';
+import {useEffect, useLayoutEffect} from 'react';
 import useWebRTC, {LOCAL_AUDIO} from '../../hooks/useWebRTC';
+import socket from '../../socket';
 import { openPlayerProfileModal } from '../../playerProfileModal.js';
 import { readTabProfile } from '../../profileSession.js';
 import "../../card-block";
@@ -18,6 +19,13 @@ function isTabRoomProfileIncomplete(rid) {
 export default function Room() {
   const {id: roomID} = useParams();
   const {clients, provideMediaRef, micMuted, toggleMicMute} = useWebRTC(roomID);
+
+  useEffect(() => {
+    if (!roomID) {
+      return;
+    }
+    socket.emit('message', { method: 'RequestRoomLobby', roomID });
+  }, [roomID]);
 
   useLayoutEffect(() => {
     if (!roomID) {
