@@ -492,10 +492,8 @@ a{
 	display: none !important;
 }
 
-/* Контур игровых зон (в т.ч. неактивных и 6-го игрока) */
 .cards-zone {
-	border: 1px dashed rgba(255, 255, 255, 0.42);
-	border-radius: 8px;
+	border: none;
 	box-sizing: border-box;
 }
 
@@ -766,6 +764,14 @@ a{
 	z-index: 2;
 }
 
+/* Рука seat 5 у владельца: низ по центру (.myhand) */
+#opponent_br_hand.myhand {
+	bottom: 10px;
+	left: 50%;
+	right: auto;
+	transform: translateX(-50%);
+}
+
 .zone_opponent_br {
 	display: flex;
 	width: 300px;
@@ -940,9 +946,9 @@ a{
 	bottom: 10px;
 	left: calc(50% - 300px);
 	transform: translateX(-50%);
-	display: flex; /* Включаем flexbox */
-  align-items: center; /* Выравниваем элементы по центру по вертикали */
- }
+	display: flex;
+	align-items: flex-end;
+}
 
  .level-top-left,
  .level-bottom-left,
@@ -1127,11 +1133,13 @@ a{
 	font-size: 20px;
 	line-height: 1;
 }
+/* Уровень BR: как BL (в потоке над аватаром), X зеркально (+5px), Y те же 15px */
 .bl-corner-seat-ui.bottom-right .level-br-corner {
 	font-weight: bold;
 	font-size: 25px;
 	line-height: 1;
-	transform: translate(-5px, 15px);
+	white-space: nowrap;
+	transform: translate(5px, 10px);
 }
 .bl-corner-seat-ui .bl-corner-sword {
 	display: block;
@@ -1162,13 +1170,21 @@ a{
    transform: translate(0px, 10px);
  }
 
- .MyPower{
+.bottom-center img:not(.MoneyBag) {
+	display: block;
+	align-self: flex-end;
+	flex-shrink: 0;
+}
+
+.bottom-center .MyPower {
 	font-weight: bold;
-	position: absolute;
-	top: 22.5px;
-	right: 50px;
+	position: static;
 	font-size: 20px;
- }
+	line-height: 1;
+	margin-left: 6px;
+	align-self: flex-end;
+	padding-bottom: 2px;
+}
 
 .MoneyBag{
 	position: absolute;
@@ -2692,14 +2708,14 @@ button.accept-help-seat-btn.accept-help-seat-btn--preview-bottom-right:disabled 
 	color: inherit;
 }
 
-/* Превью-кнопка справа снизу: всегда видна; слева скрыта */
-#accept-help-preview-bottom-left {
+/* Превью-кнопки: скрыты, пока updateHelpUi не включит при предложении помощи */
+#accept-help-preview-bottom-left,
+#accept-help-preview-bottom-right {
 	display: none !important;
 }
-#accept-help-preview-bottom-right {
-	display: inline-block;
-}
+#accept-help-preview-bottom-left.is-accept-help-bl-active,
 #accept-help-preview-bottom-right.is-accept-help-br-active {
+	display: inline-block !important;
 	pointer-events: auto;
 	cursor: pointer;
 }

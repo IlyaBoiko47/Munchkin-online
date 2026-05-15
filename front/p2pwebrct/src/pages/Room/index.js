@@ -48,7 +48,7 @@ export default function Room() {
 				<span className="room-lobby-bar__label">В комнате:</span>
 				<span id="room-lobby-connected" className="room-lobby-bar__count">1</span>
 				<span className="room-lobby-bar__sep">/</span>
-				<span id="room-lobby-max" className="room-lobby-bar__max">5</span>
+				<span id="room-lobby-max" className="room-lobby-bar__max">6</span>
 				<span className="room-lobby-bar__hint">игроков</span>
 			</div>
       {clients.map((clientID) => (
@@ -303,8 +303,8 @@ export default function Room() {
 						</div>
 						<div className="bottom-center">
 							<img src="../img/money-bag.png" alt="" className="MoneyBag"/>
+							<img src="../img/svg/sword_icon-icons 2.svg" alt="картинка"/>
 							<span id="MyPower" className="MyPower">0</span>
-							<img  src="../img/svg/sword_icon-icons 2.svg" alt="картинка"/>
 						</div>
 
 						<div className="dice-container"></div>

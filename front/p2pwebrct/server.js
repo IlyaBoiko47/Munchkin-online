@@ -14,8 +14,8 @@ const {version, validate} = require('uuid');
 const ACTIONS = require('./src/socket/actions');
 const PORT = Number(process.env.PORT) || 3001;
 const HOST = process.env.HOST || '0.0.0.0';
-/** Максимум игроков за столом (2–5). */
-const MAX_ROOM_PLAYERS = 5;
+/** Максимум игроков за столом (2–6). */
+const MAX_ROOM_PLAYERS = 6;
 
 function maxSeatIndexForRoom(roomID) {
   const prev = roomStates.get(roomID) || {};
@@ -183,6 +183,15 @@ function dealFromShuffledDecks(roomID, state, doors, treasures, numPlayers, opts
       if (r === 3) return "opponent3hand";
       return "opponenthand";
     }
+    if (numPlayers === 6) {
+      const r = i % 6;
+      if (r === 0) return "myhand";
+      if (r === 1) return "opponent_bl_hand";
+      if (r === 2) return "opponent2hand";
+      if (r === 3) return "opponent3hand";
+      if (r === 4) return "opponenthand";
+      return "opponent_br_hand";
+    }
     return "myhand";
   };
   const treasureHandZoneForIndex = doorHandZoneForIndex;
@@ -295,6 +304,15 @@ function handZoneIdForSeatInRoom(roomID, seat) {
     if (r === 2) return 'opponent2hand';
     if (r === 3) return 'opponent3hand';
     return 'opponenthand';
+  }
+  if (numPlayers === 6) {
+    const r = s % 6;
+    if (r === 0) return 'myhand';
+    if (r === 1) return 'opponent_bl_hand';
+    if (r === 2) return 'opponent2hand';
+    if (r === 3) return 'opponent3hand';
+    if (r === 4) return 'opponenthand';
+    return 'opponent_br_hand';
   }
   return 'myhand';
 }
@@ -1532,6 +1550,29 @@ function matchClientsInRoom(roomID) {
   // Запоминаем seat для токена игрока, чтобы при refresh вернуть того же персонажа.
   const seatMap = roomSeatsByToken.get(roomID) || new Map();
   roomSeatsByToken.set(roomID, seatMap);
+
+  if (clientCount === 6) {
+    const [c0, c1, c2, c3, c4, c5] = clients;
+    const s0 = io.sockets.sockets.get(c0);
+    const s1 = io.sockets.sockets.get(c1);
+    const s2 = io.sockets.sockets.get(c2);
+    const s3 = io.sockets.sockets.get(c3);
+    const s4 = io.sockets.sockets.get(c4);
+    const s5 = io.sockets.sockets.get(c5);
+    if (s0?.data?.playerToken) seatMap.set(String(s0.data.playerToken), 0);
+    if (s1?.data?.playerToken) seatMap.set(String(s1.data.playerToken), 1);
+    if (s2?.data?.playerToken) seatMap.set(String(s2.data.playerToken), 2);
+    if (s3?.data?.playerToken) seatMap.set(String(s3.data.playerToken), 3);
+    if (s4?.data?.playerToken) seatMap.set(String(s4.data.playerToken), 4);
+    if (s5?.data?.playerToken) seatMap.set(String(s5.data.playerToken), 5);
+    io.to(c0).emit('message', { method: '1', fl: false, num: clientCount });
+    io.to(c1).emit('message', { method: '6Players', fl: 'p1', num: clientCount });
+    io.to(c2).emit('message', { method: '6Players', fl: 'p2', num: clientCount });
+    io.to(c3).emit('message', { method: '6Players', fl: 'p3', num: clientCount });
+    io.to(c4).emit('message', { method: '6Players', fl: 'p4', num: clientCount });
+    io.to(c5).emit('message', { method: '6Players', fl: 'p5', num: clientCount });
+    return;
+  }
 
   if (clientCount === 5) {
     const [c0, c1, c2, c3, c4] = clients;
