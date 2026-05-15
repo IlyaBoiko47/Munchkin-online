@@ -976,6 +976,8 @@ export function isPlayerPlayZoneElement(zoneEl) {
 		'zone_opponent3_side',
 		'zone_opponent_bl',
 		'zone_opponent_bl_side',
+		'zone_opponent_br',
+		'zone_opponent_br_side',
 	]);
 	return playZoneIds.has(zoneEl.id);
 }
@@ -1247,6 +1249,10 @@ export function canPlaceTreasureInPlayerEquipment(draggingCardEl, targetZoneEl) 
 	if (seat == null) {
 		return true;
 	}
+	const doorCard = window.doors?.find((d) => d.name === draggingCardEl.id);
+	if (doorCard && String(doorCard.race || "") === "monster") {
+		return false;
+	}
 	const treasure = window.treasures?.find(t => t.name === draggingCardEl.id);
 	if (!treasure) {
 		return true;
@@ -1392,20 +1398,23 @@ export function canPlaceDoorInPlayerEquipment(draggingCardEl, targetZoneEl) {
 	if (!draggingCardEl || !isPlayerPlayZoneElement(targetZoneEl)) {
 		return true;
 	}
-	// Ограничения действуют только для основной экипировки.
+	const door = window.doors?.find((d) => d.name === draggingCardEl.id);
+	if (!door) {
+		return true;
+	}
+	// Монстров нельзя класть в экипировку (основную и боковую).
+	if (String(door.race || "") === "monster") {
+		return false;
+	}
+	// Карты дверей — только в основную экипировку, не в боковые зоны.
+	if (isSideEquipmentZoneElement(targetZoneEl)) {
+		return false;
+	}
 	if (!isMainEquipmentZoneElement(targetZoneEl)) {
 		return true;
 	}
 	const seat = getGlobalSeatForPlayZone(targetZoneEl);
 	if (seat == null) {
-		return true;
-	}
-	const door = window.doors?.find((d) => d.name === draggingCardEl.id);
-	if (!door) {
-		return true;
-	}
-	// Монстры / не-дверные эффекты не ограничиваем здесь.
-	if (String(door.race || "") === "monster") {
 		return true;
 	}
 	// Проклятия и двери с bad_staff: любой игрок может положить на любого (в т.ч. на себя), без правил рас/классов.
@@ -1563,6 +1572,103 @@ function normalizeBadStaff(badStaff) {
 		return { type: "escape_dice_death_or_levels", deathAtOrBelow };
 	}
 	return { type };
+}
+
+/** Проклятие с отдельной реализацией в applyBadStaffLevelFromNetwork / отдельным потоком. */
+function curseHasSpecialMechanicsInCode(badStaff) {
+	const normalized = normalizeBadStaff(badStaff);
+	if (!normalized) {
+		return false;
+	}
+	const type = normalized.type;
+	return (
+		type === "lose_levels"
+		|| type === "change class"
+		|| type === "change race"
+		|| type === "lose your class"
+		|| type === "lose your race"
+		|| type === "malign mirrror"
+		|| type === "change sex"
+		|| type === "chicken on your head"
+		|| type === "income tax"
+		|| type === "lose_all_equipped_classes_or_levels"
+	);
+}
+
+/** Проклятие уходит в сброс после применения эффекта (не «висит» на экипировке). */
+function shouldAutoDiscardCurseAfterApply(badStaff) {
+	const normalized = normalizeBadStaff(badStaff);
+	if (!normalized) {
+		return false;
+	}
+	const type = normalized.type;
+	return (
+		type === "lose_levels"
+		|| type === "change class"
+		|| type === "change race"
+		|| type === "lose your class"
+		|| type === "lose your race"
+		|| type === "lose_all_equipped_classes_or_levels"
+	);
+}
+
+function showCurseAppliedBannerForSeat(seat) {
+	const s = Number(seat);
+	if (!Number.isFinite(s) || s < 0) {
+		return;
+	}
+	const now = Date.now();
+	if (window.__curseAppliedBannerLastSeat === s && now - (window.__curseAppliedBannerLastAt || 0) < 900) {
+		return;
+	}
+	window.__curseAppliedBannerLastSeat = s;
+	window.__curseAppliedBannerLastAt = now;
+	const text = `На ${getSeatLabel(s)} применено проклятие`;
+	let el = document.getElementById("curse-applied-banner");
+	if (!el) {
+		el = document.createElement("div");
+		el.id = "curse-applied-banner";
+		el.className = "curse-applied-banner";
+		el.setAttribute("aria-live", "polite");
+		document.body.appendChild(el);
+	}
+	el.textContent = text;
+	el.classList.add("is-visible");
+	if (window.__curseAppliedBannerHideTimer) {
+		clearTimeout(window.__curseAppliedBannerHideTimer);
+	}
+	window.__curseAppliedBannerHideTimer = setTimeout(() => {
+		el.classList.remove("is-visible");
+		el.textContent = "";
+		window.__curseAppliedBannerHideTimer = 0;
+	}, 3500);
+}
+
+/** Плашку «применено проклятие» не показываем для смены пола и подоходного налога (у них свой UI). */
+function curseSkipsAppliedBanner(badStaff) {
+	const normalized = normalizeBadStaff(badStaff);
+	if (!normalized) {
+		return false;
+	}
+	const type = normalized.type;
+	return type === "change sex" || type === "income tax";
+}
+
+function notifyCurseAppliedBanner(seat, curseCardId, badStaff) {
+	if (curseSkipsAppliedBanner(badStaff)) {
+		return;
+	}
+	const s = Number(seat);
+	const cid = String(curseCardId || "").trim();
+	if (!Number.isFinite(s) || s < 0 || !cid) {
+		return;
+	}
+	showCurseAppliedBannerForSeat(s);
+	socket.emit("message", {
+		method: "CurseAppliedNotify",
+		seat: s,
+		curseCardId: cid,
+	});
 }
 
 /** Место смывающегося для EscapeRollResult / штрафа (null/"" не превращать в 0). */
@@ -2630,7 +2736,7 @@ function applyOutToLunchResolve(cardId) {
 	updateHelpUi();
 	recalculateAllPowerDisplays();
 
-	showBattleResult(`${getSeatLabel(currentTurnSeat)}, возьми 2 сокровища`);
+	showBattleResult(`${seatAddressComma(currentTurnSeat)} возьми 2 сокровища`);
 	setTimeout(() => {
 		hideBattleResult();
 	}, 2000);
@@ -3083,7 +3189,7 @@ function applyFriendshipPotionResolve(cardId) {
 	updateHelpUi();
 	recalculateAllPowerDisplays();
 
-	showBattleResult(`${getSeatLabel(currentTurnSeat)}, можешь почистить нычки`);
+	showBattleResult(`${seatAddressComma(currentTurnSeat)} можешь почистить нычки`);
 	setTimeout(() => {
 		hideBattleResult();
 	}, 2000);
@@ -4171,7 +4277,9 @@ function applyBadStaffLevelFromNetwork(res) {
 		moveBadStaffCardToDiscard(cardId);
 	} else {
 		applyBadStaffToSeat(seat, badStaff);
-		moveBadStaffCardToDiscard(cardId);
+		if (shouldAutoDiscardCurseAfterApply(badStaff)) {
+			moveBadStaffCardToDiscard(cardId);
+		}
 	}
 }
 
@@ -4267,9 +4375,8 @@ function handleCurseWishingRingAllSkippedApply(res) {
 				bad_staff: res.bad_staff,
 				cardId: curseCardId,
 			});
-		} else {
-			moveBadStaffCardToDiscard(curseCardId);
 		}
+		notifyCurseAppliedBanner(curseTargetSeat, curseCardId, bs);
 	}
 	recalculateAllPowerDisplays();
 }
@@ -4283,9 +4390,6 @@ export function scheduleBadStaffIfNeeded(cardId, zoneEl) {
 		return;
 	}
 	const badStaff = normalizeBadStaff(door.bad_staff);
-	if (badStaff?.type === "chicken on your head") {
-		return;
-	}
 	if (door.race === 'monster') {
 		return;
 	}
@@ -4356,9 +4460,8 @@ export function scheduleBadStaffIfNeeded(cardId, zoneEl) {
 				bad_staff: badStaff,
 				cardId,
 			});
-		} else {
-			syncDoorCardMoveToDiscard(cardId);
 		}
+		notifyCurseAppliedBanner(seat, cardId, badStaff);
 	});
 }
 
@@ -5566,6 +5669,11 @@ function getSeatLabel(seat) {
 	return `Игрок ${Number(seat) + 1}`;
 }
 
+/** Имя + запятая для обращений: «Иван, кинь кубик» (не для «Иван выбирает…»). */
+function seatAddressComma(seat) {
+	return `${getSeatLabel(seat)},`;
+}
+
 function hidePlayerProfileModal() {
 	hidePlayerProfileModalShared();
 }
@@ -6017,10 +6125,10 @@ function showEscapeTurnText(seat) {
 	removeInstantWallSoloAidWaitingBanner();
 	const firstSeat = escapeQueue.length > 0 ? escapeQueue[0] : null;
 	if (firstSeat !== null && Number(seat) !== Number(firstSeat)) {
-		showBattleResult(`Помощник ${getSeatLabel(seat)}, кинь кубик, чтобы попробовать смыться от монстра.`);
+		showBattleResult(`Помощник ${seatAddressComma(seat)} кинь кубик, чтобы попробовать смыться от монстра.`);
 		return;
 	}
-	showBattleResult(`Победил монстр, ${getSeatLabel(seat)} кинь кубик, чтобы смыться от монстра.`);
+	showBattleResult(`Победил монстр, ${seatAddressComma(seat)} кинь кубик, чтобы смыться от монстра.`);
 }
 
 function hideEscapeHalflingRetryModal() {
@@ -6789,7 +6897,7 @@ function clearThiefTheftBoardDicePrompt() {
 function thiefTheftStartAwaitBoardDice() {
 	hideThiefTheftModal();
 	thiefTheftBoardDicePending = true;
-	showBattleResult(`${getSeatLabel(localSeat)} Брось кубик`);
+	showBattleResult(`${seatAddressComma(localSeat)} брось кубик`);
 }
 
 function canLocalUseThiefTheftNow() {
@@ -14349,7 +14457,7 @@ socket.on("message", response => {
 		}
 
 		if (response.winner === "monster" && !Number.isNaN(resolvedSeat)) {
-			showBattleResult(`Победил монстр, ${getSeatLabel(resolvedSeat)} кинь кубик, чтобы смыться от монстра.`);
+			showBattleResult(`Победил монстр, ${seatAddressComma(resolvedSeat)} кинь кубик, чтобы смыться от монстра.`);
 		} else if (response.winner === "player") {
 			showBattleResult(response.text || (response.winner === "player" ? "Монстр повержен" : "Победил монстр"));
 			setTimeout(() => {
@@ -15348,6 +15456,18 @@ socket.on("message", response => {
 	}
 	if (response.method === "BadStaffLevel") {
 		applyBadStaffLevelFromNetwork(response);
+	}
+	if (response.method === "CurseAppliedNotify") {
+		const seat = Number(response.seat);
+		const curseCardId = String(response.curseCardId || "").trim();
+		if (!Number.isFinite(seat) || seat < 0) {
+			return;
+		}
+		const door = curseCardId ? window.doors?.find((d) => d.name === curseCardId) : null;
+		if (curseSkipsAppliedBanner(door?.bad_staff)) {
+			return;
+		}
+		showCurseAppliedBannerForSeat(seat);
 	}
 	if (response.method === "CurseWishingRingOffer") {
 		handleCurseWishingRingOffer(response);

@@ -2784,6 +2784,30 @@ button.accept-help-seat-btn.accept-help-seat-btn--preview-bottom-right:disabled 
 	display: block;
 }
 
+.curse-applied-banner {
+	position: fixed;
+	top: 10px;
+	left: 50%;
+	transform: translateX(-50%);
+	z-index: 99991;
+	max-width: min(96vw, 760px);
+	padding: 12px 18px;
+	background: rgba(18, 20, 28, 0.94);
+	border: 1px solid rgba(220, 90, 90, 0.75);
+	border-radius: 12px;
+	color: #fff;
+	font-size: 17px;
+	line-height: 1.35;
+	text-align: center;
+	box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+	display: none;
+	pointer-events: none;
+}
+
+.curse-applied-banner.is-visible {
+	display: block;
+}
+
 /* Проклятие + хотельное кольцо: компактная плашка сверху, не перекрывает стол (pointer-events только на панели) */
 .wishing-ring-curse-choice {
 	position: fixed;

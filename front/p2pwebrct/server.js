@@ -647,6 +647,7 @@ io.on('connection', socket => {
       "DeathLootDropMonsters",
       "MonsterBonusAttach",
       "BadStaffLevel",
+      "CurseAppliedNotify",
       "IncomeTaxStart",
       "IncomeTaxInitiatorPick",
       "IncomeTaxInsufficientDumpSync",
@@ -1141,7 +1142,15 @@ io.on('connection', socket => {
     if (moveData.method === "BadStaffLevel") {
       const bad = moveData.bad_staff;
       const badType = bad && typeof bad === 'object' ? String(bad.type || '').trim() : '';
-      if (badType !== 'chicken on your head' && badType !== 'income tax') {
+      const discardCurseAfterApply = (
+        badType === 'lose_levels'
+        || badType === 'change class'
+        || badType === 'change race'
+        || badType === 'lose your class'
+        || badType === 'lose your race'
+        || badType === 'lose_all_equipped_classes_or_levels'
+      );
+      if (discardCurseAfterApply) {
         const cid = String(moveData.cardId || '').trim();
         if (cid) patchRoomDiscards(roomID, [cid]);
       }
@@ -1200,7 +1209,15 @@ io.on('connection', socket => {
           setLevelBySeatInGame(game, seat, cur - loss);
         }
         const badType = bad && typeof bad === 'object' ? String(bad.type || '').trim() : '';
-        if (badType !== 'chicken on your head' && badType !== 'income tax' && curseCardId) {
+        const discardCurseAfterApply = (
+          badType === 'lose_levels'
+          || badType === 'change class'
+          || badType === 'change race'
+          || badType === 'lose your class'
+          || badType === 'lose your race'
+          || badType === 'lose_all_equipped_classes_or_levels'
+        );
+        if (discardCurseAfterApply && curseCardId) {
           patchRoomDiscards(roomID, [curseCardId]);
         }
       }
