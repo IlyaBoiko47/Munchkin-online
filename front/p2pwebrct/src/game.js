@@ -303,6 +303,7 @@ function setZoneInteractivityByPlayers(numPlayers) {
 		'opponent2hand',
 		'opponent3hand',
 		'opponent_bl_hand',
+		'opponent_br_hand',
 		'zone2',
 		'zone3',
 		'zone5',
@@ -314,6 +315,8 @@ function setZoneInteractivityByPlayers(numPlayers) {
 		'zone_opponent3_side',
 		'zone_opponent_bl',
 		'zone_opponent_bl_side',
+		'zone_opponent_br',
+		'zone_opponent_br_side',
 		'zone_monster',
 		'zone_doors',
 		'zone_treasure',
@@ -388,6 +391,21 @@ function setZoneInteractivityByPlayers(numPlayers) {
 		enabledZoneIds.add('zone_opponent3_side');
 	}
 
+	if (numPlayers >= 6) {
+		enabledZoneIds.add('opponenthand');
+		enabledZoneIds.add('zone_opponent');
+		enabledZoneIds.add('zone_opponent_side');
+		enabledZoneIds.add('opponent2hand');
+		enabledZoneIds.add('zone_opponent2');
+		enabledZoneIds.add('zone_opponent2_side');
+		enabledZoneIds.add('opponent3hand');
+		enabledZoneIds.add('zone_opponent3');
+		enabledZoneIds.add('zone_opponent3_side');
+		enabledZoneIds.add('opponent_br_hand');
+		enabledZoneIds.add('zone_opponent_br');
+		enabledZoneIds.add('zone_opponent_br_side');
+	}
+
 	allZoneIds.forEach(id => {
 		const zone = document.getElementById(id);
 		if (!zone) {
@@ -427,6 +445,7 @@ function hideAllSeatIconSlots() {
 	setDisplay('.image-bottom-right', 'none');
 	setDisplay('.level-bottom-right', 'none');
 	setDisplay('.bottom-right', 'none');
+	setDisplay('.bottom-right.legacy-seat-power', 'none');
 }
 
 function showTopCenterSeat() {
@@ -456,13 +475,19 @@ function showBottomLeftBlSeat() {
 	setDisplay('.level-bl-corner', 'block');
 }
 
+function showBottomRightBrSeat() {
+	setDisplay('#br-corner-seat-ui', 'flex');
+	setDisplay('.image-br-corner', 'block');
+	setDisplay('.level-br-corner', 'block');
+}
+
 /**
  * Иконки мест по числу игроков в комнате:
  * 1 — только низ-центр; 2 — +верх-центр; 3 — +верх-слева/справа (без верх-центра);
- * 4 — +верх-центр; 5 — +низ-слева (BL).
+ * 4 — +верх-центр; 5 — +низ-слева (BL). Слот BR (6-й) — всегда виден (только UI).
  */
 function applySeatIconsForPlayerCount(numPlayers) {
-	const n = Math.max(1, Math.min(5, Math.floor(Number(numPlayers) || 1)));
+	const n = Math.max(1, Math.min(6, Math.floor(Number(numPlayers) || 1)));
 
 	hideAllSeatIconSlots();
 
@@ -488,10 +513,25 @@ function applySeatIconsForPlayerCount(numPlayers) {
 		showBottomLeftBlSeat();
 	}
 
+	showBottomRightBrSeat();
+	ensurePreviewAcceptHelpButtonsVisible();
+
 	return n;
 }
 
-/** Лобби: только иконки, все зоны неактивны. */
+/** Превью-кнопка «Принять помощь» справа снизу (6-й слот). */
+function ensurePreviewAcceptHelpButtonsVisible() {
+	const blBtn = getBlCornerAcceptHelpPresetButton();
+	const brBtn = getBrCornerAcceptHelpPresetButton();
+	if (blBtn) {
+		blBtn.style.display = 'none';
+	}
+	if (brBtn) {
+		brBtn.style.display = 'inline-block';
+	}
+}
+
+/** Лобби: иконки по числу игроков, зоны неактивны. */
 function updateLobbySeatIcons(numPlayers) {
 	const n = applySeatIconsForPlayerCount(numPlayers);
 	lobbyConnectedPlayers = n;
@@ -2823,6 +2863,9 @@ function applyWandOfDowsingResolve({ wandCardId, pickedCardId, actorSeat }) {
 	adjustCardWidth(".opponent_bl_hand");
 	adjustCardWidth(".zone_opponent_bl");
 	adjustCardWidth(".zone_opponent_bl_side");
+	adjustCardWidth(".opponent_br_hand");
+	adjustCardWidth(".zone_opponent_br");
+	adjustCardWidth(".zone_opponent_br_side");
 	UpdatebackImgTreasure();
 	UpdatebackImgDoor();
 	recalculateAllPowerDisplays();
@@ -2997,6 +3040,9 @@ function applyTransferralPotionResolve({ potionCardId, newFighterSeat }) {
 	adjustCardWidth(".opponent_bl_hand");
 	adjustCardWidth(".zone_opponent_bl");
 	adjustCardWidth(".zone_opponent_bl_side");
+	adjustCardWidth(".opponent_br_hand");
+	adjustCardWidth(".zone_opponent_br");
+	adjustCardWidth(".zone_opponent_br_side");
 	UpdatebackImgTreasure();
 	UpdatebackImgDoor();
 	recalculateAllPowerDisplays();
@@ -5812,6 +5858,9 @@ function appendCardToSeatHand(cardId, seat) {
 	adjustCardWidth(".opponent_bl_hand");
 	adjustCardWidth(".zone_opponent_bl");
 	adjustCardWidth(".zone_opponent_bl_side");
+	adjustCardWidth(".opponent_br_hand");
+	adjustCardWidth(".zone_opponent_br");
+	adjustCardWidth(".zone_opponent_br_side");
 	UpdatebackImgTreasure();
 	UpdatebackImgDoor();
 }
@@ -6915,6 +6964,9 @@ function applyThiefTheftStolenCardMove(thiefSeat, fromSeat, cardId) {
 	adjustCardWidth(".opponent_bl_hand");
 	adjustCardWidth(".zone_opponent_bl");
 	adjustCardWidth(".zone_opponent_bl_side");
+	adjustCardWidth(".opponent_br_hand");
+	adjustCardWidth(".zone_opponent_br");
+	adjustCardWidth(".zone_opponent_br_side");
 	UpdatebackImgTreasure();
 	UpdatebackImgDoor();
 	recalculateAllPowerDisplays();
@@ -10563,6 +10615,9 @@ function applyMoveCardLocally(move) {
 	adjustCardWidth('.opponent_bl_hand');
 	adjustCardWidth('.zone_opponent_bl');
 	adjustCardWidth('.zone_opponent_bl_side');
+	adjustCardWidth('.opponent_br_hand');
+	adjustCardWidth('.zone_opponent_br');
+	adjustCardWidth('.zone_opponent_br_side');
 	UpdatebackImgTreasure();
 	UpdatebackImgDoor();
 	recalculateAllPowerDisplays();
@@ -12636,6 +12691,11 @@ function getBlCornerAcceptHelpPresetButton() {
 	return document.getElementById('accept-help-preview-bottom-left');
 }
 
+/** Кнопка «Принять помощь» для 6-го слота (низ-справа) — из разметки Room. */
+function getBrCornerAcceptHelpPresetButton() {
+	return document.getElementById('accept-help-preview-bottom-right');
+}
+
 function getAcceptHelpButtonElForSeat(seat) {
 	const seatToPowerMap = getSeatToPowerMap();
 	if (seatToPowerMap[seat] === '.PowerBlCorner') {
@@ -12691,16 +12751,20 @@ if (typeof window !== 'undefined' && !window.__munchkinAcceptHelpViewportListene
 }
 
 function hideAllAcceptHelpButtons() {
+	const previewIds = new Set(['accept-help-preview-bottom-left', 'accept-help-preview-bottom-right']);
 	const maxS = Math.max(0, (Number(num) || effectiveSeatLayoutPlayerCount() || 4) - 1);
 	for (let s = 0; s <= maxS; s++) {
 		const btn = getAcceptHelpButtonElForSeat(s);
-		if (btn) {
-			btn.style.display = 'none';
-			if (btn.id === 'accept-help-preview-bottom-left') {
-				btn.classList.remove('is-accept-help-bl-active');
-			}
+		if (!btn) {
+			continue;
 		}
+		if (previewIds.has(btn.id)) {
+			btn.classList.remove('is-accept-help-bl-active', 'is-accept-help-br-active');
+			continue;
+		}
+		btn.style.display = 'none';
 	}
+	ensurePreviewAcceptHelpButtonsVisible();
 }
 
 function ensureAcceptHelpButtonForSeat(seat) {
@@ -12777,7 +12841,16 @@ function positionAcceptHelpButtonForSeat(seat, btn) {
 	// Единственный корректный источник позиции аватаров по месту игрока.
 	const seatToIconMap = getSeatToIconMap();
 	const iconSelector = seatToIconMap[seat];
-	btn.classList.remove('accept-help-seat-btn--top-left', 'accept-help-seat-btn--top-right', 'accept-help-seat-btn--top-center', 'accept-help-seat-btn--bottom-bl', 'accept-help-seat-btn--preview-bottom-left', 'is-accept-help-bl-active');
+	btn.classList.remove(
+		'accept-help-seat-btn--top-left',
+		'accept-help-seat-btn--top-right',
+		'accept-help-seat-btn--top-center',
+		'accept-help-seat-btn--bottom-bl',
+		'accept-help-seat-btn--preview-bottom-left',
+		'accept-help-seat-btn--preview-bottom-right',
+		'is-accept-help-bl-active',
+		'is-accept-help-br-active',
+	);
 	if (!iconSelector) {
 		btn.style.position = '';
 		btn.style.left = '';
@@ -12824,6 +12897,23 @@ function positionAcceptHelpButtonForSeat(seat, btn) {
 		}
 		btn.classList.remove('accept-help-seat-btn--preview-bottom-left');
 		btn.classList.add('accept-help-seat-btn--bottom-bl');
+		btn.style.left = '';
+		btn.style.right = '';
+		btn.style.top = '';
+		btn.style.transform = '';
+		return;
+	}
+	if (iconSelector === '.image-br-corner') {
+		if (btn.id === 'accept-help-preview-bottom-right') {
+			btn.classList.add('accept-help-seat-btn--preview-bottom-right');
+			btn.classList.add('is-accept-help-br-active');
+			btn.style.left = '';
+			btn.style.right = '';
+			btn.style.top = '';
+			btn.style.transform = '';
+			return;
+		}
+		btn.classList.remove('accept-help-seat-btn--preview-bottom-right');
 		btn.style.left = '';
 		btn.style.right = '';
 		btn.style.top = '';
@@ -13664,6 +13754,9 @@ socket.on("message", response => {
 	adjustCardWidth('.opponent_bl_hand');
 	adjustCardWidth('.zone_opponent_bl');
 	adjustCardWidth('.zone_opponent_bl_side');
+	adjustCardWidth('.opponent_br_hand');
+	adjustCardWidth('.zone_opponent_br');
+	adjustCardWidth('.zone_opponent_br_side');
     UpdatebackImgTreasure();
     UpdatebackImgDoor();
 		// Важно: не пересчитываем здесь, потому что ниже есть "инварианты" (Cheat/Наёмничек),
@@ -16453,6 +16546,9 @@ document.addEventListener('DOMContentLoaded', function() {
 	setZoneInteractivityByPlayers(0);
 	if (lobbyConnectedPlayers > 0) {
 		applySeatIconsForPlayerCount(lobbyConnectedPlayers);
+	} else {
+		showBottomRightBrSeat();
+		ensurePreviewAcceptHelpButtonsVisible();
 	}
 	if (!window.__lobbySyncRequested) {
 		window.__lobbySyncRequested = true;

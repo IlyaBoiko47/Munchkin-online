@@ -492,9 +492,10 @@ a{
 	display: none !important;
 }
 
-/* Игровые зоны без видимого контура */
+/* Контур игровых зон (в т.ч. неактивных и 6-го игрока) */
 .cards-zone {
-	border: none;
+	border: 1px dashed rgba(255, 255, 255, 0.42);
+	border-radius: 8px;
 	box-sizing: border-box;
 }
 
@@ -752,6 +753,44 @@ a{
 	transform: rotate(-45deg);
 }
 
+/* Шестой слот (нижний правый): зеркало верхнего левого (top→bottom, left→right). */
+.opponent_br_hand {
+	display: flex;
+	width: 300px;
+	height: 150px;
+	position: fixed;
+	bottom: 80px;
+	right: 130px;
+	transform: rotate(-45deg);
+	justify-content: center;
+	z-index: 2;
+}
+
+.zone_opponent_br {
+	display: flex;
+	width: 300px;
+	height: 150px;
+	position: fixed;
+	bottom: 195px;
+	right: 245px;
+	transform: rotate(-45deg);
+	justify-content: center;
+	z-index: 2;
+}
+
+.zone_opponent_br_side {
+	display: flex;
+	flex-direction: row;
+	width: 200px;
+	height: 150px;
+	position: fixed;
+	bottom: 275px;
+	right: 45px;
+	justify-content: flex-end;
+	z-index: 1;
+	transform: rotate(45deg);
+}
+
 .zone3, .zone_monster {
   position: fixed;
   top: 50%;
@@ -982,6 +1021,19 @@ a{
 	/* Аватар справа: правый край блока = правый край иконки (как у старого .top-center-image + right) */
 	flex-direction: row-reverse;
 }
+.bl-corner-seat-ui.bottom-right {
+	position: absolute;
+	bottom: 10px;
+	right: 20px;
+	top: auto;
+	left: auto;
+	transform: none;
+	flex-direction: row-reverse;
+	align-items: flex-end;
+}
+.bottom-right.legacy-seat-power {
+	display: none !important;
+}
 .bl-corner-seat-ui .bl-corner-avatar-col {
 	display: flex;
 	flex-direction: column;
@@ -992,7 +1044,8 @@ a{
 /* Верхние слоты: уровень над иконкой (как раньше), иконка в потоке — верх колонки = прежний top иконки */
 .bl-corner-seat-ui.top-left .bl-corner-avatar-col,
 .bl-corner-seat-ui.top-right .bl-corner-avatar-col,
-.bl-corner-seat-ui.top-center .bl-corner-avatar-col {
+.bl-corner-seat-ui.top-center .bl-corner-avatar-col,
+.bl-corner-seat-ui.bottom-right .bl-corner-avatar-col {
 	position: relative;
 	gap: 0;
 }
@@ -1047,7 +1100,8 @@ a{
 }
 .bl-corner-seat-ui .image-top-left,
 .bl-corner-seat-ui .image-top-right,
-.bl-corner-seat-ui .top-center-image {
+.bl-corner-seat-ui .top-center-image,
+.bl-corner-seat-ui .image-br-corner {
 	position: static !important;
 	top: auto !important;
 	left: auto !important;
@@ -1067,10 +1121,17 @@ a{
 .bl-corner-seat-ui .PowerBlCorner,
 .bl-corner-seat-ui .PowerPlayer2,
 .bl-corner-seat-ui .PowerPlayer3,
-.bl-corner-seat-ui .PowerPlayer4 {
+.bl-corner-seat-ui .PowerPlayer4,
+.bl-corner-seat-ui .PowerPlayer7 {
 	font-weight: bold;
 	font-size: 20px;
 	line-height: 1;
+}
+.bl-corner-seat-ui.bottom-right .level-br-corner {
+	font-weight: bold;
+	font-size: 25px;
+	line-height: 1;
+	transform: translate(-5px, 15px);
 }
 .bl-corner-seat-ui .bl-corner-sword {
 	display: block;
@@ -2608,26 +2669,37 @@ button.accept-help-seat-btn.accept-help-seat-btn--bottom-bl {
 	right: auto;
 	transform: translateX(-50%);
 }
-button.accept-help-seat-btn.accept-help-seat-btn--preview-bottom-left {
+button.accept-help-seat-btn.accept-help-seat-btn--preview-bottom-left,
+button.accept-help-seat-btn.accept-help-seat-btn--preview-bottom-right {
 	bottom: 65px;
-	left: 90px;
 	top: auto;
-	right: auto;
 	transform: none;
 	pointer-events: none;
 	opacity: 1;
 }
-button.accept-help-seat-btn.accept-help-seat-btn--preview-bottom-left:disabled {
+button.accept-help-seat-btn.accept-help-seat-btn--preview-bottom-left {
+	left: 90px;
+	right: auto;
+}
+button.accept-help-seat-btn.accept-help-seat-btn--preview-bottom-right {
+	right: 90px;
+	left: auto;
+}
+button.accept-help-seat-btn.accept-help-seat-btn--preview-bottom-left:disabled,
+button.accept-help-seat-btn.accept-help-seat-btn--preview-bottom-right:disabled {
 	opacity: 1;
 	cursor: default;
 	color: inherit;
 }
 
-/* Статичная кнопка «Принять помощь» для места слева снизу (5 игроков): по умолчанию скрыта; показ и клик — из game.js */
+/* Превью-кнопка справа снизу: всегда видна; слева скрыта */
 #accept-help-preview-bottom-left {
-	display: none;
+	display: none !important;
 }
-#accept-help-preview-bottom-left.is-accept-help-bl-active {
+#accept-help-preview-bottom-right {
+	display: inline-block;
+}
+#accept-help-preview-bottom-right.is-accept-help-br-active {
 	pointer-events: auto;
 	cursor: pointer;
 }

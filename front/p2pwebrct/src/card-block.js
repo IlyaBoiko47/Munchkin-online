@@ -148,6 +148,9 @@ function dragend_handler(e) {
 		adjustCardWidth('.opponent3hand');
 		adjustCardWidth('.zone_opponent3');
 		adjustCardWidth('.zone_opponent3_side');
+		adjustCardWidth('.opponent_br_hand');
+		adjustCardWidth('.zone_opponent_br');
+		adjustCardWidth('.zone_opponent_br_side');
 		UpdatebackImgTreasure();
 		UpdatebackImgDoor();
 		recalculateAllPowerDisplays();
@@ -550,6 +553,9 @@ function drop_handler(e) {
   adjustCardWidth('.opponent3hand');
   adjustCardWidth('.zone_opponent3');
   adjustCardWidth('.zone_opponent3_side');
+  adjustCardWidth('.opponent_br_hand');
+  adjustCardWidth('.zone_opponent_br');
+  adjustCardWidth('.zone_opponent_br_side');
   UpdatebackImgTreasure();
   UpdatebackImgDoor();
 	recalculateAllPowerDisplays();

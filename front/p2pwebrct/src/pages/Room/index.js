@@ -107,6 +107,13 @@ export default function Room() {
 							<div className="zone_opponent_bl_side cards-zone" id="zone_opponent_bl_side">
 							</div>
 
+							<div className="opponent_br_hand cards-zone" id="opponent_br_hand">
+							</div>
+							<div className="zone_opponent_br cards-zone" id="zone_opponent_br">
+							</div>
+							<div className="zone_opponent_br_side cards-zone" id="zone_opponent_br_side">
+							</div>
+
 							<div className="zone2 cards-zone" id="zone2">
 							</div>
 							
@@ -257,6 +264,19 @@ export default function Room() {
 							</div>
 						</div>
 
+						<div className="bl-corner-seat-ui bottom-right" id="br-corner-seat-ui">
+							<div className="bl-corner-avatar-col">
+								<span className="level-br-corner">1</span>
+								<div className="image-container">
+									<img src="../img/svg/лого 9.svg" alt="" className="image-br-corner" />
+								</div>
+							</div>
+							<div className="bl-corner-power">
+								<img src="../img/svg/sword_icon-icons 2.svg" alt="" className="bl-corner-sword" />
+								<span id="PowerPlayer7" className="PowerPlayer7">0</span>
+							</div>
+						</div>
+
 						<div className="bottom-left">
 							<span id="PowerPlayer5" className="PowerPlayer5">0</span>
 							<img  src="../img/svg/sword_icon-icons 2.svg" alt="картинка"/>
@@ -269,7 +289,15 @@ export default function Room() {
 						>
 							Принять<br />помощь
 						</button>
-						<div className="bottom-right">
+						<button
+							type="button"
+							id="accept-help-preview-bottom-right"
+							className="accept-help-seat-btn accept-help-seat-btn--preview-bottom-right"
+							tabIndex={-1}
+						>
+							Принять<br />помощь
+						</button>
+						<div className="bottom-right legacy-seat-power">
 							<span id="PowerPlayer6" className="PowerPlayer6">0</span>
 							<img  src="../img/svg/sword_icon-icons 2.svg" alt="картинка"/>
 						</div>
