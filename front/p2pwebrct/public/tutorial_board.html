@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+
+<html lang="ru">
+
+<head>
+
+	<meta charset="UTF-8">
+
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+	<title>Обучение — Манчкин</title>
+
+	<link rel="stylesheet" href="/css/reset.css">
+
+	<link rel="stylesheet" href="/css/style.css">
+
+	<link rel="stylesheet" href="/css/site-pages.css">
+
+</head>
+
+<body class="tutorial-board">
+
+	<main class="main">
+
+		<section class="area">
+
+			<div class="container">
+
+				<div class="myhand cards-zone" id="myhand"></div>
+
+				<div class="opponenthand cards-zone" id="opponenthand"></div>
+
+
+
+				<div class="zone_opponent cards-zone" id="zone_opponent"></div>
+
+				<div class="zone_opponent_side cards-zone" id="zone_opponent_side"></div>
+
+
+
+				<div class="zone2 cards-zone" id="zone2"></div>
+
+				<div class="zone3 cards-zone" id="zone3">
+
+					<span id="MyBonus" class="MyBonus">0</span>
+
+				</div>
+
+				<div class="zone_monster cards-zone" id="zone_monster">
+
+					<span id="MonsterBonus" class="MonsterBonus">0</span>
+
+				</div>
+
+				<div class="zone5 cards-zone" id="zone5"></div>
+
+
+
+				<div class="zone_doors cards-zone" id="zone_doors"></div>
+
+				<div class="zone_treasure cards-zone" id="zone_treasure"></div>
+
+
+
+				<div class="zone_doors_drop cards-zone" id="zone_doors_drop">
+
+					<div class="zone_drop">Зона сброса</div>
+
+				</div>
+
+				<div class="zone_treasure_drop cards-zone" id="zone_treasure_drop">
+
+					<div class="zone_drop">Зона сброса</div>
+
+				</div>
+
+
+
+				<div class="battle-result" id="battle-result"></div>
+
+				<div class="timer" id="timer"></div>
+
+				<div class="fold" id="fold">Пас</div>
+
+				<div class="fold" id="end-turn">Завершить ход</div>
+
+
+
+				<a href="/home.html" class="tutorial-board-home-link" title="На главную">←</a>
+
+
+
+				<button type="button" id="next-button"><img src="/img/svg/стрела 1.svg" alt=""></button>
+
+				<button type="button" id="prev-button"><img src="/img/svg/стрела 2.svg" alt=""></button>
+
+			</div>
+
+		</section>
+
+
+
+		<div class="container2">
+
+			<div class="image-container">
+
+				<img src="/img/svg/лого 8.svg" alt="" class="image-bottom-center" />
+
+				<span class="level-bottom-center">1</span>
+
+			</div>
+
+
+
+			<div class="bl-corner-seat-ui top-center">
+
+				<div class="bl-corner-avatar-col">
+
+					<span class="level-top-center">1</span>
+
+					<div class="image-container">
+
+						<img src="/img/svg/лого 9.svg" alt="" class="top-center-image" />
+
+					</div>
+
+				</div>
+
+				<div class="bl-corner-power">
+
+					<img src="/img/svg/sword_icon-icons 2.svg" alt="" class="bl-corner-sword" />
+
+					<span id="PowerPlayer2" class="PowerPlayer2">1</span>
+
+				</div>
+
+			</div>
+
+
+
+			<div class="bottom-center">
+
+				<img src="/img/money-bag.png" alt="Магазин" class="MoneyBag" />
+
+				<img src="/img/svg/sword_icon-icons 2.svg" alt="" />
+
+				<span id="MyPower" class="MyPower">1</span>
+
+			</div>
+
+
+
+			<div class="dice-container"></div>
+
+		</div>
+
+	</main>
+
+
+
+	<script>window.__TUTORIAL_BOARD = true;</script>
+
+	<script defer src="/static/js/tutorial-board.bundle.js"></script>
+
+</body>
+
+</html>
+

@@ -585,7 +585,7 @@ function updateLobbySeatIcons(numPlayers) {
 	}
 }
 
-function updatePlayersUiVisibility(numPlayers) {
+export function updatePlayersUiVisibility(numPlayers) {
 	const n = applySeatIconsForPlayerCount(numPlayers);
 	lobbyConnectedPlayers = n;
 	setZoneInteractivityByPlayers(n);
@@ -1011,7 +1011,7 @@ function showSeatIconTooltipForSeat(seat, anchorEl) {
 
 let seatTooltipGlobalListenersBound = false;
 
-function bindSeatIconHoverTooltips() {
+export function bindSeatIconHoverTooltips() {
 	clearSeatIconTooltipBindings();
 	const seatToIconMap = getSeatToIconMap();
 	Object.entries(seatToIconMap).forEach(([seatKey, selector]) => {
@@ -2271,9 +2271,7 @@ function applyChangeClassCurseToSeat(seat, curseCardId) {
 	if (Number.isNaN(s) || s < 0) {
 		return;
 	}
-	// Эффекты проклятий должны эмититься ровно одним клиентом, иначе будет задвоение moveCard/уровней.
-	// Берём владельца места (того, у кого localSeat совпадает с seat).
-	if (Number(localSeat) !== Number(s)) {
+	if (!canApplyCurseEffectForSeat(s)) {
 		return;
 	}
 	const curseId = String(curseCardId || "").trim();
@@ -2440,13 +2438,20 @@ function resolveLoseYourClassCurse({ seat, curseCardId, chosenClassCardId }) {
 	recalculateAllPowerDisplays();
 }
 
+function canApplyCurseEffectForSeat(seat) {
+	if (Number(localSeat) === Number(seat)) {
+		return true;
+	}
+	// Обучение на одном клиенте: применяем эффект к любому месту за столом.
+	return Boolean(window.__TUTORIAL_BOARD);
+}
+
 function applyLoseYourClassCurseToSeat(seat, curseCardId) {
 	const s = Number(seat);
 	if (Number.isNaN(s) || s < 0) {
 		return;
 	}
-	// Только владелец места эмитит LevelAdjust/moveCard, иначе эффект задваивается (2+ клиентов отправляют одно и то же).
-	if (Number(localSeat) !== Number(s)) {
+	if (!canApplyCurseEffectForSeat(s)) {
 		return;
 	}
 	const curseId = String(curseCardId || "").trim();
@@ -2476,8 +2481,7 @@ function applyLoseYourClassCurseToSeat(seat, curseCardId) {
 	}
 
 	loseYourClassPendingBySeat.set(s, { curseCardId: curseId, classCardIds: classIds.slice(0, 2) });
-	// Модалку открывает только игрок, на которого применили проклятие.
-	if (Number(localSeat) === Number(s)) {
+	if (canApplyCurseEffectForSeat(s)) {
 		openLoseYourClassModal({ seat: s, curseCardId: curseId, classCardIds: classIds.slice(0, 2) });
 	}
 }
@@ -2487,8 +2491,7 @@ function applyLoseYourRaceCurseToSeat(seat, curseCardId) {
 	if (Number.isNaN(s) || s < 0) {
 		return;
 	}
-	// Только владелец места эмитит moveCard, иначе эффект задваивается.
-	if (Number(localSeat) !== Number(s)) {
+	if (!canApplyCurseEffectForSeat(s)) {
 		return;
 	}
 	const curseId = String(curseCardId || "").trim();
@@ -4362,7 +4365,7 @@ function applyBadStaffLevelFromNetwork(res) {
 		// Отдельный поток IncomeTaxStart / IncomeTaxInitiatorPick.
 	} else if (badStaff.type === "lose_all_equipped_classes_or_levels") {
 		const levels = Number(badStaff.levels) || 3;
-		if (Number(localSeat) === Number(seat)) {
+		if (canApplyCurseEffectForSeat(seat)) {
 			const classIds = collectEquippedClassDoorIdsForSeat(seat);
 			if (classIds.length > 0) {
 				classIds.forEach((id) => syncDoorCardMoveToDiscard(id));
@@ -10704,6 +10707,7 @@ function isMonsterBattleUi() {
 function updateTurnActionButtons(isTimerRunning) {
 	const foldButton = document.getElementById('fold');
 	const endTurnButton = document.getElementById('end-turn');
+	const timerElement = document.getElementById('timer');
 	if (!foldButton || !endTurnButton) {
 		return;
 	}
@@ -10715,6 +10719,9 @@ function updateTurnActionButtons(isTimerRunning) {
 	const showEndTurn = isMyTurn && !inBattle && !isTimerRunning && !escapeActive;
 	foldButton.style.display = showFold ? "flex" : "none";
 	endTurnButton.style.display = showEndTurn ? "flex" : "none";
+	if (timerElement) {
+		timerElement.style.display = showFold ? "flex" : "none";
+	}
 }
 
 /** Клик «Завершить ход» должен быть привязан всегда: раньше он вешался только в {@link timer} и при RoomState — до первого боя кнопка не работала. */
@@ -16659,7 +16666,7 @@ function shuffle(array) {
 }
 
 
-function Deck_filling(deck, zone){
+export function Deck_filling(deck, zone){
 	// console.log(`идет заполнение ${zone}`);
 	//console.log(deck);
 	for (const i of deck) {
@@ -16881,7 +16888,49 @@ function Start_game(num_players){
     }
 
 }
+/** Загрузить все карты в window.doors / window.treasures (как при старте основной игры). */
+export function ensureCardCatalogLoaded() {
+	if (window.doors.length > 0 && window.treasures.length > 0) {
+		return;
+	}
+	for (let i = 1; i <= 95; i += 1) {
+		window.doors.push(eval(`door${i}`));
+	}
+	for (let i = 1; i <= 73; i += 1) {
+		window.treasures.push(eval(`treasure${i}`));
+	}
+}
+
+/** Состояние стола обучения: 2 игрока, без лобби и сети. */
+export function configureTutorialGameState() {
+	gameStarted = true;
+	num = 2;
+	window.num = 2;
+	localSeat = 0;
+	currentTurnSeat = 0;
+	characterBySeat[0].name = "Игрок";
+	characterBySeat[0].gender = "Male";
+	characterBySeat[1].name = "Соперничек";
+	characterBySeat[1].gender = "Male";
+	updatePlayersUiVisibility(2);
+	bindSeatIconHoverTooltips();
+	applyTurnHighlight();
+}
+
+export function wireTutorialEndTurnButton() {
+	wireEndTurnButtonClick();
+	const btn = document.getElementById("end-turn");
+	if (btn) {
+		btn.style.display = "flex";
+	}
+}
+
 document.addEventListener('DOMContentLoaded', function() {
+	if (window.__TUTORIAL_BOARD) {
+		initializeSellTreasuresUi();
+		wireEndTurnButtonClick();
+		return;
+	}
   function initialize() {
 	// Если игра уже восстановлена/запущена — не трогаем интерактивность зон и не запускаем ретраи.
 	// Иначе при refresh можно попасть в цикл, где initialize() каждые 1с снова вызывает
@@ -16963,9 +17012,14 @@ export function timer(initialSeconds = TURN_TIMER_SECONDS, restoring = false) {
 		resetEscapeStateNow();
 	}
 
-  if (!foldButton || !endTurnButton || !warriorFrenzyButton || !clericExorcismButton || !wizardTamingButton || !thiefTheftButton || !thiefTrimButton) {
+  if (!foldButton || !endTurnButton) {
     console.error("Error: Could not find action buttons");
-    return; 
+    return;
+  }
+  const isTutorialBoard = Boolean(window.__TUTORIAL_BOARD);
+  if (!isTutorialBoard && (!warriorFrenzyButton || !clericExorcismButton || !wizardTamingButton || !thiefTheftButton || !thiefTrimButton)) {
+    console.error("Error: Could not find action buttons");
+    return;
   }
 
   let secondsRemaining = Math.max(1, parseInt(initialSeconds, 10) || TURN_TIMER_SECONDS);
@@ -17019,11 +17073,21 @@ export function timer(initialSeconds = TURN_TIMER_SECONDS, restoring = false) {
   // Так исключаем "протухшее" замыкание от старого хода.
   foldButton.onclick = handleFoldButtonClick;
   endTurnButton.onclick = handleEndTurnClick;
-  warriorFrenzyButton.onclick = handleWarriorFrenzyClick;
-  clericExorcismButton.onclick = handleClericExorcismClick;
-  wizardTamingButton.onclick = handleWizardTamingClick;
-  thiefTheftButton.onclick = handleThiefTheftClick;
-  thiefTrimButton.onclick = handleThiefTrimClick;
+  if (warriorFrenzyButton) {
+	warriorFrenzyButton.onclick = handleWarriorFrenzyClick;
+  }
+  if (clericExorcismButton) {
+	clericExorcismButton.onclick = handleClericExorcismClick;
+  }
+  if (wizardTamingButton) {
+	wizardTamingButton.onclick = handleWizardTamingClick;
+  }
+  if (thiefTheftButton) {
+	thiefTheftButton.onclick = handleThiefTheftClick;
+  }
+  if (thiefTrimButton) {
+	thiefTrimButton.onclick = handleThiefTrimClick;
+  }
 
   // Функция обработчика нажатия
   function handleFoldButtonClick() {
@@ -17093,6 +17157,7 @@ export function timer(initialSeconds = TURN_TIMER_SECONDS, restoring = false) {
 
   if (timerElement) {
 	timerElement.textContent = formatTime(secondsRemaining);
+	timerElement.style.display = "flex";
   }
   updateTurnActionButtons(true);
 
@@ -17105,7 +17170,10 @@ export function timer(initialSeconds = TURN_TIMER_SECONDS, restoring = false) {
 		clearInterval(countdownInterval);
 		timerRunning = false;
 		timerSecondsRemaining = 0;
-		timerElement.textContent = "";
+		if (timerElement) {
+			timerElement.textContent = "";
+			timerElement.style.display = "none";
+		}
 		window.FoldCount = 0;
 		foldedOnTurnSeat = null;
 		flag = false;
@@ -17207,7 +17275,7 @@ function MoveMonstersToDrop() {
 	
 }
 
-function initializeSellTreasuresUi() {
+export function initializeSellTreasuresUi() {
 	if (!sellTreasuresDelegated) {
 		document.addEventListener('click', (event) => {
 			const target = event.target;

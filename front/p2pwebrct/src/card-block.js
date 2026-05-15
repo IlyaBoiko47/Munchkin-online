@@ -673,6 +673,50 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // После refresh мы можем поменять классы зон (myhand/zone2/zone5 и т.д.).
 // В таком случае пере-привязываем обработчики drag&drop к актуальным DOM-элементам.
+const ZONE_WIDTH_LAYOUT_SELECTORS = [
+	'.myhand',
+	'.zone2',
+	'.zone5',
+	'.opponenthand',
+	'.zone_opponent',
+	'.zone_opponent_side',
+	'.opponent2hand',
+	'.zone_opponent2',
+	'.zone_opponent2_side',
+	'.opponent3hand',
+	'.zone_opponent3',
+	'.zone_opponent3_side',
+	'.opponent_bl_hand',
+	'.zone_opponent_bl',
+	'.zone_opponent_bl_side',
+	'.opponent_br_hand',
+	'.zone_opponent_br',
+	'.zone_opponent_br_side',
+	'.zone_doors',
+	'.zone_treasure',
+	'.zone_doors_drop',
+	'.zone_treasure_drop',
+];
+
+/** Сжимает карты в зонах (ширина/высота в ряду). */
+export function adjustAllZonesCardLayout() {
+	ZONE_WIDTH_LAYOUT_SELECTORS.forEach((selector) => {
+		adjustCardWidth(selector);
+	});
+	adjustCardHeight('.zone3');
+	adjustCardHeight('.zone_monster');
+}
+
+/** После вставки карт в DOM — дождаться layout (картинки/offsetWidth). */
+export function scheduleAdjustAllZonesCardLayout() {
+	const run = () => adjustAllZonesCardLayout();
+	requestAnimationFrame(() => {
+		requestAnimationFrame(run);
+	});
+	// Повтор после decode картинок — иначе на обучении колода «раскрывается» только после первого drag.
+	setTimeout(run, 120);
+}
+
 function bindZonesNow() {
 	try {
 		const zones = Array.from(document.querySelectorAll('.cards-zone')).filter(Boolean);
@@ -693,6 +737,7 @@ function bindZonesNow() {
 			c.style.filter = '';
 			c.style.opacity = '';
 		});
+		scheduleAdjustAllZonesCardLayout();
 	} catch {}
 }
 window.addEventListener('munchkin:zonesChanged', bindZonesNow);
@@ -770,10 +815,9 @@ export function adjustCardWidth(zoneSelector) {
 			card.style.width = prevWidth[zoneSelector] + 'px';
 		});
 	}
-	else if ((totalWidth > 210) && (cardsCount > 3)) {
+	else if (cardsCount > 3) {
 		cards.forEach(function(card) {
 			card.style.width = newWidth + 'px';
-	
 		});
 	}
 	prevcardsCount[zoneSelector] = cardsCount;

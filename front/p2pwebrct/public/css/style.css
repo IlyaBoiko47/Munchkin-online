@@ -2370,6 +2370,80 @@ button:hover {
 }
 /*end game_board style*/
 
+/* tutorial board */
+body.tutorial-board {
+	overflow: hidden;
+	margin: 0;
+}
+
+body.tutorial-board .main,
+body.tutorial-board .area {
+	height: 100vh;
+	overflow: hidden;
+}
+
+body.tutorial-board .tutorial-board-home-link {
+	position: fixed;
+	top: 16px;
+	left: 16px;
+	z-index: 30;
+	color: #f0e6d0;
+	font-size: 28px;
+	text-decoration: none;
+	font-family: 'Munchkin', sans-serif;
+	text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+}
+
+body.tutorial-board .tutorial-board-home-link:hover {
+	color: #fff;
+}
+
+body.tutorial-board .cards-zone {
+	pointer-events: auto !important;
+	opacity: 1 !important;
+}
+
+body.tutorial-board .MoneyBag {
+	pointer-events: auto !important;
+}
+
+body.tutorial-board .button_start_game,
+body.tutorial-board .settings_in_game_board,
+body.tutorial-board .chat_in_game_board,
+body.tutorial-board .history_in_game_board {
+	display: none !important;
+}
+
+body.tutorial-board .bl-corner-seat-ui.top-center {
+	display: flex !important;
+}
+
+body.tutorial-board .top-center-image,
+body.tutorial-board .level-top-center {
+	display: block !important;
+}
+
+/* Как в Room: шлем и «мешок+меч» — отдельные блоки с теми же координатами */
+body.tutorial-board .image-bottom-center,
+body.tutorial-board .level-bottom-center {
+	display: block !important;
+}
+
+body.tutorial-board .level-bottom-center {
+	right: auto !important;
+	width: max-content;
+	white-space: nowrap;
+}
+
+body.tutorial-board .bottom-center {
+	display: flex !important;
+	align-items: flex-end;
+}
+
+body.tutorial-board .bottom-center .MyPower {
+	display: inline-block;
+	min-width: 1ch;
+}
 
 /* join_room style*/
 .join_room-back {
