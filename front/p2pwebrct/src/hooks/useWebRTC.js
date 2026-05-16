@@ -9,6 +9,7 @@ import {
   buildRtcConfiguration,
   ensureAudioTransceiver,
   fetchIceServersFromApi,
+  iceServersIncludePrivateTurn,
 } from '../webrtcIceConfig.js';
 
 export const LOCAL_AUDIO = 'LOCAL_AUDIO';
@@ -20,18 +21,27 @@ function shouldCreateOffer(localSocketId, remotePeerId) {
   return String(localSocketId) < String(remotePeerId);
 }
 
-function isPeerConnectionUp(pc) {
+function hasLiveRemoteAudio(pc) {
+  if (!pc) {
+    return false;
+  }
+  const receivers = pc.getReceivers?.() || [];
+  return receivers.some((r) => r.track?.kind === 'audio' && r.track.readyState === 'live');
+}
+
+function isPeerIceUp(pc) {
   if (!pc || pc.signalingState === 'closed') {
     return false;
   }
   if (pc.connectionState === 'connected' || pc.iceConnectionState === 'connected') {
     return true;
   }
-  if (pc.iceConnectionState === 'completed') {
-    return true;
-  }
-  const receivers = pc.getReceivers?.() || [];
-  return receivers.some((r) => r.track?.kind === 'audio' && r.track.readyState === 'live');
+  return pc.iceConnectionState === 'completed';
+}
+
+/** Голос реально идёт — не останавливаем watchdog только по ICE без трека. */
+function isPeerConnectionUp(pc) {
+  return isPeerIceUp(pc) && hasLiveRemoteAudio(pc);
 }
 
 export default function useWebRTC(roomID) {
@@ -42,6 +52,7 @@ export default function useWebRTC(roomID) {
   const joinGenerationRef = useRef(0);
   const knownPeersRef = useRef(new Set());
   const iceServersRef = useRef(buildDefaultIceServers());
+  const useRelayFirstRef = useRef(false);
   const peerForceRelayRef = useRef({});
 
   function getOrCreatePlayerToken() {
@@ -83,6 +94,8 @@ export default function useWebRTC(roomID) {
       }
       audioEl.volume = 1;
       audioEl.muted = false;
+      audioEl.setAttribute('playsinline', 'true');
+      audioEl.setAttribute('webkit-playsinline', 'true');
       if (typeof audioEl.play === 'function') {
         audioEl.play().catch(() => {});
       }
@@ -245,7 +258,8 @@ export default function useWebRTC(roomID) {
     }
     event.track.onunmute = () => playAllRemoteAudio();
     bindRemoteTrack(peerID, stream);
-    if (isPeerConnectionUp(peerConnections.current[peerID])) {
+    playAllRemoteAudio();
+    if (hasLiveRemoteAudio(peerConnections.current[peerID])) {
       stopConnectionWatchdog(peerID);
     }
   }, [bindRemoteTrack, playAllRemoteAudio, stopConnectionWatchdog]);
@@ -278,15 +292,19 @@ export default function useWebRTC(roomID) {
     };
 
     pc.onconnectionstatechange = () => {
-      if (isPeerConnectionUp(pc)) {
+      if (isPeerIceUp(pc)) {
         playAllRemoteAudio();
+      }
+      if (isPeerConnectionUp(pc)) {
         stopConnectionWatchdog(peerID);
       }
     };
 
     pc.oniceconnectionstatechange = () => {
-      if (isPeerConnectionUp(pc)) {
+      if (isPeerIceUp(pc)) {
         playAllRemoteAudio();
+      }
+      if (isPeerConnectionUp(pc)) {
         stopConnectionWatchdog(peerID);
       }
     };
@@ -389,7 +407,7 @@ export default function useWebRTC(roomID) {
 
     if (peerID in peerConnections.current) {
       const pc = peerConnections.current[peerID];
-      if (isPeerConnectionUp(pc)) {
+      if (isPeerConnectionUp(pc) && hasLiveRemoteAudio(pc)) {
         return;
       }
       if (wantOffer && pc.signalingState === 'stable') {
@@ -400,7 +418,7 @@ export default function useWebRTC(roomID) {
 
     void ensureLocalAudioStream();
 
-    const forceRelay = Boolean(peerForceRelayRef.current[peerID]);
+    const forceRelay = Boolean(peerForceRelayRef.current[peerID]) || useRelayFirstRef.current;
     createPeerConnection(peerID, { isPolite: !wantOffer, forceRelay });
     attachLocalTracksToPeer(peerID);
     await flushPendingSignalingForPeer(peerID);
@@ -440,13 +458,13 @@ export default function useWebRTC(roomID) {
         stopConnectionWatchdog(peerID);
         return;
       }
-      if (isPeerConnected(peerID)) {
+      const pc = peerConnections.current[peerID];
+      if (isPeerConnected(peerID) && hasLiveRemoteAudio(pc)) {
         stopConnectionWatchdog(peerID);
         return;
       }
 
       attempt += 1;
-      const pc = peerConnections.current[peerID];
       const shouldTryOffer = preferredOfferer
         || shouldCreateOffer(socket.id, peerID)
         || attempt % 2 === 0;
@@ -462,10 +480,9 @@ export default function useWebRTC(roomID) {
         || (attempt > 4 && pc.signalingState !== 'stable' && pc.iceConnectionState !== 'connected' && pc.iceConnectionState !== 'checking')
         || attempt % 6 === 0;
 
-      if (stuck || attempt >= 3) {
-        if (!peerForceRelayRef.current[peerID]) {
-          peerForceRelayRef.current[peerID] = true;
-        }
+      const iceUpNoAudio = pc && isPeerIceUp(pc) && !hasLiveRemoteAudio(pc);
+      if (stuck || attempt >= 2 || iceUpNoAudio) {
+        peerForceRelayRef.current[peerID] = true;
         resetPeerConnection(peerID);
         await connectToPeerRef.current?.(peerID, { shouldOffer: shouldTryOffer });
         return;
@@ -673,6 +690,7 @@ export default function useWebRTC(roomID) {
 
     (async () => {
       iceServersRef.current = await fetchIceServersFromApi();
+      useRelayFirstRef.current = iceServersIncludePrivateTurn(iceServersRef.current);
       if (cancelled) {
         return;
       }
@@ -756,11 +774,15 @@ export default function useWebRTC(roomID) {
 
   useEffect(() => {
     const unlock = () => playAllRemoteAudio();
-    document.addEventListener('click', unlock);
+    document.addEventListener('click', unlock, { passive: true });
     document.addEventListener('keydown', unlock);
+    document.addEventListener('touchstart', unlock, { passive: true });
+    const playTimer = setInterval(() => playAllRemoteAudio(), 3000);
     return () => {
       document.removeEventListener('click', unlock);
       document.removeEventListener('keydown', unlock);
+      document.removeEventListener('touchstart', unlock);
+      clearInterval(playTimer);
     };
   }, [playAllRemoteAudio]);
 

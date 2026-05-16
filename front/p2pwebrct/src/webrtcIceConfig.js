@@ -78,6 +78,21 @@ export async function fetchIceServersFromApi() {
   return buildDefaultIceServers();
 }
 
+/** Свой TURN на VPS — для разных сетей (Wi‑Fi ↔ мобильный) сразу relay. */
+export function iceServersIncludePrivateTurn(iceServers) {
+  if (!Array.isArray(iceServers)) {
+    return false;
+  }
+  return iceServers.some((entry) => {
+    const user = String(entry?.username || '');
+    if (user && user !== 'openrelayproject') {
+      return true;
+    }
+    const urls = Array.isArray(entry?.urls) ? entry.urls : [entry?.urls];
+    return urls.some((u) => String(u || '').includes('153.80.194.115'));
+  });
+}
+
 export function ensureAudioTransceiver(pc, hasLocalAudio) {
   if (!pc?.addTransceiver) {
     return;
