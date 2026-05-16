@@ -1469,9 +1469,11 @@ io.on('connection', socket => {
       });
     });
 
-    const allInRoom = Array.from(io.sockets.adapter.rooms.get(roomID) || [])
-      .filter((id) => id !== socket.id);
-    socket.emit(ACTIONS.SYNC_PEERS, { peerIds: allInRoom });
+    const allInRoom = Array.from(io.sockets.adapter.rooms.get(roomID) || []);
+    allInRoom.forEach((clientID) => {
+      const peerIds = allInRoom.filter((id) => id !== clientID);
+      io.to(clientID).emit(ACTIONS.SYNC_PEERS, { peerIds });
+    });
     socket.data.gameRoomID = roomID;
     if (token) {
       socket.data.playerToken = String(token);
