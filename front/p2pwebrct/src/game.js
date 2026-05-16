@@ -298,32 +298,89 @@ function setDisplay(selector, displayValue) {
 /** Сколько игроков в лобби (до старта игры) — для иконок мест. */
 let lobbyConnectedPlayers = 1;
 
+/** Группы DOM-зон по слотам оппонентов (id не меняются при class-swap). */
+const TABLE_OPPONENT_ZONE_GROUPS = {
+	/** 2 и 4+ игроков: верх-центр */
+	center: ['opponenthand', 'zone_opponent', 'zone_opponent_side'],
+	/** 3+ игроков: верх-справа (seat 1 в раскладке 3P) */
+	right: ['opponent2hand', 'zone_opponent2', 'zone_opponent2_side'],
+	/** 3+ игроков: верх-слева (seat 2 в раскладке 3P) */
+	left: ['opponent3hand', 'zone_opponent3', 'zone_opponent3_side'],
+	/** 5 игроков: низ-слева */
+	bl: ['opponent_bl_hand', 'zone_opponent_bl', 'zone_opponent_bl_side'],
+	/** 6 игроков: низ-справа */
+	br: ['opponent_br_hand', 'zone_opponent_br', 'zone_opponent_br_side'],
+};
+
+const TABLE_ALWAYS_ACTIVE_ZONE_IDS = [
+	'myhand',
+	'zone2',
+	'zone3',
+	'zone5',
+	'zone_monster',
+	'zone_doors',
+	'zone_treasure',
+	'zone_doors_drop',
+	'zone_treasure_drop',
+];
+
+const TABLE_ALL_OPPONENT_ZONE_IDS = [
+	...TABLE_OPPONENT_ZONE_GROUPS.center,
+	...TABLE_OPPONENT_ZONE_GROUPS.right,
+	...TABLE_OPPONENT_ZONE_GROUPS.left,
+	...TABLE_OPPONENT_ZONE_GROUPS.bl,
+	...TABLE_OPPONENT_ZONE_GROUPS.br,
+];
+
+function getEnabledSeatZoneIdsForPlayerCount(numPlayers) {
+	const n = Math.max(0, Math.min(6, Math.floor(Number(numPlayers) || 0)));
+	if (n <= 0) {
+		return new Set();
+	}
+	const enabled = new Set(TABLE_ALWAYS_ACTIVE_ZONE_IDS);
+	if (n === 2) {
+		TABLE_OPPONENT_ZONE_GROUPS.center.forEach((id) => enabled.add(id));
+	} else if (n === 3) {
+		TABLE_OPPONENT_ZONE_GROUPS.right.forEach((id) => enabled.add(id));
+		TABLE_OPPONENT_ZONE_GROUPS.left.forEach((id) => enabled.add(id));
+	} else if (n >= 4) {
+		TABLE_OPPONENT_ZONE_GROUPS.center.forEach((id) => enabled.add(id));
+		TABLE_OPPONENT_ZONE_GROUPS.right.forEach((id) => enabled.add(id));
+		TABLE_OPPONENT_ZONE_GROUPS.left.forEach((id) => enabled.add(id));
+	}
+	if (n >= 5) {
+		TABLE_OPPONENT_ZONE_GROUPS.bl.forEach((id) => enabled.add(id));
+	}
+	if (n >= 6) {
+		TABLE_OPPONENT_ZONE_GROUPS.br.forEach((id) => enabled.add(id));
+	}
+	return enabled;
+}
+
+/** Скрывает зоны слотов, не занятых текущим числом игроков (чтобы не кликать «пустые» места). */
+function syncTableSeatZonesVisibilityForPlayerCount(playerCountOverride) {
+	const n = playerCountOverride != null
+		? Math.max(0, Math.min(6, Math.floor(Number(playerCountOverride) || 0)))
+		: effectiveSeatLayoutPlayerCount();
+	const enabled = getEnabledSeatZoneIdsForPlayerCount(n > 0 ? n : 0);
+	TABLE_ALL_OPPONENT_ZONE_IDS.forEach((id) => {
+		const el = document.getElementById(id);
+		if (!el) {
+			return;
+		}
+		if (n > 0 && enabled.has(id)) {
+			el.style.removeProperty('display');
+			el.style.removeProperty('visibility');
+		} else {
+			el.style.display = 'none';
+		}
+	});
+}
+
 function setZoneInteractivityByPlayers(numPlayers) {
 	const allZoneIds = [
-		'myhand',
-		'opponenthand',
-		'opponent2hand',
-		'opponent3hand',
-		'opponent_bl_hand',
-		'opponent_br_hand',
-		'zone2',
-		'zone3',
-		'zone5',
-		'zone_opponent',
-		'zone_opponent_side',
-		'zone_opponent2',
-		'zone_opponent2_side',
-		'zone_opponent3',
-		'zone_opponent3_side',
-		'zone_opponent_bl',
-		'zone_opponent_bl_side',
-		'zone_opponent_br',
-		'zone_opponent_br_side',
-		'zone_monster',
-		'zone_doors',
-		'zone_treasure',
-		'zone_doors_drop',
-		'zone_treasure_drop',
+		...TABLE_ALWAYS_ACTIVE_ZONE_IDS,
+		...TABLE_ALL_OPPONENT_ZONE_IDS,
 	];
 
 	if (numPlayers <= 0) {
@@ -335,80 +392,13 @@ function setZoneInteractivityByPlayers(numPlayers) {
 			zone.style.pointerEvents = 'none';
 			zone.style.opacity = '0.5';
 		});
+		syncTableSeatZonesVisibilityForPlayerCount(numPlayers);
 		return;
 	}
 
-	const enabledZoneIds = new Set([
-		// Базовые игровые зоны, активные в любом количестве игроков.
-		'myhand',
-		'zone2',
-		'zone3',
-		'zone5',
-		'opponent_bl_hand',
-		'zone_opponent_bl',
-		'zone_opponent_bl_side',
-		'zone_monster',
-		'zone_doors',
-		'zone_treasure',
-		'zone_doors_drop',
-		'zone_treasure_drop',
-	]);
+	const enabledZoneIds = getEnabledSeatZoneIdsForPlayerCount(numPlayers);
 
-	if (numPlayers === 2) {
-		enabledZoneIds.add('opponenthand');
-		enabledZoneIds.add('zone_opponent');
-		enabledZoneIds.add('zone_opponent_side');
-	}
-
-	if (numPlayers === 3) {
-		enabledZoneIds.add('opponent2hand');
-		enabledZoneIds.add('zone_opponent2');
-		enabledZoneIds.add('zone_opponent2_side');
-		enabledZoneIds.add('opponent3hand');
-		enabledZoneIds.add('zone_opponent3');
-		enabledZoneIds.add('zone_opponent3_side');
-	}
-
-	if (numPlayers === 4) {
-		enabledZoneIds.add('opponenthand');
-		enabledZoneIds.add('zone_opponent');
-		enabledZoneIds.add('zone_opponent_side');
-		enabledZoneIds.add('opponent2hand');
-		enabledZoneIds.add('zone_opponent2');
-		enabledZoneIds.add('zone_opponent2_side');
-		enabledZoneIds.add('opponent3hand');
-		enabledZoneIds.add('zone_opponent3');
-		enabledZoneIds.add('zone_opponent3_side');
-	}
-
-	if (numPlayers === 5) {
-		enabledZoneIds.add('opponenthand');
-		enabledZoneIds.add('zone_opponent');
-		enabledZoneIds.add('zone_opponent_side');
-		enabledZoneIds.add('opponent2hand');
-		enabledZoneIds.add('zone_opponent2');
-		enabledZoneIds.add('zone_opponent2_side');
-		enabledZoneIds.add('opponent3hand');
-		enabledZoneIds.add('zone_opponent3');
-		enabledZoneIds.add('zone_opponent3_side');
-	}
-
-	if (numPlayers >= 6) {
-		enabledZoneIds.add('opponenthand');
-		enabledZoneIds.add('zone_opponent');
-		enabledZoneIds.add('zone_opponent_side');
-		enabledZoneIds.add('opponent2hand');
-		enabledZoneIds.add('zone_opponent2');
-		enabledZoneIds.add('zone_opponent2_side');
-		enabledZoneIds.add('opponent3hand');
-		enabledZoneIds.add('zone_opponent3');
-		enabledZoneIds.add('zone_opponent3_side');
-		enabledZoneIds.add('opponent_br_hand');
-		enabledZoneIds.add('zone_opponent_br');
-		enabledZoneIds.add('zone_opponent_br_side');
-	}
-
-	allZoneIds.forEach(id => {
+	allZoneIds.forEach((id) => {
 		const zone = document.getElementById(id);
 		if (!zone) {
 			return;
@@ -417,7 +407,7 @@ function setZoneInteractivityByPlayers(numPlayers) {
 		zone.style.pointerEvents = enabled ? 'auto' : 'none';
 		zone.style.opacity = enabled ? '' : '0.5';
 	});
-	syncBrTableZonesForPlayerCount();
+	syncTableSeatZonesVisibilityForPlayerCount(numPlayers);
 }
 
 function hideAllSeatIconSlots() {
@@ -543,23 +533,9 @@ function ensurePreviewAcceptHelpButtonsVisible() {
 	}
 }
 
-/** Зоны правого нижнего слота (BR): скрыты, пока за столом меньше 6 игроков. */
+/** @deprecated Используйте syncTableSeatZonesVisibilityForPlayerCount */
 function syncBrTableZonesForPlayerCount() {
-	const n = effectiveSeatLayoutPlayerCount();
-	const ids = ['opponent_br_hand', 'zone_opponent_br', 'zone_opponent_br_side'];
-	const show = n >= 6;
-	ids.forEach((id) => {
-		const el = document.getElementById(id);
-		if (!el) {
-			return;
-		}
-		if (show) {
-			el.style.removeProperty('display');
-			el.style.removeProperty('visibility');
-		} else {
-			el.style.display = 'none';
-		}
-	});
+	syncTableSeatZonesVisibilityForPlayerCount();
 }
 
 /** В чужих руках — рубашка; в своей (.myhand) — лицевая сторона. */
