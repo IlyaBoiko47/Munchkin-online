@@ -1,4 +1,23 @@
 const path = require('path');
+const fs = require('fs');
+
+// .env рядом с server.js (TURN_* для голосового чата)
+const envFile = path.join(__dirname, '.env');
+if (fs.existsSync(envFile)) {
+  fs.readFileSync(envFile, 'utf8').split(/\r?\n/).forEach((line) => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) return;
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) return;
+    const key = trimmed.slice(0, eq).trim();
+    let val = trimmed.slice(eq + 1).trim();
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    if (!process.env[key]) process.env[key] = val;
+  });
+}
+
 const express = require('express');
 const app = express();
 const server = require('http').createServer(app);
@@ -12,6 +31,7 @@ const io = require('socket.io')(server, {
 const {version, validate} = require('uuid');
 
 const ACTIONS = require('./src/socket/actions');
+const { buildWebRtcIceServers } = require('./webrtcIceServers');
 const PORT = Number(process.env.PORT) || 3001;
 const HOST = process.env.HOST || '0.0.0.0';
 /** Максимум игроков за столом (2–6). */
@@ -1711,7 +1731,6 @@ function matchClientsInRoom(roomID) {
 
 
 
-const fs = require('fs');
 const mime = require('mime-types');
 
 // В проде после `npm run build` статика лежит в ./build
@@ -1719,6 +1738,10 @@ const mime = require('mime-types');
 const buildPath = path.join(__dirname, 'build');
 const publicPath = path.join(__dirname, 'public');
 const staticPath = fs.existsSync(buildPath) ? buildPath : publicPath;
+
+app.get('/api/webrtc-ice', (req, res) => {
+  res.json({ iceServers: buildWebRtcIceServers() });
+});
 
 app.use(express.static(staticPath, {
   index: false,

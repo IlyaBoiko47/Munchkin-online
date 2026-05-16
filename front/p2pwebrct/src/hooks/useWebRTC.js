@@ -4,29 +4,14 @@ import socket from '../socket';
 import ACTIONS from '../socket/actions';
 import { consumeRoomTitleForJoin } from '../roomTitleBridge.js';
 import { getOrCreateTabPlayerToken } from '../profileSession.js';
+import {
+  buildDefaultIceServers,
+  buildRtcConfiguration,
+  ensureAudioTransceiver,
+  fetchIceServersFromApi,
+} from '../webrtcIceConfig.js';
 
 export const LOCAL_AUDIO = 'LOCAL_AUDIO';
-
-const ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  {
-    urls: [
-      'turn:openrelay.metered.ca:80',
-      'turn:openrelay.metered.ca:443',
-      'turn:openrelay.metered.ca:443?transport=tcp',
-    ],
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
-];
-
-const RTC_CONFIG = {
-  iceServers: ICE_SERVERS,
-  iceCandidatePoolSize: 10,
-  bundlePolicy: 'max-bundle',
-  iceTransportPolicy: 'all',
-};
 
 const WATCHDOG_INTERVAL_MS = 2500;
 const WATCHDOG_MAX_MS = 10 * 60 * 1000;
@@ -56,6 +41,8 @@ export default function useWebRTC(roomID) {
   const joinedRoomRef = useRef(null);
   const joinGenerationRef = useRef(0);
   const knownPeersRef = useRef(new Set());
+  const iceServersRef = useRef(buildDefaultIceServers());
+  const peerForceRelayRef = useRef({});
 
   function getOrCreatePlayerToken() {
     return getOrCreateTabPlayerToken(roomID || 'global');
@@ -137,6 +124,7 @@ export default function useWebRTC(roomID) {
     try {
       makingOffer.current[peerID] = true;
       attachLocalTracksToPeer(peerID);
+      ensureAudioTransceiver(pc, Boolean(localMediaStream.current?.getAudioTracks?.().length));
       const needsRestart = pc.connectionState === 'failed'
         || pc.iceConnectionState === 'failed'
         || pc.iceConnectionState === 'disconnected';
@@ -242,8 +230,10 @@ export default function useWebRTC(roomID) {
 
   handleRemoteTrackRef.current = handleRemoteTrack;
 
-  const createPeerConnection = useCallback((peerID, { isPolite = false } = {}) => {
-    const pc = new RTCPeerConnection(RTC_CONFIG);
+  const createPeerConnection = useCallback((peerID, { isPolite = false, forceRelay = false } = {}) => {
+    const pc = new RTCPeerConnection(buildRtcConfiguration(iceServersRef.current, {
+      relayOnly: forceRelay,
+    }));
     peerConnections.current[peerID] = pc;
     politePeer.current[peerID] = isPolite;
     makingOffer.current[peerID] = false;
@@ -258,6 +248,8 @@ export default function useWebRTC(roomID) {
         });
       }
     };
+
+    ensureAudioTransceiver(pc, Boolean(localMediaStream.current?.getAudioTracks?.().length));
 
     pc.ontrack = (event) => {
       handleRemoteTrackRef.current(peerID, event);
@@ -384,9 +376,10 @@ export default function useWebRTC(roomID) {
       return;
     }
 
-    await waitForLocalStream();
+    void ensureLocalAudioStream();
 
-    createPeerConnection(peerID, { isPolite: !wantOffer });
+    const forceRelay = Boolean(peerForceRelayRef.current[peerID]);
+    createPeerConnection(peerID, { isPolite: !wantOffer, forceRelay });
     attachLocalTracksToPeer(peerID);
     await flushPendingSignalingForPeer(peerID);
 
@@ -402,6 +395,7 @@ export default function useWebRTC(roomID) {
     sendOfferToPeer,
     flushPendingSignalingForPeer,
     createPeerConnection,
+    ensureLocalAudioStream,
   ]);
 
   connectToPeerRef.current = connectToPeer;
@@ -446,7 +440,10 @@ export default function useWebRTC(roomID) {
         || (attempt > 4 && pc.signalingState !== 'stable' && pc.iceConnectionState !== 'connected' && pc.iceConnectionState !== 'checking')
         || attempt % 6 === 0;
 
-      if (stuck) {
+      if (stuck || attempt >= 3) {
+        if (!peerForceRelayRef.current[peerID]) {
+          peerForceRelayRef.current[peerID] = true;
+        }
         resetPeerConnection(peerID);
         await connectToPeerRef.current?.(peerID, { shouldOffer: shouldTryOffer });
         return;
@@ -531,22 +528,6 @@ export default function useWebRTC(roomID) {
       return null;
     }
   }, [addNewClient]);
-
-  async function waitForLocalStream(maxMs = 20000) {
-    const step = 50;
-    let waited = 0;
-    while (!localMediaStream.current && waited < maxMs) {
-      // eslint-disable-next-line no-await-in-loop
-      await ensureLocalAudioStream();
-      if (localMediaStream.current) {
-        return localMediaStream.current;
-      }
-      // eslint-disable-next-line no-await-in-loop
-      await new Promise((r) => setTimeout(r, step));
-      waited += step;
-    }
-    return localMediaStream.current;
-  }
 
   useEffect(() => {
     async function handleNewPeer({ peerID, createOffer }) {
@@ -670,6 +651,7 @@ export default function useWebRTC(roomID) {
       delete makingOffer.current[peerID];
       delete politePeer.current[peerID];
       delete ignoreOffer.current[peerID];
+      delete peerForceRelayRef.current[peerID];
 
       updateClients((list) => list.filter((c) => c !== peerID));
     };
@@ -690,6 +672,10 @@ export default function useWebRTC(roomID) {
     let cancelled = false;
 
     (async () => {
+      iceServersRef.current = await fetchIceServersFromApi();
+      if (cancelled) {
+        return;
+      }
       await ensureLocalAudioStream();
       if (cancelled) {
         return;

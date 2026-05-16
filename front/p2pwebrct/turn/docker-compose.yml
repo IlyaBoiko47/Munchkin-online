@@ -1,0 +1,13 @@
+# TURN на том же VPS, что и игра — для голоса между разными Wi‑Fi.
+# 1) В .env сервера: TURN_URLS=turn:ВАШ_IP:3478,turns:ВАШ_IP:5349
+#    TURN_USERNAME=munchkin  TURN_PASSWORD=длинный_секрет
+# 2) docker compose -f turn/docker-compose.yml up -d
+# 3) Открыть UDP/TCP 3478 и TCP 5349 в firewall
+
+services:
+  coturn:
+    image: coturn/coturn:latest
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
