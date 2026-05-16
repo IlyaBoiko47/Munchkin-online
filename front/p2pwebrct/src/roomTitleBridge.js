@@ -69,7 +69,7 @@ export function consumeRoomTitleForJoin(roomId) {
 			try {
 				delete window.__munchkinPendingRoomTitles[id];
 			} catch {
-				// ignore
+				// ignore 
 			}
 		}
 	}
