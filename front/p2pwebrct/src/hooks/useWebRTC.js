@@ -22,10 +22,10 @@ export const LOCAL_AUDIO = 'LOCAL_AUDIO';
 const WATCHDOG_INTERVAL_MS = 2500;
 const WATCHDOG_MAX_MS = 10 * 60 * 1000;
 const MEDIA_STATS_INTERVAL_MS = 3000;
-const NO_INBOUND_AUDIO_MS = 8000;
+const NO_INBOUND_AUDIO_MS = 15000;
 const MIN_INBOUND_AUDIO_BYTES = 400;
-const ONE_WAY_AUDIO_MS = 6000;
-const ESCALATION_COOLDOWN_MS = 20000;
+const ESCALATION_COOLDOWN_MS = 25000;
+const RELAY_STUCK_MS = 8000;
 
 function shouldCreateOffer(localSocketId, remotePeerId) {
   return String(localSocketId) < String(remotePeerId);
@@ -219,9 +219,7 @@ export default function useWebRTC(roomID) {
       makingOffer.current[peerID] = true;
       attachLocalTracksToPeer(peerID);
       if (!getAudioTransceiver(pc)) {
-        pc.addTransceiver('audio', {
-          direction: localMediaStream.current?.getAudioTracks?.().length ? 'sendrecv' : 'recvonly',
-        });
+        pc.addTransceiver('audio', { direction: 'sendrecv' });
       }
       const needsRestart = pc.connectionState === 'failed'
         || pc.iceConnectionState === 'failed'
@@ -409,9 +407,7 @@ export default function useWebRTC(roomID) {
     };
 
     if (!getAudioTransceiver(pc)) {
-      pc.addTransceiver('audio', {
-        direction: localMediaStream.current?.getAudioTracks?.().length ? 'sendrecv' : 'recvonly',
-      });
+      pc.addTransceiver('audio', { direction: 'sendrecv' });
     }
 
     pc.ontrack = (event) => {
@@ -554,7 +550,7 @@ export default function useWebRTC(roomID) {
       return;
     }
 
-    void ensureLocalAudioStream();
+    await ensureLocalAudioStream();
 
     const forceRelay = Boolean(peerForceRelayRef.current[peerID]);
     webrtcLog(peerID, forceRelay ? 'connect ICE policy: relay' : 'connect ICE policy: all', {
@@ -634,9 +630,7 @@ export default function useWebRTC(roomID) {
         if (wasReceiving && isPeerIceUp(pc)) {
           return;
         }
-        if (attempt >= 5 && !peerForceRelayRef.current[peerID] && !wasReceiving) {
-          peerForceRelayRef.current[peerID] = true;
-        } else if (attempt >= 10 && peerForceRelayRef.current[peerID] && !wasReceiving) {
+        if (attempt >= 12 && peerForceRelayRef.current[peerID] && !wasReceiving) {
           peerForceRelayRef.current[peerID] = false;
         }
         await withPeerOperation(peerID, async () => {
@@ -678,6 +672,7 @@ export default function useWebRTC(roomID) {
       lastGrowthAt: Date.now(),
       iceUpSince: null,
       pcStartedAt: Date.now(),
+      iceRestartAttempts: 0,
     };
 
     mediaStatsTimers.current[peerID] = setInterval(async () => {
@@ -704,17 +699,8 @@ export default function useWebRTC(roomID) {
 
         const receiving = isReceivingAudioBytes(inboundAudioBytes);
         const micOn = !micMutedRef.current;
-        const sending = micOn && outboundAudioBytes >= MIN_INBOUND_AUDIO_BYTES;
-        const oneWaySrflx = sending
-          && !receiving
-          && pathString.includes('srflx')
-          && !pathString.includes('relay')
-          && Date.now() - (st.iceUpSince || 0) > ONE_WAY_AUDIO_MS;
-        const cannotBeHeard = receiving
-          && micOn
-          && outboundAudioBytes < MIN_INBOUND_AUDIO_BYTES
-          && Date.now() - (st.iceUpSince || 0) > ONE_WAY_AUDIO_MS
-          && !peerForceRelayRef.current[peerID];
+        const noInboundLong = Date.now() - st.lastGrowthAt > NO_INBOUND_AUDIO_MS
+          && Date.now() - (st.iceUpSince || 0) > NO_INBOUND_AUDIO_MS;
 
         if (receiving) {
           webrtcLog(peerID, 'remote audio OK', {
@@ -723,19 +709,25 @@ export default function useWebRTC(roomID) {
             outboundAudioBytes,
           });
           stopConnectionWatchdog(peerID);
-        } else if (oneWaySrflx) {
-          await escalatePeerToRelayRef.current?.(peerID, 'отправляем, но не слышим (srflx) → TURN');
-        } else if (cannotBeHeard) {
-          await escalatePeerToRelayRef.current?.(peerID, 'слышим, но нас не слышат → TURN');
+        } else if (noInboundLong && st.iceRestartAttempts < 2 && pc.signalingState === 'stable') {
+          st.iceRestartAttempts += 1;
+          attachLocalTracksToPeer(peerID);
+          webrtcWarn(peerID, 'нет входящего звука — ICE restart + renegotiate', st.iceRestartAttempts);
+          // eslint-disable-next-line no-await-in-loop
+          await sendOfferToPeer(peerID, { force: true });
         } else if (
-          Date.now() - st.lastGrowthAt > NO_INBOUND_AUDIO_MS
-          && Date.now() - (st.iceUpSince || 0) > NO_INBOUND_AUDIO_MS
+          noInboundLong
+          && !peerForceRelayRef.current[peerID]
+          && hasPrivateTurnRef.current
+          && st.iceRestartAttempts >= 2
         ) {
-          if (!peerForceRelayRef.current[peerID]) {
-            await escalatePeerToRelayRef.current?.(peerID, 'нет входящего звука → пробуем TURN');
-          } else {
-            await escalatePeerToDirectRef.current?.(peerID, 'TURN не даёт звук → пробуем all');
-          }
+          await escalatePeerToRelayRef.current?.(peerID, 'ICE restart не помог → TURN');
+        } else if (
+          noInboundLong
+          && peerForceRelayRef.current[peerID]
+          && st.iceRestartAttempts >= 2
+        ) {
+          await escalatePeerToDirectRef.current?.(peerID, 'TURN не помог → all');
         }
       } else if (
         peerForceRelayRef.current[peerID]
@@ -745,14 +737,14 @@ export default function useWebRTC(roomID) {
           || pc.connectionState === 'failed'
           || (
             (pc.iceConnectionState === 'new' || pc.iceConnectionState === 'checking')
-            && Date.now() - (st.pcStartedAt || 0) > 12000
+            && Date.now() - (st.pcStartedAt || 0) > RELAY_STUCK_MS
           )
         )
       ) {
         await escalatePeerToDirectRef.current?.(peerID, 'TURN не подключается');
       }
     }, MEDIA_STATS_INTERVAL_MS);
-  }, [stopMediaStatsMonitor, stopConnectionWatchdog]);
+  }, [stopMediaStatsMonitor, stopConnectionWatchdog, attachLocalTracksToPeer, sendOfferToPeer]);
 
   const escalatePeerToDirect = useCallback(async (peerID, reason) => {
     if (isPeerReceivingAudio(peerID, peerMediaStatsRef.current) && !peerForceRelayRef.current[peerID]) {
@@ -823,7 +815,7 @@ export default function useWebRTC(roomID) {
         continue;
       }
       attachLocalTracksToPeer(peerID);
-      if (pc.signalingState === 'stable' && shouldCreateOffer(socket.id, peerID)) {
+      if (pc.signalingState === 'stable') {
         // eslint-disable-next-line no-await-in-loop
         await sendOfferToPeer(peerID, { force: true });
       }
@@ -835,11 +827,7 @@ export default function useWebRTC(roomID) {
     const pending = { ...pendingOffers.current };
     pendingOffers.current = {};
     for (const peerID of Object.keys(pending)) {
-      if (
-        pending[peerID]
-        && peerConnections.current[peerID]
-        && shouldCreateOffer(socket.id, peerID)
-      ) {
+      if (pending[peerID] && peerConnections.current[peerID]) {
         // eslint-disable-next-line no-await-in-loop
         await sendOfferToPeer(peerID, { force: true });
       }
