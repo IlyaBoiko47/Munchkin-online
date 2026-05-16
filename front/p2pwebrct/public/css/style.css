@@ -78,6 +78,12 @@ a{
 .header__link:hover{
 	opacity: .75;
 }
+.header__link:focus,
+.header__link:focus-visible,
+.header__link:active {
+	outline: none;
+	box-shadow: none;
+}
 
 .gallery-hide_item{
   display: none;
@@ -701,16 +707,17 @@ a{
 	transform: translateX(110px) rotate(-90deg);
 }
 
-/* Контур карт в экипировке в бою: абсолютный div внутри зоны (наследует rotate). Координаты — в JS. */
+/* Подсветка экипировки в бою: белое свечение без рамки (координаты — в JS). */
 .battle-equipment-cards-outline {
 	box-sizing: border-box;
-	border-radius: 8px;
 	border: none;
+	outline: none;
+	border-radius: 8px;
+	background: transparent;
 	box-shadow:
 		0 0 8px 3px rgba(255, 255, 255, 0.75),
 		0 0 18px 6px rgba(255, 255, 255, 0.35);
 	pointer-events: none;
-	background: transparent;
 }
 
 /* Пятый игрок (нижний левый): рука + экипировка + боковая зона. */
@@ -2634,25 +2641,25 @@ body.tutorial-board .tutorial-timer-hint {
 
 .join_room-header {
 	flex-shrink: 0;
-	display: flex;
-	flex-wrap: wrap;
+	display: grid;
+	grid-template-columns: 1fr auto 1fr;
 	align-items: center;
-	gap: 16px 24px;
 	margin: 0 24px 16px;
-	max-width: calc(100% - 48px);
+	width: calc(100% - 48px);
 }
 
 .join_room-header h1 {
 	margin: 0;
-	flex-shrink: 0;
+	grid-column: 1;
+	justify-self: start;
 }
 
 .join_room-search {
 	box-sizing: border-box;
-	flex: 0 0 auto;
-	width: 260px;
-	max-width: 40vw;
-	margin-left: auto;
+	grid-column: 2;
+	justify-self: center;
+	width: min(380px, 42vw);
+	margin: 0;
 	padding: 8px 14px;
 	font-size: 0.56em;
 	font-family: 'Munchkin', sans-serif;

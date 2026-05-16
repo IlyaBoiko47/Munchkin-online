@@ -1,38 +1,11 @@
 import { beginDragFromZoomImage } from "./card-block.js";
-import { canDragCardFromTutorialDeck } from "./game.js";
 
 let currentCardIndex = 0;
 
-function getTutorialZoomableCards(zone) {
-	if (!window.__TUTORIAL_BOARD || !zone) {
-		return null;
-	}
-	const zoneId = zone.id;
-	if (zoneId !== "zone_doors" && zoneId !== "zone_treasure") {
-		return null;
-	}
-	return Array.from(zone.querySelectorAll(":scope > .card")).filter((c) =>
-		canDragCardFromTutorialDeck(c),
-	);
-}
-
 function addCardClickListener(card) {
 	card.addEventListener("click", () => {
-		const zone = card.parentNode;
-		const zoomCards = getTutorialZoomableCards(zone);
-		if (zoomCards) {
-			if (!canDragCardFromTutorialDeck(card)) {
-				return;
-			}
-			currentCardIndex = zoomCards.indexOf(card);
-			if (currentCardIndex < 0) {
-				currentCardIndex = 0;
-			}
-			showCard(zoomCards);
-			return;
-		}
-		currentCardIndex = Array.from(zone.querySelectorAll(".card")).indexOf(card);
-		showCard(zone.querySelectorAll(".card"));
+		currentCardIndex = Array.from(card.parentNode.querySelectorAll(".card")).indexOf(card);
+		showCard(card.parentNode.querySelectorAll(".card"));
 	});
 }
 

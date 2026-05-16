@@ -1,8 +1,18 @@
 
 gallery = document.getElementById("gallery");
-images = gallery.querySelectorAll(".gallery-pack_item");
+images = gallery ? gallery.querySelectorAll(".gallery-pack_item") : [];
 
 let currentImageIndex = 0;
+
+const packRulesOpenBtn = document.getElementById("pack-rules-open-btn");
+if (packRulesOpenBtn && images.length > 0) {
+  packRulesOpenBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    currentImageIndex = 0;
+    showImage();
+    packRulesOpenBtn.blur();
+  });
+}
 
 images.forEach((image, index) => {
   image.addEventListener("click", () => {
@@ -13,6 +23,9 @@ images.forEach((image, index) => {
 
 
 function showImage() {
+  if (!images.length) {
+    return;
+  }
   // Проверяем наличие открытого модального окна и закрываем его, если есть
   const modall = document.querySelector(".modal");
   if (modall) {

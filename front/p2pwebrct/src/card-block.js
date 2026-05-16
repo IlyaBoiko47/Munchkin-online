@@ -1,5 +1,5 @@
 import { UpdateZones, closeCardZoomModal } from './увеличение карточек во время игры.js';
-import { UpdatebackImgTreasure, UpdatebackImgDoor, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, scheduleWanderingMonsterIfNeeded, scheduleCheatIfNeeded, scheduleMagicLampIfNeeded, schedulePollymorthPotionIfNeeded, scheduleIllusionIfNeeded, scheduleMateIfNeeded, canLocalPlayMagicLampToBattleZone, canPlaceTreasureInPlayerEquipment, canPlaceDoorInPlayerEquipment, canPlaceDopplegangerTreasureInBonusZone, canPlaceYuppieWaterTreasureInBonusZone, getLocalSeatForSocket, getMonsterBattleContext, notifyIfTreasureLevelBlockedOnSeat, notifyIfKillHirelingBlockedOnSeat, notifyIfWhineAtGMBlockedOnSeat, canDragCardFromTutorialDeck, refreshTutorialDeckTakeRules } from './game.js';
+import { UpdatebackImgTreasure, UpdatebackImgDoor, timer, recalculateAllPowerDisplays, scheduleBadStaffIfNeeded, scheduleTreasureLevelIfNeeded, scheduleTreasure65IfNeeded, scheduleMonsterBonusAttachIfNeeded, scheduleWanderingMonsterIfNeeded, scheduleCheatIfNeeded, scheduleMagicLampIfNeeded, schedulePollymorthPotionIfNeeded, scheduleIllusionIfNeeded, scheduleMateIfNeeded, canLocalPlayMagicLampToBattleZone, canPlaceTreasureInPlayerEquipment, canPlaceDoorInPlayerEquipment, canPlaceDopplegangerTreasureInBonusZone, canPlaceYuppieWaterTreasureInBonusZone, getLocalSeatForSocket, getMonsterBattleContext, notifyIfTreasureLevelBlockedOnSeat, notifyIfKillHirelingBlockedOnSeat, notifyIfWhineAtGMBlockedOnSeat } from './game.js';
 import socket from './socket/index.js';
 //import {socket} from './game.js';
 // console.log("card работает");
@@ -108,18 +108,9 @@ function dragend_handler(e) {
 		const invalidMagicLampToBattle = currentDrag && zone && !canPlaceMagicLampIntoBattleZone(currentDrag, zone);
 		const invalidDopplegangerBonus = currentDrag && zone && !canPlaceDopplegangerTreasureInBonusZone(currentDrag, zone);
 		const invalidYuppieWaterBonus = currentDrag && zone && !canPlaceYuppieWaterTreasureInBonusZone(currentDrag, zone);
-		const invalidTutorialDeckTake = isInvalidTutorialDeckTake();
-		const dragRejected =
-			invalidTreasureEquip ||
-			invalidDoorEquip ||
-			invalidMonsterToBattle ||
-			invalidMagicLampToBattle ||
-			invalidDopplegangerBonus ||
-			invalidYuppieWaterBonus ||
-			invalidTutorialDeckTake;
 
 		// Если перенос в последнюю зону был невалиден — откатываем.
-		if (dragRejected) {
+		if (invalidTreasureEquip || invalidDoorEquip || invalidMonsterToBattle || invalidMagicLampToBattle || invalidDopplegangerBonus || invalidYuppieWaterBonus) {
 			dragFromSnapshot.parent.insertBefore(currentDrag, dragFromSnapshot.next);
 			currentDrag.style.filter = '';
 		} else {
@@ -142,7 +133,6 @@ function dragend_handler(e) {
 			notifyIfWhineAtGMBlockedOnSeat(currentDrag, zone);
 		}
 
-		if (!dragRejected) {
 		// Обновления и синхронизация с другими клиентами.
 		adjustCardWidth('.myhand');
 		adjustCardWidth('.zone2');
@@ -191,14 +181,6 @@ function dragend_handler(e) {
 			scheduleIllusionIfNeeded(currentDrag.id, parentZone);
 			scheduleMateIfNeeded(currentDrag.id, parentZone);
 		}
-		}
-	}
-
-	if (window.__TUTORIAL_BOARD) {
-		const fromId = dragFromSnapshot?.parent?.id;
-		if (fromId === "zone_doors" || fromId === "zone_treasure") {
-			refreshTutorialDeckTakeRules();
-		}
 	}
 
 	dropHandled = false;
@@ -223,34 +205,16 @@ function recalculateMyPower(shouldSync = true) {
 }
 
 /** Общая инициация перетаскивания для реальной карты `.card` (с поля или из увеличенного превью). */
-function isInvalidTutorialDeckTake() {
-	return Boolean(
-		window.__TUTORIAL_BOARD &&
-			currentDrag &&
-			dragFromSnapshot &&
-			dragFromSnapshot.tutorialDeckTakeOk === false,
-	);
-}
-
 function setupDragStateFromCard(cardEl) {
 	if (!cardEl || !cardEl.classList.contains('card')) {
 		return;
 	}
-	if (!canDragCardFromTutorialDeck(cardEl)) {
-		currentDrag = null;
-		dragFromSnapshot = null;
-		return;
-	}
 	currentDrag = cardEl;
 	const zone = cardEl.closest('.cards-zone');
-	const fromZoneId = zone?.id || '';
-	const fromDeck =
-		fromZoneId === 'zone_doors' || fromZoneId === 'zone_treasure';
 	if (currentDrag && currentDrag.parentElement) {
 		dragFromSnapshot = {
 			parent: currentDrag.parentElement,
 			next: currentDrag.nextSibling,
-			tutorialDeckTakeOk: !fromDeck || canDragCardFromTutorialDeck(cardEl),
 		};
 	} else {
 		dragFromSnapshot = null;
@@ -329,10 +293,6 @@ export function beginDragFromZoomImage(cardEl, dragEvent) {
 	if (!cardEl?.classList?.contains?.('card')) {
 		return;
 	}
-	if (!canDragCardFromTutorialDeck(cardEl)) {
-		dragEvent?.preventDefault?.();
-		return;
-	}
 	if (dragEvent?.dataTransfer) {
 		dragEvent.dataTransfer.effectAllowed = 'move';
 		try {
@@ -360,10 +320,6 @@ function dragstart_handler(e) {
 	closeCardZoomModal();
 	const card = e.target.closest('.card');
 	if (!card) {
-		return;
-	}
-	if (!canDragCardFromTutorialDeck(card)) {
-		e.preventDefault();
 		return;
 	}
 	setupDragStateFromCard(card);
@@ -451,8 +407,7 @@ function drop_handler(e) {
   const invalidMagicLampToBattle = currentDrag && zone && !canPlaceMagicLampIntoBattleZone(currentDrag, zone);
   const invalidDopplegangerBonus = currentDrag && zone && !canPlaceDopplegangerTreasureInBonusZone(currentDrag, zone);
   const invalidYuppieWaterBonus = currentDrag && zone && !canPlaceYuppieWaterTreasureInBonusZone(currentDrag, zone);
-  const invalidTutorialDeckTake = isInvalidTutorialDeckTake();
-  if (currentDrag && zone && (invalidTreasureEquip || invalidDoorEquip || invalidMonsterToBattle || invalidMagicLampToBattle || invalidDopplegangerBonus || invalidYuppieWaterBonus || invalidTutorialDeckTake) && dragFromSnapshot?.parent) {
+  if (currentDrag && zone && (invalidTreasureEquip || invalidDoorEquip || invalidMonsterToBattle || invalidMagicLampToBattle || invalidDopplegangerBonus || invalidYuppieWaterBonus) && dragFromSnapshot?.parent) {
 	dragFromSnapshot.parent.insertBefore(currentDrag, dragFromSnapshot.next);
 	if (currentDrag) {
 		currentDrag.style.filter = '';
@@ -479,37 +434,32 @@ function drop_handler(e) {
 	UpdatebackImgTreasure();
 	UpdatebackImgDoor();
 	recalculateAllPowerDisplays();
-	if (!invalidTutorialDeckTake) {
-		const moveData = {
-			method: "moveCard",
-			cardId: currentDrag.id,
-			targetId: currentDrag.previousElementSibling ? currentDrag.previousElementSibling.id : null,
-			zoneId: currentDrag.parentElement ? currentDrag.parentElement.id : null,
-			fromZoneId: dragFromSnapshot?.parent?.id || null,
-		};
-		const seatPlayedInvalid = getLocalSeatForSocket();
-		if (seatPlayedInvalid != null && seatPlayedInvalid !== undefined && !Number.isNaN(Number(seatPlayedInvalid))) {
-			moveData.playedBySeat = Number(seatPlayedInvalid);
-		}
-		socket.emit("message", moveData);
-		if (currentDrag) {
-			const parentZone = currentDrag.parentElement;
-			if (parentZone) {
-				scheduleBadStaffIfNeeded(currentDrag.id, parentZone);
-				scheduleTreasureLevelIfNeeded(currentDrag.id, parentZone);
-				scheduleTreasure65IfNeeded(currentDrag.id, parentZone);
-				scheduleMonsterBonusAttachIfNeeded(currentDrag.id, parentZone);
-				scheduleWanderingMonsterIfNeeded(currentDrag.id, parentZone, dragFromSnapshot?.parent?.id || null);
-				scheduleCheatIfNeeded(currentDrag.id, parentZone);
-				scheduleMagicLampIfNeeded(currentDrag.id, parentZone);
-				schedulePollymorthPotionIfNeeded(currentDrag.id, parentZone);
-				scheduleIllusionIfNeeded(currentDrag.id, parentZone);
-				scheduleMateIfNeeded(currentDrag.id, parentZone);
-			}
-		}
+	const moveData = {
+		method: "moveCard",
+		cardId: currentDrag.id,
+		targetId: currentDrag.previousElementSibling ? currentDrag.previousElementSibling.id : null,
+		zoneId: currentDrag.parentElement ? currentDrag.parentElement.id : null,
+		fromZoneId: dragFromSnapshot?.parent?.id || null,
+	};
+	const seatPlayedInvalid = getLocalSeatForSocket();
+	if (seatPlayedInvalid != null && seatPlayedInvalid !== undefined && !Number.isNaN(Number(seatPlayedInvalid))) {
+		moveData.playedBySeat = Number(seatPlayedInvalid);
 	}
-	if (window.__TUTORIAL_BOARD) {
-		refreshTutorialDeckTakeRules();
+	socket.emit("message", moveData);
+	if (currentDrag) {
+		const parentZone = currentDrag.parentElement;
+		if (parentZone) {
+			scheduleBadStaffIfNeeded(currentDrag.id, parentZone);
+			scheduleTreasureLevelIfNeeded(currentDrag.id, parentZone);
+			scheduleTreasure65IfNeeded(currentDrag.id, parentZone);
+			scheduleMonsterBonusAttachIfNeeded(currentDrag.id, parentZone);
+			scheduleWanderingMonsterIfNeeded(currentDrag.id, parentZone, dragFromSnapshot?.parent?.id || null);
+			scheduleCheatIfNeeded(currentDrag.id, parentZone);
+			scheduleMagicLampIfNeeded(currentDrag.id, parentZone);
+			schedulePollymorthPotionIfNeeded(currentDrag.id, parentZone);
+			scheduleIllusionIfNeeded(currentDrag.id, parentZone);
+			scheduleMateIfNeeded(currentDrag.id, parentZone);
+		}
 	}
 	return;
   }
@@ -640,15 +590,6 @@ function drop_handler(e) {
     scheduleIllusionIfNeeded(currentDrag.id, zone);
     scheduleMateIfNeeded(currentDrag.id, zone);
   }
-
-	if (window.__TUTORIAL_BOARD) {
-		refreshTutorialDeckTakeRules();
-		try {
-			window.dispatchEvent(new Event('munchkin:zonesChanged'));
-		} catch {
-			// ignore
-		}
-	}
 }
 
 function checkAllCards() {
@@ -732,50 +673,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // После refresh мы можем поменять классы зон (myhand/zone2/zone5 и т.д.).
 // В таком случае пере-привязываем обработчики drag&drop к актуальным DOM-элементам.
-const ZONE_WIDTH_LAYOUT_SELECTORS = [
-	'.myhand',
-	'.zone2',
-	'.zone5',
-	'.opponenthand',
-	'.zone_opponent',
-	'.zone_opponent_side',
-	'.opponent2hand',
-	'.zone_opponent2',
-	'.zone_opponent2_side',
-	'.opponent3hand',
-	'.zone_opponent3',
-	'.zone_opponent3_side',
-	'.opponent_bl_hand',
-	'.zone_opponent_bl',
-	'.zone_opponent_bl_side',
-	'.opponent_br_hand',
-	'.zone_opponent_br',
-	'.zone_opponent_br_side',
-	'.zone_doors',
-	'.zone_treasure',
-	'.zone_doors_drop',
-	'.zone_treasure_drop',
-];
-
-/** Сжимает карты в зонах (ширина/высота в ряду). */
-export function adjustAllZonesCardLayout() {
-	ZONE_WIDTH_LAYOUT_SELECTORS.forEach((selector) => {
-		adjustCardWidth(selector);
-	});
-	adjustCardHeight('.zone3');
-	adjustCardHeight('.zone_monster');
-}
-
-/** После вставки карт в DOM — дождаться layout (картинки/offsetWidth). */
-export function scheduleAdjustAllZonesCardLayout() {
-	const run = () => adjustAllZonesCardLayout();
-	requestAnimationFrame(() => {
-		requestAnimationFrame(run);
-	});
-	// Повтор после decode картинок — иначе на обучении колода «раскрывается» только после первого drag.
-	setTimeout(run, 120);
-}
-
 function bindZonesNow() {
 	try {
 		const zones = Array.from(document.querySelectorAll('.cards-zone')).filter(Boolean);
@@ -794,14 +691,8 @@ function bindZonesNow() {
 		// Сбрасываем фильтры/прозрачность, которые могли "залипнуть".
 		document.querySelectorAll('.card').forEach((c) => {
 			c.style.filter = '';
-			if (!window.__TUTORIAL_BOARD) {
-				c.style.opacity = '';
-			}
+			c.style.opacity = '';
 		});
-		if (window.__TUTORIAL_BOARD) {
-			refreshTutorialDeckTakeRules();
-		}
-		scheduleAdjustAllZonesCardLayout();
 	} catch {}
 }
 window.addEventListener('munchkin:zonesChanged', bindZonesNow);
@@ -879,9 +770,10 @@ export function adjustCardWidth(zoneSelector) {
 			card.style.width = prevWidth[zoneSelector] + 'px';
 		});
 	}
-	else if (cardsCount > 3) {
+	else if ((totalWidth > 210) && (cardsCount > 3)) {
 		cards.forEach(function(card) {
 			card.style.width = newWidth + 'px';
+	
 		});
 	}
 	prevcardsCount[zoneSelector] = cardsCount;
