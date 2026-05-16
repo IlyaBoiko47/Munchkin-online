@@ -9,6 +9,7 @@ const ACTIONS = {
   ICE_CANDIDATE: 'ice-candidate',
   SESSION_DESCRIPTION: 'session-description',
   SYNC_PEERS: 'sync-peers',
+  MESH_RELAY_SYNC: 'mesh-relay-sync',
 };
 
 module.exports = ACTIONS;

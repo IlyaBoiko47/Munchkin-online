@@ -24,9 +24,21 @@ const WATCHDOG_INTERVAL_MS = 2500;
 const WATCHDOG_MAX_MS = 10 * 60 * 1000;
 const MEDIA_STATS_INTERVAL_MS = 3000;
 const NO_INBOUND_AUDIO_MS = 8000;
+const MIN_INBOUND_AUDIO_BYTES = 400;
+const ONE_WAY_AUDIO_MS = 6000;
 
 function shouldCreateOffer(localSocketId, remotePeerId) {
   return String(localSocketId) < String(remotePeerId);
+}
+
+/** Есть ли реально приходят аудио-пакеты (не только «live» трек без данных). */
+function isReceivingAudioBytes(inboundAudioBytes) {
+  return Number(inboundAudioBytes) >= MIN_INBOUND_AUDIO_BYTES;
+}
+
+function isPeerReceivingAudio(peerID, peerMediaStats) {
+  const st = peerMediaStats?.[peerID];
+  return Boolean(st && isReceivingAudioBytes(st.lastInbound));
 }
 
 function hasLiveRemoteAudio(pc) {
@@ -71,6 +83,7 @@ export default function useWebRTC(roomID) {
   const peerMediaStatsRef = useRef({});
   const mediaStatsTimers = useRef({});
   const hasPrivateTurnRef = useRef(false);
+  const meshRelaySyncSentRef = useRef(false);
 
   function getOrCreatePlayerToken() {
     return getOrCreateTabPlayerToken(roomID || 'global');
@@ -321,10 +334,7 @@ export default function useWebRTC(roomID) {
     }
     bindRemoteTrack(peerID, stream);
     playAllRemoteAudio();
-    if (hasLiveRemoteAudio(peerConnections.current[peerID])) {
-      stopConnectionWatchdog(peerID);
-    }
-  }, [bindRemoteTrack, playAllRemoteAudio, stopConnectionWatchdog]);
+  }, [bindRemoteTrack, playAllRemoteAudio]);
 
   handleRemoteTrackRef.current = handleRemoteTrack;
 
@@ -361,18 +371,12 @@ export default function useWebRTC(roomID) {
       if (isPeerIceUp(pc)) {
         playAllRemoteAudio();
       }
-      if (hasLiveRemoteAudio(pc)) {
-        stopConnectionWatchdog(peerID);
-      }
     };
 
     pc.oniceconnectionstatechange = () => {
       webrtcLog(peerID, 'ice-state', pc.iceConnectionState);
       if (isPeerIceUp(pc)) {
         playAllRemoteAudio();
-      }
-      if (hasLiveRemoteAudio(pc)) {
-        stopConnectionWatchdog(peerID);
       }
     };
 
@@ -474,7 +478,7 @@ export default function useWebRTC(roomID) {
 
     if (peerID in peerConnections.current) {
       const pc = peerConnections.current[peerID];
-      if (isPeerIceUp(pc) && hasRemoteAudioTrack(pc)) {
+      if (isPeerIceUp(pc) && isPeerReceivingAudio(peerID, peerMediaStatsRef.current)) {
         return;
       }
       if (wantOffer && pc.signalingState === 'stable') {
@@ -532,7 +536,8 @@ export default function useWebRTC(roomID) {
       if (pc && isPeerIceUp(pc)) {
         attachLocalTracksToPeer(peerID);
         playAllRemoteAudio();
-        if (hasLiveRemoteAudio(pc)) {
+        const stWd = peerMediaStatsRef.current[peerID];
+        if (stWd && isReceivingAudioBytes(stWd.lastInbound)) {
           stopConnectionWatchdog(peerID);
           return;
         }
@@ -605,7 +610,7 @@ export default function useWebRTC(roomID) {
         return;
       }
 
-      const { inboundAudioBytes, pathString } = await logPeerConnectionStats(peerID, pc);
+      const { inboundAudioBytes, outboundAudioBytes, pathString } = await logPeerConnectionStats(peerID, pc);
       const st = peerMediaStatsRef.current[peerID];
       if (!st) {
         return;
@@ -621,9 +626,28 @@ export default function useWebRTC(roomID) {
           st.lastGrowthAt = Date.now();
         }
 
-        if (hasLiveRemoteAudio(pc)) {
-          webrtcLog(peerID, 'remote audio OK', pathString || 'n/a');
+        const receiving = isReceivingAudioBytes(inboundAudioBytes);
+        const sending = outboundAudioBytes >= MIN_INBOUND_AUDIO_BYTES;
+        const oneWaySrflx = sending
+          && !receiving
+          && pathString.includes('srflx')
+          && !pathString.includes('relay')
+          && Date.now() - (st.iceUpSince || 0) > ONE_WAY_AUDIO_MS;
+
+        if (receiving) {
+          webrtcLog(peerID, 'remote audio OK', {
+            path: pathString || 'n/a',
+            inboundAudioBytes,
+            outboundAudioBytes,
+          });
           stopConnectionWatchdog(peerID);
+        } else if (oneWaySrflx) {
+          if (!meshRelaySyncSentRef.current) {
+            meshRelaySyncSentRef.current = true;
+            socket.emit(ACTIONS.MESH_RELAY_SYNC);
+            webrtcLog('mesh', 'one-way audio → relay sync для всей комнаты');
+          }
+          await escalatePeerToRelayRef.current?.(peerID, 'отправляем, но не слышим (srflx) → TURN');
         } else if (
           Date.now() - st.lastGrowthAt > NO_INBOUND_AUDIO_MS
           && Date.now() - (st.iceUpSince || 0) > NO_INBOUND_AUDIO_MS
@@ -723,7 +747,7 @@ export default function useWebRTC(roomID) {
         if (!peerID || peerID === socket.id) {
           continue;
         }
-        if (isPeerConnected(peerID)) {
+        if (isPeerConnected(peerID) && isPeerReceivingAudio(peerID, peerMediaStatsRef.current)) {
           knownPeersRef.current.add(peerID);
           continue;
         }
@@ -745,6 +769,28 @@ export default function useWebRTC(roomID) {
       socket.off(ACTIONS.SYNC_PEERS, handleSyncPeers);
     };
   }, [registerPeer, isPeerConnected]);
+
+  useEffect(() => {
+    async function onMeshRelaySync({ from }) {
+      if (!from || from === socket.id) {
+        return;
+      }
+      webrtcLog('mesh', 'relay sync от пира', from);
+      const peers = [...knownPeersRef.current];
+      for (const peerID of peers) {
+        if (peerID && peerID !== socket.id) {
+          peerForceRelayRef.current[peerID] = true;
+          // eslint-disable-next-line no-await-in-loop
+          await escalatePeerToRelayRef.current?.(peerID, 'mesh relay sync');
+        }
+      }
+    }
+
+    socket.on(ACTIONS.MESH_RELAY_SYNC, onMeshRelaySync);
+    return () => {
+      socket.off(ACTIONS.MESH_RELAY_SYNC, onMeshRelaySync);
+    };
+  }, []);
 
   useEffect(() => {
     async function setRemoteMedia({ peerID, sessionDescription: remoteDescription }) {
@@ -898,6 +944,7 @@ export default function useWebRTC(roomID) {
         joinedRoomRef.current = null;
       }
       knownPeersRef.current.clear();
+      meshRelaySyncSentRef.current = false;
     };
   }, [roomID, ensureLocalAudioStream, onLocalStreamReady, stopConnectionWatchdog]);
 

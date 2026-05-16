@@ -1589,6 +1589,14 @@ io.on('connection', socket => {
     });
   });
 
+  socket.on(ACTIONS.MESH_RELAY_SYNC, () => {
+    const roomID = socket.data?.gameRoomID;
+    if (!roomID) {
+      return;
+    }
+    socket.to(roomID).emit(ACTIONS.MESH_RELAY_SYNC, { from: socket.id });
+  });
+
 });
 
 function matchClientsInRoom(roomID) {
