@@ -1162,41 +1162,35 @@ function getMainAndSideZoneElementsForSeat(seat) {
 	return { main, side };
 }
 
-/** Рука игрока seat с точки зрения этого клиента. Класс .myhand — у текущего игрока (id не обязан быть myhand после 2/3P swap). */
-function getHandElementForPlayerSeat(targetSeat) {
-	if (targetSeat == null || targetSeat < 0) {
+/** id DOM-руки по номеру места (как на сервере в handZoneIdForSeatInRoom / handN). */
+function canonicalHandElementIdForSeat(seat) {
+	const s = Number(seat);
+	if (!Number.isFinite(s) || s < 0) {
 		return null;
-	}
-	if (Number(targetSeat) === Number(localSeat)) {
-		return document.querySelector(".myhand");
 	}
 	const n = effectiveSeatLayoutPlayerCount();
 	if (n === 2) {
-		return document.querySelector(".opponenthand");
+		return (s % 2 === 0) ? "myhand" : "opponenthand";
 	}
-	if (n === 3 || n === 4 || n === 5 || n === 6) {
-		const bz = getSeatToBattleZoneMap();
-		const mainSel = bz[String(targetSeat)] ?? bz[targetSeat];
-		if (!mainSel) {
-			return null;
-		}
-		if (mainSel.includes("zone_opponent2") && !mainSel.includes("zone_opponent3")) {
-			return document.getElementById("opponent2hand");
-		}
-		if (mainSel.includes("zone_opponent3")) {
-			return document.getElementById("opponent3hand");
-		}
-		if (mainSel.includes("zone_opponent_bl")) {
-			return document.getElementById("opponent_bl_hand");
-		}
-		if (mainSel.includes("zone_opponent_br")) {
-			return document.getElementById("opponent_br_hand");
-		}
-		if (mainSel.includes("zone_opponent")) {
-			return document.getElementById("opponenthand");
-		}
+	if (n === 3) {
+		return ["myhand", "opponent2hand", "opponent3hand"][s % 3];
 	}
-	return null;
+	if (n === 4) {
+		return ["myhand", "opponent2hand", "opponent3hand", "opponenthand"][s % 4];
+	}
+	if (n === 5) {
+		return ["myhand", "opponent_bl_hand", "opponent2hand", "opponent3hand", "opponenthand"][s % 5];
+	}
+	if (n === 6) {
+		return ["myhand", "opponent_bl_hand", "opponent2hand", "opponent3hand", "opponenthand", "opponent_br_hand"][s % 6];
+	}
+	return "myhand";
+}
+
+/** Рука игрока seat: фиксированный id зоны (класс .myhand у локального места может быть на другом id). */
+function getHandElementForPlayerSeat(targetSeat) {
+	const id = canonicalHandElementIdForSeat(targetSeat);
+	return id ? document.getElementById(id) : null;
 }
 
 /** Владелец сокровища по зоне (main/side места или рука). */
@@ -7140,11 +7134,8 @@ function applyThiefTheftStolenCardMove(thiefSeat, fromSeat, cardId) {
 	if (!card) {
 		return;
 	}
-	const hand = getHandElementForPlayerSeat(t);
-	if (!hand) {
-		return;
-	}
-	if (hand.contains(card)) {
+	const thiefHand = getHandElementForPlayerSeat(t);
+	if (thiefHand?.contains(card)) {
 		return;
 	}
 	const { main, side } = getMainAndSideZoneElementsForSeat(f);
@@ -7155,7 +7146,11 @@ function applyThiefTheftStolenCardMove(thiefSeat, fromSeat, cardId) {
 			return;
 		}
 	}
-	hand.appendChild(card);
+	const hId = String(card.dataset?.hirelingCardId || "");
+	if (hId) {
+		clearHirelingAttachment(hId, cardId);
+	}
+	appendCardToSeatHand(cardId, t);
 	adjustCardWidth(".myhand");
 	adjustCardWidth(".zone2");
 	adjustCardWidth(".zone5");
@@ -14574,6 +14569,10 @@ socket.on("message", response => {
 		applyThiefTheftRollResult(response.seat, response.value);
 	}
 	if (response.method === "ThiefTheftTake") {
+		const hId = String(response.hirelingCardId || "");
+		if (hId && response.cardId) {
+			clearHirelingAttachment(hId, response.cardId);
+		}
 		applyThiefTheftStolenCardMove(response.thiefSeat, response.fromSeat, response.cardId);
 	}
 	if (response.method === "WizardFlightApply") {

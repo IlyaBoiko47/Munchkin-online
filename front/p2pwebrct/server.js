@@ -1030,6 +1030,7 @@ io.on('connection', socket => {
 
     if (moveData.method === "ThiefTheftTake") {
       const thiefSeat = Number(moveData.thiefSeat);
+      const fromSeat = Number(moveData.fromSeat);
       const cardId = String(moveData.cardId || '').trim();
       if (
         Number.isFinite(thiefSeat)
@@ -1038,7 +1039,27 @@ io.on('connection', socket => {
         && cardId
         && !isThiefTheftBlockedTreasureCardId(cardId)
       ) {
-        patchRoomCardEntries(roomID, [{ cardId, zoneId: handZoneIdForSeatInRoom(roomID, thiefSeat), targetId: null }]);
+        const prev = roomStates.get(roomID) || {};
+        const h = prev.hirelingAttachments && typeof prev.hirelingAttachments === 'object' ? { ...prev.hirelingAttachments } : {};
+        const hirelingEntry = Object.entries(h).find(([, trId]) => String(trId) === cardId);
+        if (hirelingEntry) {
+          const [hirelingCardId] = hirelingEntry;
+          delete h[hirelingCardId];
+          roomStates.set(roomID, { ...prev, hirelingAttachments: h });
+          moveData.hirelingCardId = hirelingCardId;
+          if (Number.isFinite(fromSeat) && fromSeat >= 0) {
+            moveData.hirelingDetachSeat = fromSeat;
+            queueMicrotask(() => {
+              io.to(roomID).emit("message", {
+                method: "MercenaryDetach",
+                seat: fromSeat,
+                hirelingCardId,
+                treasureCardId: cardId,
+              });
+            });
+          }
+        }
+        patchRoomCardEntries(roomID, [{ cardId, zoneId: `hand${thiefSeat}`, targetId: null }]);
       }
     }
 
