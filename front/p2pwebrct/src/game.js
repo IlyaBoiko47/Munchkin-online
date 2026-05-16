@@ -19,7 +19,7 @@ window.treasures = [];
 
 let num;
 let localSeat = null;
-/** Снимок имён с сервера до известного localSeat (лобби): дописываем localStorage после назначения места. */
+/** Снимок имён с сервера до известного localSeat (лобби): дописываем localStorage после назначения места.*/
 let pendingPlayerMetaSnapshot = null;
 
 /** Для moveCard: кто инициировал перенос (локальное место), чтобы удалённые клиенты открыли модалку штыря у нужного игрока. */
