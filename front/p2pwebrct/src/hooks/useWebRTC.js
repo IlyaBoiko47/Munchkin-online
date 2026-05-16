@@ -466,7 +466,10 @@ export default function useWebRTC(roomID) {
 
     void ensureLocalAudioStream();
 
-    const forceRelay = Boolean(peerForceRelayRef.current[peerID]);
+    const forceRelay = Boolean(peerForceRelayRef.current[peerID]) || hasPrivateTurnRef.current;
+    if (forceRelay) {
+      webrtcLog(peerID, 'connect via TURN relay', { peerForce: Boolean(peerForceRelayRef.current[peerID]) });
+    }
     createPeerConnection(peerID, { isPolite: !wantOffer, forceRelay });
     attachLocalTracksToPeer(peerID);
     await flushPendingSignalingForPeer(peerID);
@@ -536,7 +539,7 @@ export default function useWebRTC(roomID) {
       if (stuck) {
         if (attempt >= 4 && !peerForceRelayRef.current[peerID]) {
           peerForceRelayRef.current[peerID] = true;
-        } else if (attempt >= 8 && peerForceRelayRef.current[peerID]) {
+        } else if (attempt >= 12 && peerForceRelayRef.current[peerID] && !hasPrivateTurnRef.current) {
           peerForceRelayRef.current[peerID] = false;
         }
         resetPeerConnection(peerID);
@@ -582,7 +585,7 @@ export default function useWebRTC(roomID) {
         return;
       }
 
-      const { inboundAudioBytes } = await logPeerConnectionStats(peerID, pc);
+      const { inboundAudioBytes, pathString } = await logPeerConnectionStats(peerID, pc);
       const st = peerMediaStatsRef.current[peerID];
       if (!st) {
         return;
@@ -597,8 +600,19 @@ export default function useWebRTC(roomID) {
           st.lastInbound = inboundAudioBytes;
           st.lastGrowthAt = Date.now();
         }
+
+        const onSrflxNotRelay = hasPrivateTurnRef.current
+          && pathString
+          && !pathString.includes('relay')
+          && Date.now() - (st.iceUpSince || 0) > 5000;
+
+        if (onSrflxNotRelay && !peerForceRelayRef.current[peerID]) {
+          await escalatePeerToRelayRef.current?.(peerID, 'srflx без relay — перевод на TURN');
+          return;
+        }
+
         if (hasLiveRemoteAudio(pc)) {
-          webrtcLog(peerID, 'remote audio OK');
+          webrtcLog(peerID, 'remote audio OK', pathString || 'n/a');
           stopConnectionWatchdog(peerID);
         } else if (
           Date.now() - st.lastGrowthAt > NO_INBOUND_AUDIO_MS

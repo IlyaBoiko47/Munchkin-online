@@ -27,11 +27,12 @@ export function summarizeIceCandidate(candidate) {
 
 export async function logPeerConnectionStats(peerId, pc) {
   if (!pc?.getStats) {
-    return { inboundAudioBytes: 0, outboundAudioBytes: 0 };
+    return { inboundAudioBytes: 0, outboundAudioBytes: 0, pathString: '' };
   }
   let inboundAudioBytes = 0;
   let outboundAudioBytes = 0;
   let selectedPair = null;
+  let pathString = '';
 
   try {
     const stats = await pc.getStats();
@@ -60,13 +61,14 @@ export async function logPeerConnectionStats(peerId, pc) {
       }
     });
 
+    pathString = lines.join(' | ') || '';
     webrtcLog(peerId, 'stats', {
       ice: pc.iceConnectionState,
       connection: pc.connectionState,
       signaling: pc.signalingState,
       inboundAudioBytes,
       outboundAudioBytes,
-      path: lines.join(' | ') || 'n/a',
+      path: pathString || 'n/a',
       receivers: pc.getReceivers?.().filter((r) => r.track?.kind === 'audio').length || 0,
       senders: pc.getSenders?.().filter((s) => s.track?.kind === 'audio').length || 0,
     });
@@ -74,5 +76,5 @@ export async function logPeerConnectionStats(peerId, pc) {
     webrtcWarn(peerId, 'getStats failed', e);
   }
 
-  return { inboundAudioBytes, outboundAudioBytes };
+  return { inboundAudioBytes, outboundAudioBytes, pathString };
 }
