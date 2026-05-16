@@ -12,7 +12,7 @@ function buildWebRtcIceServers() {
   const turnPass = process.env.TURN_PASSWORD || process.env.TURN_CREDENTIAL;
 
   if (turnUrls && turnUser && turnPass) {
-    servers.push({
+    servers.unshift({
       urls: String(turnUrls).split(',').map((s) => s.trim()).filter(Boolean),
       username: turnUser,
       credential: turnPass,
