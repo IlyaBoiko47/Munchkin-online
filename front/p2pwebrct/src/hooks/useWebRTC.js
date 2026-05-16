@@ -145,8 +145,8 @@ export default function useWebRTC(roomID) {
     }, 2000);
   }, [sendOfferToPeer]);
 
-  /** Повторные попытки связи: сначала «вежливый» offerer, потом оба. */
-  const scheduleMeshConnect = useCallback((peerID) => {
+  /** Повторные попытки связи, если пир так и не подключился. */
+  const scheduleMeshConnect = useCallback((peerID, preferredOfferer = false) => {
     if (meshHealTimers.current[peerID]) {
       meshHealTimers.current[peerID].forEach((t) => clearTimeout(t));
     }
@@ -161,9 +161,12 @@ export default function useWebRTC(roomID) {
       }
       sendOfferToPeer(peerID).catch(() => {});
     };
-    timers.push(setTimeout(tryOffer, 400));
-    timers.push(setTimeout(tryOffer, 2500));
-    timers.push(setTimeout(tryOffer, 6000));
+    if (preferredOfferer) {
+      timers.push(setTimeout(tryOffer, 400));
+      timers.push(setTimeout(tryOffer, 2500));
+    }
+    // Резерв: любая сторона пробует offer, если связь не установилась.
+    timers.push(setTimeout(tryOffer, 4500));
     meshHealTimers.current[peerID] = timers;
   }, [sendOfferToPeer]);
 
@@ -365,10 +368,10 @@ export default function useWebRTC(roomID) {
     }
   }, [applyRemoteMedia]);
 
-  const createPeerConnection = useCallback((peerID) => {
+  const createPeerConnection = useCallback((peerID, { isPolite = false } = {}) => {
     const pc = new RTCPeerConnection(RTC_CONFIG);
     peerConnections.current[peerID] = pc;
-    politePeer.current[peerID] = !shouldCreateOffer(socket.id, peerID);
+    politePeer.current[peerID] = isPolite;
     makingOffer.current[peerID] = false;
     ignoreOffer.current[peerID] = false;
     pendingIceCandidates.current[peerID] = [];
@@ -407,21 +410,33 @@ export default function useWebRTC(roomID) {
     return pc;
   }, [handleRemoteTrack, playAllRemoteAudio, schedulePeerHeal]);
 
-  const connectToPeer = useCallback(async (peerID) => {
+  const connectToPeer = useCallback(async (peerID, { shouldOffer } = {}) => {
     if (!peerID || peerID === socket.id) {
       return;
     }
+
+    const wantOffer = shouldOffer === true
+      || (shouldOffer !== false && shouldCreateOffer(socket.id, peerID));
+
     if (peerID in peerConnections.current) {
+      const pc = peerConnections.current[peerID];
+      if (pc.connectionState === 'connected' || pc.iceConnectionState === 'connected') {
+        return;
+      }
+      if (wantOffer && pc.signalingState === 'stable') {
+        await sendOfferToPeer(peerID);
+      }
+      scheduleMeshConnect(peerID, wantOffer);
       return;
     }
 
     await waitForLocalStream();
 
-    createPeerConnection(peerID);
+    createPeerConnection(peerID, { isPolite: !wantOffer });
     attachLocalTracksToPeer(peerID);
     await flushPendingSignalingForPeer(peerID);
 
-    if (shouldCreateOffer(socket.id, peerID)) {
+    if (wantOffer) {
       if (localMediaStream.current) {
         await sendOfferToPeer(peerID);
       } else {
@@ -429,7 +444,7 @@ export default function useWebRTC(roomID) {
       }
     }
 
-    scheduleMeshConnect(peerID);
+    scheduleMeshConnect(peerID, wantOffer);
   }, [
     attachLocalTracksToPeer,
     sendOfferToPeer,
@@ -439,8 +454,8 @@ export default function useWebRTC(roomID) {
   ]);
 
   useEffect(() => {
-    async function handleNewPeer({ peerID }) {
-      await connectToPeer(peerID);
+    async function handleNewPeer({ peerID, createOffer }) {
+      await connectToPeer(peerID, { shouldOffer: Boolean(createOffer) });
     }
 
     async function handleSyncPeers({ peerIds }) {
@@ -450,7 +465,7 @@ export default function useWebRTC(roomID) {
       for (const peerID of peerIds) {
         if (peerID && peerID !== socket.id) {
           // eslint-disable-next-line no-await-in-loop
-          await connectToPeer(peerID);
+          await connectToPeer(peerID, { shouldOffer: true });
         }
       }
     }

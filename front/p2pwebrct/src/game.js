@@ -515,8 +515,6 @@ function applySeatIconsForPlayerCount(numPlayers) {
 
 	ensurePreviewAcceptHelpButtonsVisible();
 	syncBrTableZonesForPlayerCount();
-	syncSeatPlayerNameLabels();
-
 	return n;
 }
 
@@ -936,7 +934,6 @@ function applyPlayerMetaBySeatFromServer(raw) {
 		if (gender) {
 			ch.gender = gender;
 		}
-		syncSeatPlayerNameLabels();
 		// Важно: Number(null) === 0 — пока localSeat ещё не восстановлен, нельзя писать профиль как для места 0.
 		if (localSeat !== null && localSeat !== undefined && Number(seat) === Number(localSeat)) {
 			try {
@@ -983,47 +980,32 @@ function showSeatIconTooltipForSeat(seat, anchorEl) {
 	tip.style.overflowWrap = "anywhere";
 	tip.style.wordBreak = "break-word";
 	tip.style.textAlign = "center";
+	tip.style.boxSizing = "border-box";
 	tip.textContent = gender ? `${name} (${gender})` : name;
 	const rect = anchorEl.getBoundingClientRect();
-	// Плашка прямо поверх иконки (по центру).
+	const tipWidth = Math.min(280, Math.max(120, window.innerWidth * 0.85));
+	tip.style.width = `${tipWidth}px`;
 	tip.style.left = `${Math.round(rect.left + rect.width / 2)}px`;
-	tip.style.top = `${Math.round(rect.top + rect.height / 2)}px`;
-	tip.style.transform = "translate(-50%, -50%)";
+	tip.style.top = `${Math.round(rect.bottom + 10)}px`;
+	tip.style.transform = "translateX(-50%)";
 	document.body.appendChild(tip);
+	const tipRect = tip.getBoundingClientRect();
+	if (tipRect.bottom > window.innerHeight - 8) {
+		tip.style.top = `${Math.round(rect.top - tipRect.height - 10)}px`;
+	}
+	if (tipRect.left < 8) {
+		tip.style.left = "8px";
+		tip.style.transform = "none";
+	} else if (tipRect.right > window.innerWidth - 8) {
+		tip.style.left = `${window.innerWidth - 8}px`;
+		tip.style.transform = "translateX(-100%)";
+	}
 }
 
 let seatTooltipGlobalListenersBound = false;
 
-/** Подписи имён у активных мест за столом (с переносом длинных имён). */
-function syncSeatPlayerNameLabels() {
-	document.querySelectorAll(".seat-player-name").forEach((el) => el.remove());
-	const n = effectiveSeatLayoutPlayerCount();
-	const seatToIconMap = getSeatToIconMap();
-	Object.entries(seatToIconMap).forEach(([seatKey, selector]) => {
-		const seat = parseInt(seatKey, 10);
-		if (Number.isNaN(seat) || seat < 0 || seat >= n) {
-			return;
-		}
-		const anchor = pickSeatIconAnchorElement(selector);
-		if (!anchor) {
-			return;
-		}
-		const host = anchor.closest(".bl-corner-avatar-col")
-			|| anchor.closest(".image-container")
-			|| anchor.parentElement;
-		if (!host) {
-			return;
-		}
-		const label = document.createElement("div");
-		label.className = "seat-player-name";
-		label.textContent = getSeatLabel(seat);
-		host.appendChild(label);
-	});
-}
-
 function bindSeatIconHoverTooltips() {
 	clearSeatIconTooltipBindings();
-	syncSeatPlayerNameLabels();
 	const seatToIconMap = getSeatToIconMap();
 	Object.entries(seatToIconMap).forEach(([seatKey, selector]) => {
 		const seat = parseInt(seatKey, 10);

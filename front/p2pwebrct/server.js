@@ -1454,19 +1454,18 @@ io.on('connection', socket => {
 
     const clients = Array.from(io.sockets.adapter.rooms.get(roomID) || []);
 
-    // Кто шлёт offer: у пары всегда один инициатор (меньший socket.id), а не только «новый» игрок.
     socket.join(roomID);
 
+    // Новый игрок шлёт offer всем уже сидящим в комнате; они только отвечают.
     clients.forEach(clientID => {
-      const existingOffers = String(clientID) < String(socket.id);
       io.to(clientID).emit(ACTIONS.ADD_PEER, {
         peerID: socket.id,
-        createOffer: existingOffers,
+        createOffer: false,
       });
 
       socket.emit(ACTIONS.ADD_PEER, {
         peerID: clientID,
-        createOffer: !existingOffers,
+        createOffer: true,
       });
     });
 
