@@ -78,7 +78,7 @@ export async function fetchIceServersFromApi() {
   return buildDefaultIceServers();
 }
 
-/** Свой TURN на VPS — для разных сетей (Wi‑Fi ↔ мобильный) сразу relay. */
+/** Есть ли в списке свой TURN на VPS (для логов). */
 export function iceServersIncludePrivateTurn(iceServers) {
   if (!Array.isArray(iceServers)) {
     return false;
@@ -94,15 +94,19 @@ export function iceServersIncludePrivateTurn(iceServers) {
 }
 
 export function ensureAudioTransceiver(pc, hasLocalAudio) {
-  if (!pc?.addTransceiver) {
+  if (!pc?.getTransceivers) {
     return;
   }
-  const hasAudio = pc.getTransceivers().some(
+  const audioTr = pc.getTransceivers().find(
     (t) => t.sender?.track?.kind === 'audio' || t.receiver?.track?.kind === 'audio',
   );
-  if (!hasAudio) {
+  if (!audioTr) {
     pc.addTransceiver('audio', {
       direction: hasLocalAudio ? 'sendrecv' : 'recvonly',
     });
+    return;
+  }
+  if (hasLocalAudio && (audioTr.direction === 'recvonly' || audioTr.direction === 'inactive')) {
+    audioTr.direction = 'sendrecv';
   }
 }

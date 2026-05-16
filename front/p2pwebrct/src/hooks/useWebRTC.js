@@ -125,23 +125,31 @@ export default function useWebRTC(roomID) {
     if (!pc || pc.signalingState === 'closed' || !stream?.getTracks) {
       return false;
     }
-    stream.getAudioTracks().forEach((track) => {
-      const sender = pc.getSenders().find((s) => s.track?.kind === 'audio');
-      if (sender) {
-        if (sender.track?.id !== track.id) {
-          sender.replaceTrack(track).catch((e) => {
-            webrtcWarn(peerID, 'replaceTrack failed', e);
-          });
-        }
-      } else {
-        pc.addTrack(track, stream);
+    const audioTrack = stream.getAudioTracks()[0];
+    if (!audioTrack) {
+      return false;
+    }
+    const sender = pc.getSenders().find((s) => s.track?.kind === 'audio');
+    if (sender) {
+      if (sender.track?.id !== audioTrack.id) {
+        sender.replaceTrack(audioTrack).catch((e) => {
+          webrtcWarn(peerID, 'replaceTrack failed', e);
+        });
       }
-    });
-    pc.getTransceivers?.().forEach((tr) => {
-      if (tr.receiver?.track?.kind === 'audio' || tr.sender?.track?.kind === 'audio') {
+    } else {
+      const tr = pc.getTransceivers().find((t) => (
+        t.sender?.track?.kind === 'audio' || t.receiver?.track?.kind === 'audio' || !t.mid
+      ));
+      if (tr?.sender) {
         tr.direction = 'sendrecv';
+        tr.sender.replaceTrack(audioTrack).catch(() => {
+          pc.addTrack(audioTrack, stream);
+        });
+      } else {
+        pc.addTrack(audioTrack, stream);
       }
-    });
+    }
+    ensureAudioTransceiver(pc, true);
     return true;
   }, []);
 
@@ -221,6 +229,7 @@ export default function useWebRTC(roomID) {
   const connectToPeerRef = useRef(null);
   const startConnectionWatchdogRef = useRef(null);
   const escalatePeerToRelayRef = useRef(null);
+  const escalatePeerToDirectRef = useRef(null);
 
   const resetPeerConnection = useCallback((peerID) => {
     const pc = peerConnections.current[peerID];
@@ -290,16 +299,26 @@ export default function useWebRTC(roomID) {
     }
     if (event.track && !stream.getTracks().some((t) => t.id === event.track.id)) {
       stream.addTrack(event.track);
+      event.track.enabled = true;
     }
-    event.track.onunmute = () => {
-      webrtcLog(peerID, 'track-unmute', event.track.id);
+    const onTrackReady = () => {
+      webrtcLog(peerID, 'track-ready', {
+        id: event.track?.id,
+        muted: event.track?.muted,
+        readyState: event.track?.readyState,
+      });
       playAllRemoteAudio();
     };
+    event.track.onunmute = onTrackReady;
+    event.track.onended = () => webrtcWarn(peerID, 'track-ended');
     webrtcLog(peerID, 'remote-track', {
       id: event.track?.id,
       readyState: event.track?.readyState,
       muted: event.track?.muted,
     });
+    if (!event.track.muted && event.track.readyState === 'live') {
+      onTrackReady();
+    }
     bindRemoteTrack(peerID, stream);
     playAllRemoteAudio();
     if (hasLiveRemoteAudio(peerConnections.current[peerID])) {
@@ -466,10 +485,10 @@ export default function useWebRTC(roomID) {
 
     void ensureLocalAudioStream();
 
-    const forceRelay = Boolean(peerForceRelayRef.current[peerID]) || hasPrivateTurnRef.current;
-    if (forceRelay) {
-      webrtcLog(peerID, 'connect via TURN relay', { peerForce: Boolean(peerForceRelayRef.current[peerID]) });
-    }
+    const forceRelay = Boolean(peerForceRelayRef.current[peerID]);
+    webrtcLog(peerID, forceRelay ? 'connect ICE policy: relay' : 'connect ICE policy: all', {
+      wantOffer,
+    });
     createPeerConnection(peerID, { isPolite: !wantOffer, forceRelay });
     attachLocalTracksToPeer(peerID);
     await flushPendingSignalingForPeer(peerID);
@@ -537,9 +556,9 @@ export default function useWebRTC(roomID) {
         || (attempt > 6 && !isPeerIceUp(pc));
 
       if (stuck) {
-        if (attempt >= 4 && !peerForceRelayRef.current[peerID]) {
+        if (attempt >= 5 && !peerForceRelayRef.current[peerID]) {
           peerForceRelayRef.current[peerID] = true;
-        } else if (attempt >= 12 && peerForceRelayRef.current[peerID] && !hasPrivateTurnRef.current) {
+        } else if (attempt >= 10 && peerForceRelayRef.current[peerID]) {
           peerForceRelayRef.current[peerID] = false;
         }
         resetPeerConnection(peerID);
@@ -577,6 +596,7 @@ export default function useWebRTC(roomID) {
       lastInbound: 0,
       lastGrowthAt: Date.now(),
       iceUpSince: null,
+      pcStartedAt: Date.now(),
     };
 
     mediaStatsTimers.current[peerID] = setInterval(async () => {
@@ -601,16 +621,6 @@ export default function useWebRTC(roomID) {
           st.lastGrowthAt = Date.now();
         }
 
-        const onSrflxNotRelay = hasPrivateTurnRef.current
-          && pathString
-          && !pathString.includes('relay')
-          && Date.now() - (st.iceUpSince || 0) > 5000;
-
-        if (onSrflxNotRelay && !peerForceRelayRef.current[peerID]) {
-          await escalatePeerToRelayRef.current?.(peerID, 'srflx без relay — перевод на TURN');
-          return;
-        }
-
         if (hasLiveRemoteAudio(pc)) {
           webrtcLog(peerID, 'remote audio OK', pathString || 'n/a');
           stopConnectionWatchdog(peerID);
@@ -619,15 +629,33 @@ export default function useWebRTC(roomID) {
           && Date.now() - (st.iceUpSince || 0) > NO_INBOUND_AUDIO_MS
         ) {
           if (!peerForceRelayRef.current[peerID]) {
-            await escalatePeerToRelayRef.current?.(peerID, 'no inbound audio');
+            await escalatePeerToRelayRef.current?.(peerID, 'нет входящего звука → пробуем TURN');
+          } else {
+            await escalatePeerToDirectRef.current?.(peerID, 'TURN не даёт звук → пробуем all');
           }
         }
+      } else if (
+        peerForceRelayRef.current[peerID]
+        && (pc.iceConnectionState === 'new' || pc.iceConnectionState === 'checking')
+        && Date.now() - (st.pcStartedAt || 0) > 12000
+      ) {
+        await escalatePeerToDirectRef.current?.(peerID, 'TURN не подключается (ice new)');
       }
     }, MEDIA_STATS_INTERVAL_MS);
   }, [stopMediaStatsMonitor, stopConnectionWatchdog]);
 
+  const escalatePeerToDirect = useCallback(async (peerID, reason) => {
+    webrtcWarn(peerID, 'switch to all ICE', reason);
+    peerForceRelayRef.current[peerID] = false;
+    resetPeerConnection(peerID);
+    const shouldOffer = shouldCreateOffer(socket.id, peerID);
+    await connectToPeerRef.current?.(peerID, { shouldOffer });
+    startConnectionWatchdogRef.current?.(peerID, { preferredOfferer: shouldOffer });
+    startMediaStatsMonitor(peerID);
+  }, [resetPeerConnection, startMediaStatsMonitor]);
+
   const escalatePeerToRelay = useCallback(async (peerID, reason) => {
-    webrtcWarn(peerID, 'escalate relay', reason);
+    webrtcWarn(peerID, 'switch to TURN relay', reason);
     peerForceRelayRef.current[peerID] = true;
     resetPeerConnection(peerID);
     const shouldOffer = shouldCreateOffer(socket.id, peerID);
@@ -637,6 +665,7 @@ export default function useWebRTC(roomID) {
   }, [resetPeerConnection, startMediaStatsMonitor]);
 
   escalatePeerToRelayRef.current = escalatePeerToRelay;
+  escalatePeerToDirectRef.current = escalatePeerToDirect;
 
   const registerPeer = useCallback(async (peerID, { shouldOffer, preferredOfferer } = {}) => {
     knownPeersRef.current.add(peerID);
