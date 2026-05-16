@@ -6538,6 +6538,18 @@ function startEscapeGluePromptFromOwner({ escapedSeat, monsterCardId, viaInstant
 		viaInstantWall: viaWall,
 		wallFleeSeats: wallFleeUnique,
 	});
+	if (window.__TUTORIAL_BOARD && escapeGluePromptState.pending.size > 0) {
+		const glueKey = escapeGluePromptState.key;
+		const pendingSeats = [...escapeGluePromptState.pending];
+		pendingSeats.forEach((seat) => {
+			socket.emit("message", {
+				method: "EscapeGlueDecision",
+				key: glueKey,
+				used: false,
+				actingSeat: Number(seat),
+			});
+		});
+	}
 	return true;
 }
 
@@ -10431,40 +10443,23 @@ function clearBattleEquipmentCardOutlines() {
 	}
 }
 
-/** Визуальный bbox карты: обёртка .card в CSS крошечная, реальный размер у .card-item (и масштаб из card-block). */
+/** Визуальный bbox карты: только .card-item (обёртка .card в CSS не совпадает с картинкой). */
 function getEquipmentCardVisualBounds(cardEl) {
 	if (!cardEl) {
 		return null;
 	}
-	let minL = Infinity;
-	let minT = Infinity;
-	let maxR = -Infinity;
-	let maxB = -Infinity;
-	const add = (node) => {
-		if (!node || node.nodeType !== 1) {
-			return;
-		}
-		const r = node.getBoundingClientRect();
-		if (!Number.isFinite(r.width) || !Number.isFinite(r.height) || r.width < 1 || r.height < 1) {
-			return;
-		}
-		minL = Math.min(minL, r.left);
-		minT = Math.min(minT, r.top);
-		maxR = Math.max(maxR, r.right);
-		maxB = Math.max(maxB, r.bottom);
-	};
-	add(cardEl);
-	add(cardEl.querySelector(".card-item"));
-	if (!Number.isFinite(minL) || minL === Infinity) {
+	const visual = cardEl.querySelector(".card-item") || cardEl;
+	const r = visual.getBoundingClientRect();
+	if (!Number.isFinite(r.width) || !Number.isFinite(r.height) || r.width < 1 || r.height < 1) {
 		return null;
 	}
 	return {
-		left: minL,
-		top: minT,
-		right: maxR,
-		bottom: maxB,
-		width: maxR - minL,
-		height: maxB - minT,
+		left: r.left,
+		top: r.top,
+		right: r.right,
+		bottom: r.bottom,
+		width: r.width,
+		height: r.height,
 	};
 }
 
@@ -10490,45 +10485,16 @@ function collectVisibleEquipmentCardsInMainZone(mainEl) {
 	});
 }
 
-/** Левый верх узла в системе координат предка (до CSS transform предка — как offsetLeft/Top). */
-function getTopLeftRelativeToAncestor(el, ancestor) {
-	if (!el || !ancestor || !ancestor.contains(el)) {
-		return null;
-	}
-	let x = 0;
-	let y = 0;
-	let n = el;
-	while (n && n !== ancestor) {
-		const p = n.offsetParent;
-		if (!p || (p !== ancestor && !ancestor.contains(p))) {
-			return null;
-		}
-		x += n.offsetLeft;
-		y += n.offsetTop;
-		n = p;
-	}
-	if (n !== ancestor) {
-		return null;
-	}
-	return { x, y };
-}
-
-/** Прямоугольник узла (.card / .card-item) в локальных координатах зоны экипировки. */
-function getEquipmentNodeBoxInMainLocal(mainEl, node) {
-	const tl = getTopLeftRelativeToAncestor(node, mainEl);
-	if (!tl) {
-		return null;
-	}
-	const w = node.offsetWidth;
-	const h = node.offsetHeight;
-	if (!Number.isFinite(w) || !Number.isFinite(h) || w < 1 || h < 1) {
-		return null;
-	}
+/** Экранный rect → локальные координаты зоны (учитывает transform зоны). */
+function mapClientRectToMainLocal(mainEl, rect) {
+	const zoneRect = mainEl.getBoundingClientRect();
+	const sx = mainEl.offsetWidth / (zoneRect.width || 1);
+	const sy = mainEl.offsetHeight / (zoneRect.height || 1);
 	return {
-		left: tl.x,
-		top: tl.y,
-		right: tl.x + w,
-		bottom: tl.y + h,
+		left: (rect.left - zoneRect.left) * sx,
+		top: (rect.top - zoneRect.top) * sy,
+		right: (rect.right - zoneRect.left) * sx,
+		bottom: (rect.bottom - zoneRect.top) * sy,
 	};
 }
 
@@ -10540,21 +10506,15 @@ function unionEquipmentCardBoundsInMainLocal(mainEl) {
 	let maxR = -Infinity;
 	let maxB = -Infinity;
 	for (const card of cards) {
-		const nodes = [card];
-		const item = card.querySelector(".card-item");
-		if (item) {
-			nodes.push(item);
+		const b = getEquipmentCardVisualBounds(card);
+		if (!b) {
+			continue;
 		}
-		for (const node of nodes) {
-			const b = getEquipmentNodeBoxInMainLocal(mainEl, node);
-			if (!b) {
-				continue;
-			}
-			minL = Math.min(minL, b.left);
-			minT = Math.min(minT, b.top);
-			maxR = Math.max(maxR, b.right);
-			maxB = Math.max(maxB, b.bottom);
-		}
+		const local = mapClientRectToMainLocal(mainEl, b);
+		minL = Math.min(minL, local.left);
+		minT = Math.min(minT, local.top);
+		maxR = Math.max(maxR, local.right);
+		maxB = Math.max(maxB, local.bottom);
 	}
 	if (!Number.isFinite(minL) || minL === Infinity) {
 		return null;
@@ -10572,7 +10532,7 @@ function appendBattleEquipmentCardsOutlineOverlay(mainEl) {
 	if (!u) {
 		return;
 	}
-	const pad = 5;
+	const pad = 1;
 	const w = u.maxR - u.minL + pad * 2;
 	const h = u.maxB - u.minT + pad * 2;
 	if (w < 4 || h < 4) {
@@ -10716,11 +10676,21 @@ function updateTurnActionButtons(isTimerRunning) {
 	// Как было: «Пас» видят все игроки, пока идёт таймер (очередь пасов).
 	const showFold = isTimerRunning && !turnAwaitingManualEnd;
 	// Пока идёт смывка (очередь бросков/выбор монстра и т.д.), «Завершить ход» не показываем — после EscapeSequenceFinished снова обновляют кнопки.
-	const showEndTurn = isMyTurn && !inBattle && !isTimerRunning && !escapeActive;
+	let showEndTurn = isMyTurn && !inBattle && !isTimerRunning && !escapeActive;
+	if (window.__TUTORIAL_BOARD) {
+		showEndTurn = showEndTurn && Boolean(window.__tutorialBattleCompleted);
+	}
 	foldButton.style.display = showFold ? "flex" : "none";
 	endTurnButton.style.display = showEndTurn ? "flex" : "none";
 	if (timerElement) {
 		timerElement.style.display = showFold ? "flex" : "none";
+	}
+	if (window.__TUTORIAL_BOARD) {
+		try {
+			window.dispatchEvent(new Event("munchkin:tutorialTimerUiChanged"));
+		} catch {
+			// ignore
+		}
 	}
 }
 
@@ -10741,6 +10711,13 @@ function tryCompleteManualTurnEnd() {
 		return;
 	}
 	if (escapeActive) {
+		return;
+	}
+	if (window.__TUTORIAL_BOARD) {
+		if (!window.__tutorialBattleCompleted) {
+			return;
+		}
+		finishTutorialBoard();
 		return;
 	}
 	const handCount = getLocalHandCardCount();
@@ -14014,6 +13991,21 @@ socket.on("message", response => {
 	
   if (response.method === "moveCard") {
     const card = document.getElementById(response.cardId);
+	if (
+		window.__TUTORIAL_BOARD &&
+		response.fromZoneId === "zone_treasure" &&
+		card
+	) {
+		ensureTutorialTreasureAllowedIds();
+		if (!window.__tutorialTreasureAllowedIds?.has(response.cardId)) {
+			const deck = document.getElementById("zone_treasure");
+			if (deck) {
+				deck.appendChild(card);
+			}
+			refreshTutorialDeckTakeRules();
+			return;
+		}
+	}
     const target = response.targetId ? document.getElementById(response.targetId) : null;
 	let zone = null;
 	if (response.zoneId) {
@@ -14705,6 +14697,9 @@ socket.on("message", response => {
 		changeSexActiveBySeat.clear();
 		applyTurnHighlight();
 		updateHelpUi();
+		if (window.__TUTORIAL_BOARD && response.winner === "player") {
+			markTutorialBattleCompleted();
+		}
 		if (response.winner === "player") {
 			MoveMonstersToDrop();
 			turnAwaitingManualEnd = true;
@@ -15048,6 +15043,13 @@ socket.on("message", response => {
 			}
 			hideEscapeHalflingRetryModal();
 			showEscapeTurnText(seat);
+		}
+		if (window.__TUTORIAL_BOARD) {
+			try {
+				window.dispatchEvent(new Event("munchkin:tutorialEscapeUiChanged"));
+			} catch {
+				// ignore
+			}
 		}
 		flushTurnStateSyncToServer();
 		maybeTryOpenEscapeAidOptionsModal();
@@ -15630,6 +15632,9 @@ socket.on("message", response => {
 		if (!deathLootActive) {
 			MoveMonstersToDrop();
 			turnAwaitingManualEnd = true;
+			if (window.__TUTORIAL_BOARD) {
+				markTutorialBattleCompleted();
+			}
 			updateTurnActionButtons(false);
 			recalculateAllPowerDisplays();
 			setTimeout(() => {
@@ -16901,6 +16906,155 @@ export function ensureCardCatalogLoaded() {
 	}
 }
 
+function markTutorialBattleCompleted() {
+	if (!window.__TUTORIAL_BOARD) {
+		return;
+	}
+	window.__tutorialBattleCompleted = true;
+	updateTurnActionButtons(false);
+}
+
+function finishTutorialBoard() {
+	if (!window.__TUTORIAL_BOARD) {
+		return;
+	}
+	clearInterval(countdownInterval);
+	timerRunning = false;
+	const overlay = document.getElementById("tutorial-complete-overlay");
+	if (overlay) {
+		overlay.classList.remove("is-hidden");
+		overlay.setAttribute("aria-hidden", "false");
+	}
+	document.body.classList.add("tutorial-finished");
+	const endTurnButton = document.getElementById("end-turn");
+	const foldButton = document.getElementById("fold");
+	const timerElement = document.getElementById("timer");
+	if (endTurnButton) {
+		endTurnButton.style.display = "none";
+	}
+	if (foldButton) {
+		foldButton.style.display = "none";
+	}
+	if (timerElement) {
+		timerElement.style.display = "none";
+	}
+}
+
+const TUTORIAL_DOOR_DRAWABLE_IDS = ["door89", "door28"];
+const TUTORIAL_TREASURE_DECK_TAKE_COUNT = 3;
+
+/** Верхние N карт колоды (последние в DOM = сверху). */
+export function getTutorialDeckTopCardIds(zoneId, count) {
+	const zone = document.getElementById(zoneId);
+	if (!zone || count <= 0) {
+		return [];
+	}
+	const cards = Array.from(zone.querySelectorAll(":scope > .card"));
+	return cards.slice(-count).map((card) => card.id).filter(Boolean);
+}
+
+/** Сброс лимитов колод при новом запуске обучения. */
+export function resetTutorialDeckTakeLimits() {
+	delete window.__tutorialTreasureAllowedIds;
+}
+
+function ensureTutorialTreasureAllowedIds() {
+	if (!window.__TUTORIAL_BOARD) {
+		return null;
+	}
+	if (!window.__tutorialTreasureAllowedIds) {
+		window.__tutorialTreasureAllowedIds = new Set(
+			getTutorialDeckTopCardIds("zone_treasure", TUTORIAL_TREASURE_DECK_TAKE_COUNT),
+		);
+	}
+	return window.__tutorialTreasureAllowedIds;
+}
+
+/** Только 3 карты, зафиксированные при старте; новые «верхние» после взятия не открываются. */
+export function getTutorialTreasureDrawableIds() {
+	const zone = document.getElementById("zone_treasure");
+	const allowed = ensureTutorialTreasureAllowedIds();
+	if (!zone || !allowed?.size) {
+		return [];
+	}
+	const inZone = new Set(
+		Array.from(zone.querySelectorAll(":scope > .card")).map((card) => card.id),
+	);
+	return Array.from(allowed).filter((id) => inZone.has(id));
+}
+
+/** Только door89/door28, идущие подряд с верха колоды (не случайные филлеры после снятия верхней). */
+export function getTutorialDoorDrawableIds() {
+	const zone = document.getElementById("zone_doors");
+	if (!zone) {
+		return [];
+	}
+	const cards = Array.from(zone.querySelectorAll(":scope > .card"));
+	const drawable = [];
+	for (let i = cards.length - 1; i >= 0; i--) {
+		const id = cards[i].id;
+		if (TUTORIAL_DOOR_DRAWABLE_IDS.includes(id)) {
+			drawable.push(id);
+			if (drawable.length >= 2) {
+				break;
+			}
+		} else {
+			break;
+		}
+	}
+	return drawable;
+}
+
+export function refreshTutorialDeckTakeRules() {
+	if (!window.__TUTORIAL_BOARD) {
+		return;
+	}
+	const doorTop = getTutorialDoorDrawableIds();
+	const treasureTop = getTutorialTreasureDrawableIds();
+	window.__tutorialDoorDrawableIds = new Set(doorTop);
+	window.__tutorialTreasureDrawableIds = new Set(treasureTop);
+
+	["zone_doors", "zone_treasure"].forEach((zoneId) => {
+		const zone = document.getElementById(zoneId);
+		if (!zone) {
+			return;
+		}
+		const allowed =
+			zoneId === "zone_doors"
+				? window.__tutorialDoorDrawableIds
+				: window.__tutorialTreasureDrawableIds;
+		zone.querySelectorAll(":scope > .card").forEach((card) => {
+			const canTake = allowed.has(card.id);
+			card.draggable = canTake;
+			if (canTake) {
+				card.removeAttribute("data-tutorial-deck-locked");
+				card.style.opacity = "";
+				card.style.cursor = "";
+				card.style.pointerEvents = "";
+			} else {
+				card.dataset.tutorialDeckLocked = "1";
+				card.style.opacity = "0.55";
+				card.style.cursor = "not-allowed";
+				card.style.pointerEvents = "none";
+			}
+		});
+	});
+}
+
+export function canDragCardFromTutorialDeck(cardEl) {
+	if (!window.__TUTORIAL_BOARD || !cardEl) {
+		return true;
+	}
+	const zoneId = cardEl.parentElement?.id || "";
+	if (zoneId === "zone_doors") {
+		return window.__tutorialDoorDrawableIds?.has(cardEl.id) ?? false;
+	}
+	if (zoneId === "zone_treasure") {
+		return window.__tutorialTreasureDrawableIds?.has(cardEl.id) ?? false;
+	}
+	return true;
+}
+
 /** Состояние стола обучения: 2 игрока, без лобби и сети. */
 export function configureTutorialGameState() {
 	gameStarted = true;
@@ -16908,21 +17062,21 @@ export function configureTutorialGameState() {
 	window.num = 2;
 	localSeat = 0;
 	currentTurnSeat = 0;
+	window.__tutorialBattleCompleted = false;
 	characterBySeat[0].name = "Игрок";
 	characterBySeat[0].gender = "Male";
 	characterBySeat[1].name = "Соперничек";
 	characterBySeat[1].gender = "Male";
+	setLevelBySeat(1, 4);
 	updatePlayersUiVisibility(2);
 	bindSeatIconHoverTooltips();
 	applyTurnHighlight();
+	setupMunchkinDiceAfterGameStart();
 }
 
 export function wireTutorialEndTurnButton() {
 	wireEndTurnButtonClick();
-	const btn = document.getElementById("end-turn");
-	if (btn) {
-		btn.style.display = "flex";
-	}
+	updateTurnActionButtons(false);
 }
 
 document.addEventListener('DOMContentLoaded', function() {

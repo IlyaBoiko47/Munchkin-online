@@ -1,4 +1,4 @@
-import {useState, useEffect, useRef} from 'react';
+import {useState, useEffect, useRef, useMemo} from 'react';
 import socket from '../../socket';
 import ACTIONS from '../../socket/actions';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -49,6 +49,15 @@ export default function Main() {
   const rootNode = useRef();
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [newRoomTitle, setNewRoomTitle] = useState('');
+  const [roomSearch, setRoomSearch] = useState('');
+
+  const filteredRooms = useMemo(() => {
+    const q = roomSearch.trim().toLowerCase();
+    if (!q) {
+      return rooms;
+    }
+    return rooms.filter((room) => room.name.toLowerCase().includes(q));
+  }, [rooms, roomSearch]);
 
   useEffect(() => {
     if (searchParams.get('create') === '1') {
@@ -102,23 +111,43 @@ export default function Main() {
       <p className="join_room-back">
         <a href="/start_of_play.html">← Назад</a>
       </p>
-      <h1>Созданные комнаты:</h1>
+      <div className="join_room-header">
+        <h1>Созданные комнаты:</h1>
+        <input
+          id="join-room-search"
+          className="join_room-search"
+          type="search"
+          placeholder="Поиск по названию…"
+          value={roomSearch}
+          onChange={(e) => setRoomSearch(e.target.value)}
+          autoComplete="off"
+          aria-label="Поиск по названию комнаты"
+        />
+      </div>
 
       <ul className="join_room-list">
-        {rooms.map((room) => (
-          <li className='join' key={room.id}>
-            <span className="join_room-name">{room.name}</span>
-            <span className="join_room-meta">Игроков: {room.players}</span>
-            <button className='button_room join' type="button" onClick={() => {
-							const join = {
-								method: "Join",
-								room: { roomID: room.id }
-							};
-							socket.emit("message", join);
-              navigate(`/room/${room.id}`);
-            }}>Присоединиться к комнате</button>
+        {filteredRooms.length === 0 ? (
+          <li className="join_room-empty">
+            {rooms.length === 0
+              ? 'Пока нет созданных комнат'
+              : 'Комнаты с таким названием не найдены'}
           </li>
-        ))}
+        ) : (
+          filteredRooms.map((room) => (
+            <li className='join' key={room.id}>
+              <span className="join_room-name">{room.name}</span>
+              <span className="join_room-meta">Игроков: {room.players}</span>
+              <button className='button_room join' type="button" onClick={() => {
+                const join = {
+                  method: "Join",
+                  room: { roomID: room.id }
+                };
+                socket.emit("message", join);
+                navigate(`/room/${room.id}`);
+              }}>Присоединиться к комнате</button>
+            </li>
+          ))
+        )}
       </ul>
 
       <button className='button_room create' type="button" onClick={() => setCreateModalOpen(true)}>Создать новую комнату</button>

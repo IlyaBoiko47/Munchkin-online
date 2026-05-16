@@ -27,8 +27,15 @@
 			<div class="container">
 
 				<div class="myhand cards-zone" id="myhand"></div>
-
 				<div class="opponenthand cards-zone" id="opponenthand"></div>
+
+
+
+				<p class="tutorial-zone-label tutorial-opponent-target-hint" id="tutorial-opponent-target-hint">
+
+					Карты, которые влияют на игрока (например, проклятия), нужно класть в его зону экипировки.
+
+				</p>
 
 
 
@@ -38,7 +45,33 @@
 
 
 
-				<div class="zone2 cards-zone" id="zone2"></div>
+				<div class="zone2 cards-zone" id="zone2">
+
+					<div class="tutorial-zone-hint tutorial-equip-hint" id="tutorial-equip-hint">
+
+						Сюда нужно класть шмотки, расы и классы, а также карты с особым эффектом (Чит, «Получи уровень» и т.п.).
+
+					</div>
+
+				</div>
+
+
+
+				<p class="tutorial-zone-label tutorial-battle-highlight-hint is-hidden" id="tutorial-battle-highlight-hint">
+
+					Зона игрока, который участвует в бою, подсвечивается.
+
+				</p>
+
+
+
+				<div class="zone5 cards-zone" id="zone5">
+					<div class="tutorial-zone-hint tutorial-side-hint" id="tutorial-side-hint">
+						<span class="tutorial-side-hint-text">Сюда можно класть шмотки, которые сейчас нельзя или не требуется экипировать.</span>
+					</div>
+				</div>
+
+
 
 				<div class="zone3 cards-zone" id="zone3">
 
@@ -49,10 +82,15 @@
 				<div class="zone_monster cards-zone" id="zone_monster">
 
 					<span id="MonsterBonus" class="MonsterBonus">0</span>
-
 				</div>
 
-				<div class="zone5 cards-zone" id="zone5"></div>
+
+
+				<p class="tutorial-zone-label tutorial-battle-center-hint" id="tutorial-battle-center-hint">
+
+					Карту из колоды дверей в начале хода нужно класть сюда. Сюда же кладут монстров и карты, влияющие на бой.
+
+				</p>
 
 
 
@@ -80,9 +118,15 @@
 
 				<div class="timer" id="timer"></div>
 
+				<p class="tutorial-zone-label tutorial-timer-hint is-hidden" id="tutorial-timer-hint">
+
+					По окончании таймера или когда все игроки нажмут «Пас», подсчитается сила и определится победитель боя.
+
+				</p>
+
 				<div class="fold" id="fold">Пас</div>
 
-				<div class="fold" id="end-turn">Завершить ход</div>
+				<div class="fold" id="end-turn" style="display: none">Завершить ход</div>
 
 
 
@@ -94,6 +138,13 @@
 
 				<button type="button" id="prev-button"><img src="/img/svg/стрела 2.svg" alt=""></button>
 
+			</div>
+
+			<div class="tutorial-complete-overlay create-room-overlay is-hidden" id="tutorial-complete-overlay" aria-hidden="true">
+				<div class="tutorial-complete-panel create-room-dialog">
+					<p class="tutorial-complete-title create-room-heading">Обучение пройдено</p>
+					<a href="/home.html" class="tutorial-complete-home-btn create-room-btn create-room-btn--primary">Вернуться в главное меню</a>
+				</div>
 			</div>
 
 		</section>
@@ -116,7 +167,7 @@
 
 				<div class="bl-corner-avatar-col">
 
-					<span class="level-top-center">1</span>
+					<span class="level-top-center">4</span>
 
 					<div class="image-container">
 
@@ -147,8 +198,6 @@
 				<span id="MyPower" class="MyPower">1</span>
 
 			</div>
-
-
 
 			<div class="dice-container"></div>
 
