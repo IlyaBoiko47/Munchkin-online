@@ -1031,7 +1031,7 @@ function bindSeatIconHoverTooltips() {
 	}
 }
 
-function setLevelBySeat(seat, level) {
+export function setLevelBySeat(seat, level) {
 	const v = Math.max(1, Math.floor(Number(level)) || 1);
 	if (seat >= 0 && seat < characterBySeat.length) {
 		levelBySeat[seat] = v;
@@ -10689,7 +10689,7 @@ function isMonsterBattleUi() {
 	return Boolean(battleActive && getMonsterBattleContext().hasMonster);
 }
 
-function updateTurnActionButtons(isTimerRunning) {
+export function updateTurnActionButtons(isTimerRunning) {
 	const foldButton = document.getElementById('fold');
 	const endTurnButton = document.getElementById('end-turn');
 	if (!foldButton || !endTurnButton) {
@@ -13299,7 +13299,7 @@ export function recalculateAllPowerDisplays() {
 }
 
 /** Клик по кубику вешается только в StartGame; после refresh нужно заново. */
-function setupMunchkinDiceAfterGameStart() {
+export function setupMunchkinDiceAfterGameStart() {
 	const diceContainer = document.querySelector(".dice-container");
 	if (!diceContainer) {
 		return;

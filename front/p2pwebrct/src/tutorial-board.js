@@ -8,33 +8,27 @@
 
 import { UpdateZones } from './увеличение карточек во время игры.js';
 
-import { scheduleAdjustAllZonesCardLayout } from './card-block.js';
+import { adjustCardWidth, adjustCardHeight } from './card-block.js';
 
 import {
-
-	ensureCardCatalogLoaded,
-
-	Deck_filling,
-
 	UpdatebackImgDoor,
-
 	UpdatebackImgTreasure,
-
 	recalculateAllPowerDisplays,
-
-	configureTutorialGameState,
-
-	initializeSellTreasuresUi,
-
-	wireTutorialEndTurnButton,
-
 	getMonsterBattleContext,
-
-	refreshTutorialDeckTakeRules,
-
-	resetTutorialDeckTakeLimits,
-
 } from './game.js';
+import {
+	ensureCardCatalogLoaded,
+	deckFilling,
+	configureTutorialGameState,
+	wireTutorialEndTurnButton,
+	refreshTutorialDeckTakeRules,
+	resetTutorialDeckTakeLimits,
+	tryStartTutorialBattleTimer,
+	syncTutorialLevelsAfterCatalog,
+	applyTutorialSeatDisplayNames,
+	ensureTutorialDice,
+	markTutorialDeckCard,
+} from './tutorial-runtime.js';
 
 
 
@@ -94,15 +88,35 @@ const OPPONENT_HAND = ['treasure31', 'treasure11', 'treasure56', 'door45'];
 
 const OPPONENT_EQUIP = ['door9'];
 
-/** Снизу вверх: проклятие «потеряй уровень», сверху — Чит. */
+/** Снизу вверх: проклятие «потеряй уровень», сверху — Чит. door36 — в раздаче руки. */
 const TUTORIAL_DOOR_DECK_STACK = ['door28', 'door89'];
+
+/** Снизу вверх: card0166 (шмот), сверху — card0167 (шмот). */
+const TUTORIAL_TREASURE_DECK_STACK = ['treasure71', 'treasure72'];
 
 const TUTORIAL_DECK_RESERVED_DOOR_IDS = new Set([
 	...TUTORIAL_CARD_IDS,
 	...TUTORIAL_DOOR_DECK_STACK,
 ]);
 
+const TUTORIAL_DECK_RESERVED_TREASURE_IDS = new Set([
+	...TUTORIAL_CARD_IDS,
+	...TUTORIAL_TREASURE_DECK_STACK,
+]);
+
 const ZONE_HINT_WATCH_IDS = ['zone2', 'zone5', 'zone3', 'zone_monster', 'zone_opponent'];
+
+const LAYOUT_ZONE_SELECTORS = [
+	'#myhand', '#opponenthand', '#zone2', '#zone5', '#zone3', '#zone_monster',
+	'#zone_doors', '#zone_treasure', '#zone_opponent',
+];
+
+function scheduleAdjustAllZonesCardLayout() {
+	LAYOUT_ZONE_SELECTORS.forEach((sel) => {
+		adjustCardWidth(sel);
+		adjustCardHeight(sel);
+	});
+}
 
 let tutorialSideHintDismissedPermanently = false;
 
@@ -296,7 +310,7 @@ function placeCardInZone(cardId, zoneId) {
 
 		const holder = document.createElement('div');
 
-		Deck_filling([def], holder);
+		deckFilling([def], holder);
 
 		card = holder.querySelector('.card');
 
@@ -322,14 +336,13 @@ function appendTutorialDeckCard(def, zone) {
 
 	const holder = document.createElement('div');
 
-	Deck_filling([def], holder);
+		deckFilling([def], holder);
 
 	const card = holder.querySelector('.card');
 
 	if (card) {
-
+		markTutorialDeckCard(card);
 		zone.appendChild(card);
-
 	}
 
 }
@@ -354,11 +367,11 @@ function fillTutorialDecks() {
 
 	const deckDoors = window.doors.filter((d) => !TUTORIAL_DECK_RESERVED_DOOR_IDS.has(d.name));
 
-	const deckTreasures = window.treasures.filter((t) => !TUTORIAL_CARD_IDS.has(t.name));
+	const deckTreasures = window.treasures.filter((t) => !TUTORIAL_DECK_RESERVED_TREASURE_IDS.has(t.name));
 
 
 
-	Deck_filling(deckDoors, zoneDoors);
+	deckFilling(deckDoors, zoneDoors);
 
 	TUTORIAL_DOOR_DECK_STACK.forEach((cardId) => {
 
@@ -368,7 +381,15 @@ function fillTutorialDecks() {
 
 	});
 
-	Deck_filling(deckTreasures, zoneTreasure);
+	deckFilling(deckTreasures, zoneTreasure);
+
+	TUTORIAL_TREASURE_DECK_STACK.forEach((cardId) => {
+
+		const def = window.treasures.find((t) => t.name === cardId);
+
+		appendTutorialDeckCard(def, zoneTreasure);
+
+	});
 
 }
 
@@ -438,9 +459,9 @@ export function setupTutorialScene() {
 
 	refreshTutorialDeckTakeRules();
 
-	recalculateAllPowerDisplays();
-
-	initializeSellTreasuresUi();
+	applyTutorialSeatDisplayNames();
+	syncTutorialLevelsAfterCatalog();
+	ensureTutorialDice();
 
 	wireTutorialEndTurnButton();
 
@@ -451,6 +472,8 @@ export function setupTutorialScene() {
 window.addEventListener('munchkin:zonesChanged', () => {
 	updateTutorialHints();
 	refreshTutorialDeckTakeRules();
+	syncTutorialLevelsAfterCatalog();
+	ensureTutorialDice();
 });
 
 window.addEventListener('munchkin:tutorialTimerUiChanged', updateTutorialHints);
