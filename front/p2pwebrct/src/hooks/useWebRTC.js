@@ -110,6 +110,28 @@ export default function useWebRTC(roomID) {
     return true;
   }, []);
 
+  const ensureLocalAudioStream = useCallback(async () => {
+    if (localMediaStream.current) {
+      return localMediaStream.current;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      console.error('getUserMedia API is not supported');
+      return null;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getAudioTracks().forEach((track) => {
+        track.enabled = false;
+      });
+      localMediaStream.current = stream;
+      addNewClient(LOCAL_AUDIO, () => {});
+      return stream;
+    } catch (e) {
+      console.error('Error getting userMedia:', e);
+      return null;
+    }
+  }, [addNewClient]);
+
   const sendOfferToPeer = useCallback(async (peerID, { force = false } = {}) => {
     const pc = peerConnections.current[peerID];
     if (!pc || pc.signalingState === 'closed') {
@@ -506,28 +528,6 @@ export default function useWebRTC(roomID) {
     await renegotiateAllPeersWithLocalTracks();
     await flushPendingOffers();
   }, [renegotiateAllPeersWithLocalTracks, flushPendingOffers]);
-
-  const ensureLocalAudioStream = useCallback(async () => {
-    if (localMediaStream.current) {
-      return localMediaStream.current;
-    }
-    if (!navigator.mediaDevices?.getUserMedia) {
-      console.error('getUserMedia API is not supported');
-      return null;
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getAudioTracks().forEach((track) => {
-        track.enabled = false;
-      });
-      localMediaStream.current = stream;
-      addNewClient(LOCAL_AUDIO, () => {});
-      return stream;
-    } catch (e) {
-      console.error('Error getting userMedia:', e);
-      return null;
-    }
-  }, [addNewClient]);
 
   useEffect(() => {
     async function handleNewPeer({ peerID, createOffer }) {
