@@ -515,6 +515,7 @@ function applySeatIconsForPlayerCount(numPlayers) {
 
 	ensurePreviewAcceptHelpButtonsVisible();
 	syncBrTableZonesForPlayerCount();
+	syncSeatPlayerNameLabels();
 
 	return n;
 }
@@ -935,6 +936,7 @@ function applyPlayerMetaBySeatFromServer(raw) {
 		if (gender) {
 			ch.gender = gender;
 		}
+		syncSeatPlayerNameLabels();
 		// Важно: Number(null) === 0 — пока localSeat ещё не восстановлен, нельзя писать профиль как для места 0.
 		if (localSeat !== null && localSeat !== undefined && Number(seat) === Number(localSeat)) {
 			try {
@@ -974,8 +976,13 @@ function showSeatIconTooltipForSeat(seat, anchorEl) {
 	tip.style.background = "rgba(0,0,0,0.72)";
 	tip.style.color = "#fff";
 	tip.style.fontSize = "18px";
-	tip.style.lineHeight = "1.1";
+	tip.style.lineHeight = "1.25";
 	tip.style.pointerEvents = "none";
+	tip.style.maxWidth = "min(280px, 90vw)";
+	tip.style.whiteSpace = "normal";
+	tip.style.overflowWrap = "anywhere";
+	tip.style.wordBreak = "break-word";
+	tip.style.textAlign = "center";
 	tip.textContent = gender ? `${name} (${gender})` : name;
 	const rect = anchorEl.getBoundingClientRect();
 	// Плашка прямо поверх иконки (по центру).
@@ -987,8 +994,36 @@ function showSeatIconTooltipForSeat(seat, anchorEl) {
 
 let seatTooltipGlobalListenersBound = false;
 
+/** Подписи имён у активных мест за столом (с переносом длинных имён). */
+function syncSeatPlayerNameLabels() {
+	document.querySelectorAll(".seat-player-name").forEach((el) => el.remove());
+	const n = effectiveSeatLayoutPlayerCount();
+	const seatToIconMap = getSeatToIconMap();
+	Object.entries(seatToIconMap).forEach(([seatKey, selector]) => {
+		const seat = parseInt(seatKey, 10);
+		if (Number.isNaN(seat) || seat < 0 || seat >= n) {
+			return;
+		}
+		const anchor = pickSeatIconAnchorElement(selector);
+		if (!anchor) {
+			return;
+		}
+		const host = anchor.closest(".bl-corner-avatar-col")
+			|| anchor.closest(".image-container")
+			|| anchor.parentElement;
+		if (!host) {
+			return;
+		}
+		const label = document.createElement("div");
+		label.className = "seat-player-name";
+		label.textContent = getSeatLabel(seat);
+		host.appendChild(label);
+	});
+}
+
 function bindSeatIconHoverTooltips() {
 	clearSeatIconTooltipBindings();
+	syncSeatPlayerNameLabels();
 	const seatToIconMap = getSeatToIconMap();
 	Object.entries(seatToIconMap).forEach(([seatKey, selector]) => {
 		const seat = parseInt(seatKey, 10);

@@ -1455,6 +1455,8 @@ io.on('connection', socket => {
     const clients = Array.from(io.sockets.adapter.rooms.get(roomID) || []);
 
     // Кто шлёт offer: у пары всегда один инициатор (меньший socket.id), а не только «новый» игрок.
+    socket.join(roomID);
+
     clients.forEach(clientID => {
       const existingOffers = String(clientID) < String(socket.id);
       io.to(clientID).emit(ACTIONS.ADD_PEER, {
@@ -1468,7 +1470,9 @@ io.on('connection', socket => {
       });
     });
 
-    socket.join(roomID);
+    const allInRoom = Array.from(io.sockets.adapter.rooms.get(roomID) || [])
+      .filter((id) => id !== socket.id);
+    socket.emit(ACTIONS.SYNC_PEERS, { peerIds: allInRoom });
     socket.data.gameRoomID = roomID;
     if (token) {
       socket.data.playerToken = String(token);

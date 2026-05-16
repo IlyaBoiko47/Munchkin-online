@@ -1152,6 +1152,29 @@ a{
 	display: block;
 }
 
+/* Имя игрока под аватаром — перенос длинных имён */
+.seat-player-name {
+	display: block;
+	max-width: min(150px, 32vw);
+	margin: 4px auto 0;
+	padding: 0 4px;
+	font-size: clamp(12px, 1.6vw, 16px);
+	font-weight: 700;
+	line-height: 1.2;
+	text-align: center;
+	color: #fff;
+	text-shadow: 0 1px 4px rgba(0, 0, 0, 0.85);
+	white-space: normal;
+	overflow-wrap: anywhere;
+	word-break: break-word;
+	pointer-events: none;
+	box-sizing: border-box;
+}
+
+.image-container .seat-player-name {
+	max-width: min(130px, 28vw);
+}
+
  .level-top-right{
  
    top: 2px;
