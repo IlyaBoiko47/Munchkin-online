@@ -323,37 +323,66 @@ export default function useWebRTC(roomID) {
     });
   }, [addNewClient, playAllRemoteAudio]);
 
+  const rebuildRemoteAudioStream = useCallback((peerID) => {
+    const pc = peerConnections.current[peerID];
+    if (!pc) {
+      return null;
+    }
+    const stream = new MediaStream();
+    const receivers = pc.getReceivers?.() || [];
+    receivers.forEach((receiver) => {
+      const track = receiver.track;
+      if (track?.kind === 'audio' && track.readyState !== 'ended') {
+        track.enabled = true;
+        if (!stream.getTracks().some((t) => t.id === track.id)) {
+          stream.addTrack(track);
+        }
+      }
+    });
+    if (stream.getAudioTracks().length === 0) {
+      return null;
+    }
+    if (receivers.filter((r) => r.track?.kind === 'audio').length > 1) {
+      webrtcWarn(peerID, 'несколько audio receivers — берём live треки', stream.getAudioTracks().length);
+    }
+    remoteStreams.current[peerID] = stream;
+    return stream;
+  }, []);
+
   const handleRemoteTrack = useCallback((peerID, event) => {
-    let stream = remoteStreams.current[peerID];
-    if (!stream) {
-      stream = event.streams?.[0] || new MediaStream();
-      remoteStreams.current[peerID] = stream;
+    if (event.track?.kind !== 'audio') {
+      return;
     }
-    if (event.track && !stream.getTracks().some((t) => t.id === event.track.id)) {
-      stream.addTrack(event.track);
-      event.track.enabled = true;
-    }
+    event.track.enabled = true;
     const onTrackReady = () => {
+      const stream = rebuildRemoteAudioStream(peerID);
+      if (!stream) {
+        return;
+      }
       webrtcLog(peerID, 'track-ready', {
         id: event.track?.id,
         muted: event.track?.muted,
         readyState: event.track?.readyState,
+        tracks: stream.getAudioTracks().length,
       });
+      bindRemoteTrack(peerID, stream);
       playAllRemoteAudio();
     };
     event.track.onunmute = onTrackReady;
-    event.track.onended = () => webrtcWarn(peerID, 'track-ended');
+    event.track.onended = () => {
+      webrtcWarn(peerID, 'track-ended');
+      const stream = rebuildRemoteAudioStream(peerID);
+      if (stream) {
+        bindRemoteTrack(peerID, stream);
+      }
+    };
     webrtcLog(peerID, 'remote-track', {
       id: event.track?.id,
       readyState: event.track?.readyState,
       muted: event.track?.muted,
     });
-    if (!event.track.muted && event.track.readyState === 'live') {
-      onTrackReady();
-    }
-    bindRemoteTrack(peerID, stream);
-    playAllRemoteAudio();
-  }, [bindRemoteTrack, playAllRemoteAudio]);
+    onTrackReady();
+  }, [bindRemoteTrack, playAllRemoteAudio, rebuildRemoteAudioStream]);
 
   handleRemoteTrackRef.current = handleRemoteTrack;
 
@@ -439,6 +468,10 @@ export default function useWebRTC(roomID) {
 
     ignoreOffer.current[peerID] = !politePeer.current[peerID] && offerCollision;
     if (ignoreOffer.current[peerID]) {
+      webrtcWarn(peerID, 'ignore offer (glare)', {
+        polite: politePeer.current[peerID],
+        signaling: pc.signalingState,
+      });
       return false;
     }
 
@@ -766,10 +799,19 @@ export default function useWebRTC(roomID) {
   escalatePeerToDirectRef.current = escalatePeerToDirect;
 
   const registerPeer = useCallback(async (peerID, { shouldOffer, preferredOfferer } = {}) => {
+    if (!peerID || peerID === socket.id) {
+      return;
+    }
     knownPeersRef.current.add(peerID);
-    webrtcLog(peerID, 'register-peer', { shouldOffer, preferredOfferer });
-    await connectToPeer(peerID, { shouldOffer });
-    startConnectionWatchdog(peerID, { preferredOfferer: Boolean(preferredOfferer || shouldOffer) });
+    const wantOffer = shouldOffer === true
+      || (shouldOffer !== false && shouldCreateOffer(socket.id, peerID));
+    webrtcLog(peerID, 'register-peer', {
+      shouldOffer: wantOffer,
+      preferredOfferer: Boolean(preferredOfferer || wantOffer),
+      socketId: socket.id,
+    });
+    await connectToPeer(peerID, { shouldOffer: wantOffer });
+    startConnectionWatchdog(peerID, { preferredOfferer: Boolean(preferredOfferer || wantOffer) });
     startMediaStatsMonitor(peerID);
   }, [connectToPeer, startConnectionWatchdog, startMediaStatsMonitor]);
 
@@ -793,7 +835,11 @@ export default function useWebRTC(roomID) {
     const pending = { ...pendingOffers.current };
     pendingOffers.current = {};
     for (const peerID of Object.keys(pending)) {
-      if (pending[peerID] && peerConnections.current[peerID]) {
+      if (
+        pending[peerID]
+        && peerConnections.current[peerID]
+        && shouldCreateOffer(socket.id, peerID)
+      ) {
         // eslint-disable-next-line no-await-in-loop
         await sendOfferToPeer(peerID, { force: true });
       }
@@ -806,10 +852,14 @@ export default function useWebRTC(roomID) {
   }, [renegotiateAllPeersWithLocalTracks, flushPendingOffers]);
 
   useEffect(() => {
-    async function handleNewPeer({ peerID, createOffer }) {
+    async function handleNewPeer({ peerID }) {
+      if (!peerID || peerID === socket.id) {
+        return;
+      }
+      const shouldOffer = shouldCreateOffer(socket.id, peerID);
       await registerPeer(peerID, {
-        shouldOffer: Boolean(createOffer),
-        preferredOfferer: Boolean(createOffer),
+        shouldOffer,
+        preferredOfferer: shouldOffer,
       });
     }
 
@@ -821,12 +871,11 @@ export default function useWebRTC(roomID) {
         if (!peerID || peerID === socket.id) {
           continue;
         }
-        if (isPeerConnected(peerID) && isPeerReceivingAudio(peerID, peerMediaStatsRef.current)) {
-          knownPeersRef.current.add(peerID);
+        knownPeersRef.current.add(peerID);
+        if (peerConnections.current[peerID]) {
           continue;
         }
-        const hasPc = Boolean(peerConnections.current[peerID]);
-        const shouldOffer = hasPc ? false : shouldCreateOffer(socket.id, peerID);
+        const shouldOffer = shouldCreateOffer(socket.id, peerID);
         // eslint-disable-next-line no-await-in-loop
         await registerPeer(peerID, {
           shouldOffer,
@@ -842,7 +891,7 @@ export default function useWebRTC(roomID) {
       socket.off(ACTIONS.ADD_PEER, handleNewPeer);
       socket.off(ACTIONS.SYNC_PEERS, handleSyncPeers);
     };
-  }, [registerPeer, isPeerConnected]);
+  }, [registerPeer]);
 
   useEffect(() => {
     async function setRemoteMedia({ peerID, sessionDescription: remoteDescription }) {

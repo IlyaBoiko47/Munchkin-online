@@ -1476,24 +1476,28 @@ io.on('connection', socket => {
 
     socket.join(roomID);
 
-    // Новый игрок шлёт offer всем уже сидящим в комнате; они только отвечают.
+    // Один offerer на пару: у кого socket.id меньше (как shouldCreateOffer на клиенте).
     clients.forEach(clientID => {
+      const existingPeerOffers = String(clientID) < String(socket.id);
+      const newPeerOffers = String(socket.id) < String(clientID);
       io.to(clientID).emit(ACTIONS.ADD_PEER, {
         peerID: socket.id,
-        createOffer: false,
+        createOffer: existingPeerOffers,
       });
 
       socket.emit(ACTIONS.ADD_PEER, {
         peerID: clientID,
-        createOffer: true,
+        createOffer: newPeerOffers,
       });
     });
 
     const allInRoom = Array.from(io.sockets.adapter.rooms.get(roomID) || []);
-    allInRoom.forEach((clientID) => {
-      const peerIds = allInRoom.filter((id) => id !== clientID);
-      io.to(clientID).emit(ACTIONS.SYNC_PEERS, { peerIds });
-    });
+    setTimeout(() => {
+      allInRoom.forEach((clientID) => {
+        const peerIds = allInRoom.filter((id) => id !== clientID);
+        io.to(clientID).emit(ACTIONS.SYNC_PEERS, { peerIds });
+      });
+    }, 150);
     socket.data.gameRoomID = roomID;
     if (token) {
       socket.data.playerToken = String(token);
