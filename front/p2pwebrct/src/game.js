@@ -5597,7 +5597,7 @@ function monsterBattlefieldDismissesBattleHelpers() {
  * Сила участников боя без бонусов с экипированных сокровищ, без бонусов с дверей в main (снятие) и без суммы силы карт в zone3 (зона бонусов);
  * классовые бонусы в бою (ярость воина, изгнание клира, yuppie water) не считаются.
  * Учитываются: уровень (и штрафы вроде change sex / вора в recalculateMyBonusDisplay), доппельгангер при одиночном бою
- * (удваивает только базу с персонажа — карта может лежать в zone3, но сумма силы с карт в zone3 в бою не входит),
+ * (удваивает вклад уровня и экипировки с персонажа — карта может лежать в zone3, но сумма силы с карт в zone3 в бою не входит),
  * сила помощника по тем же правилам.
  */
 function monsterBattlefieldLevelOnlyCombatPower() {
@@ -8613,7 +8613,7 @@ function openFlaskOfGlueConfirmModal({ promptKey, escapedSeat, monsterCardId, vi
 		wallFleeSet.size > 1
 			? `${names} успешно смылись.`
 			: `${getSeatLabel(escaped)} успешно смылся.`;
-	title.textContent = `${succ} Использовать тюбик клея, чтобы снова смываться${viaWall ? ". После стенки — от всех монстров" : ""}?`;
+	title.textContent = `${succ} Использовать тюбик клея, чтобы заставить снова смываться${viaWall ? ". После стенки — от всех монстров" : ""}?`;
 	const cardImg = document.createElement("img");
 	cardImg.className = "wizard-taming-pick-card-img";
 	cardImg.src = tr?.img || "";
@@ -10314,12 +10314,8 @@ function recalculateMyBonusDisplay() {
 	let activeCombatPower = activeCharacterPower;
 	let zone3CombatPower = zone3BonusPower;
 	if (doppelDoublingActive) {
-		// Обычно: +equipPow удваивает вклад экипировки. При door66 экипировка в силе не считается — удваиваем всю базу с персонажа (в т.ч. уровень).
-		if (levelOnlyMonster) {
-			activeCombatPower = 2 * activeCharacterPower;
-		} else {
-			activeCombatPower = activeCharacterPower + equipPow;
-		}
+		// Удваиваем базу с персонажа (уровень + экипировка; при door66/door74 — только то, что уже входит в activeCharacterPower).
+		activeCombatPower = 2 * activeCharacterPower;
 		zone3CombatPower = 2 * zone3BonusPower;
 	}
 	// Change sex: -5 к силе в одном бою (когда игрок участвует в бою).
@@ -11989,7 +11985,7 @@ function isTreasureSpecial(cardId, specialValue) {
 }
 
 /**
- * Doppleganger в zone3: в бою без помощника удваивает вклад силы от экипировки и от карт в зоне бонусов (см. recalculateMyBonusDisplay).
+ * Doppleganger в zone3: в бою без помощника удваивает вклад уровня и экипировки и силу карт в зоне бонусов (см. recalculateMyBonusDisplay).
  * Боец — {@link getMonsterFightSeat()} (в т.ч. после Transferral potion), не обязательно владелец хода.
  */
 export function canPlaceDopplegangerTreasureInBonusZone(cardEl, zoneEl) {

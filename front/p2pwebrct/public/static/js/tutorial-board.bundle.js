@@ -12126,7 +12126,7 @@
     title.className = "wizard-taming-pick-title";
     const names = Array.from(wallFleeSet).sort((a, b) => a - b).map((s) => getSeatLabel(s)).join(" \u0438 ");
     const succ = wallFleeSet.size > 1 ? `${names} \u0443\u0441\u043F\u0435\u0448\u043D\u043E \u0441\u043C\u044B\u043B\u0438\u0441\u044C.` : `${getSeatLabel(escaped)} \u0443\u0441\u043F\u0435\u0448\u043D\u043E \u0441\u043C\u044B\u043B\u0441\u044F.`;
-    title.textContent = `${succ} \u0418\u0441\u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u044C \u0442\u044E\u0431\u0438\u043A \u043A\u043B\u0435\u044F, \u0447\u0442\u043E\u0431\u044B \u0441\u043D\u043E\u0432\u0430 \u0441\u043C\u044B\u0432\u0430\u0442\u044C\u0441\u044F${viaWall ? ". \u041F\u043E\u0441\u043B\u0435 \u0441\u0442\u0435\u043D\u043A\u0438 \u2014 \u043E\u0442 \u0432\u0441\u0435\u0445 \u043C\u043E\u043D\u0441\u0442\u0440\u043E\u0432" : ""}?`;
+    title.textContent = `${succ} \u0418\u0441\u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u044C \u0442\u044E\u0431\u0438\u043A \u043A\u043B\u0435\u044F, \u0447\u0442\u043E\u0431\u044B \u0437\u0430\u0441\u0442\u0430\u0432\u0438\u0442\u044C \u0441\u043D\u043E\u0432\u0430 \u0441\u043C\u044B\u0432\u0430\u0442\u044C\u0441\u044F${viaWall ? ". \u041F\u043E\u0441\u043B\u0435 \u0441\u0442\u0435\u043D\u043A\u0438 \u2014 \u043E\u0442 \u0432\u0441\u0435\u0445 \u043C\u043E\u043D\u0441\u0442\u0440\u043E\u0432" : ""}?`;
     const cardImg = document.createElement("img");
     cardImg.className = "wizard-taming-pick-card-img";
     cardImg.src = tr?.img || "";
@@ -13701,11 +13701,7 @@
     let activeCombatPower = activeCharacterPower;
     let zone3CombatPower = zone3BonusPower;
     if (doppelDoublingActive) {
-      if (levelOnlyMonster) {
-        activeCombatPower = 2 * activeCharacterPower;
-      } else {
-        activeCombatPower = activeCharacterPower + equipPow;
-      }
+      activeCombatPower = 2 * activeCharacterPower;
       zone3CombatPower = 2 * zone3BonusPower;
     }
     if (battleActive && powerSeat != null && changeSexActiveBySeat.has(powerSeat) && isSeatParticipantInCurrentMonsterBattle(powerSeat)) {
